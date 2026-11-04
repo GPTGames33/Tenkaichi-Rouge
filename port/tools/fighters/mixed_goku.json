@@ -1,0 +1,12 @@
+{
+  "name": "Mixed Goku",
+  "title": "Custom Character test",
+  "look":    {"chara": "Goku (End)"},
+  "moveset": {"chara": "Goku (End)"},
+  "moves": {
+    "blast2_1": {"chara": "Vegeta (2nd Form)", "slot": "blast2_1"},
+    "ultimate": {"chara": "Super Perfect Cell"}
+  },
+  "names": {"blast2_1": "Galick Kamehameha"},
+  "slot": {"chara": "Goku (End)", "costume": 1}
+}

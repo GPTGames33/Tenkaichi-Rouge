@@ -12,7 +12,7 @@ name: release
 
 on:
   push:
-    branches: [main]
+    branches: [main, custom-character]
     tags: ["v*"]
     paths-ignore: ["docs/**", "**.md", "LICENSE", "LICENSE-MIT"]
   workflow_dispatch:
