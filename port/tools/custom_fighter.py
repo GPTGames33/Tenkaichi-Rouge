@@ -603,6 +603,11 @@ def replace_files(disc, spec):
     if f.changes_motions() or f.moveset[0] != slot[0]:
         out[("pzs3us1", chara_file(slot[0], 8) - 1)] = f.anims().bytes()
         out[("pzs3us1", chara_file(slot[0], 9) - 1)] = f.effects().bytes()
+    p = f.portrait[0] if "portrait" in spec else f.look[0]
+    if p != slot[0]:  # the menus' picture and the team picture of the fight
+        out[("pzs3us1", PORTRAIT_FILE + slot[0] - 1)] = disc.raw(PORTRAIT_FILE + p)
+        for side in (0, 1):
+            out[("pzs3us1", MEMBER_FILE + slot[0] * 2 + side - 1)] = disc.raw(MEMBER_FILE + p * 2 + side)
     if f.voice[0] != slot[0]:
         v = f.voice[0]
         for bank in (VOICE_BANK_US, VOICE_BANK_JP):
@@ -616,6 +621,8 @@ def replace_files(disc, spec):
 def mods_names(slot):
     names = [("pzs3us1", chara_file(slot[0], k) - 1) for k in (slot[1], slot[1] + 4, 8, 9)]
     names += [("pzs3us1", b + slot[0] - 1) for b in (VOICE_BANK_US, VOICE_BANK_JP)]
+    names += [("pzs3us1", PORTRAIT_FILE + slot[0] - 1)]
+    names += [("pzs3us1", MEMBER_FILE + slot[0] * 2 + side - 1) for side in (0, 1)]
     names += [("pzs3us2", first + slot[0] * 100 + line - PT2_FIRST_ID)
               for first in (VOICE_LINE_US, VOICE_LINE_JP) for line in range(100)]
     return names
