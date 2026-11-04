@@ -15,21 +15,28 @@ Source: Tenkaichi3Decomp @ 48d66c1 (2026-11-03). "Verified" means matching C; ev
   file+9 / voiceChara, so model, animations and voice can already come from different characters.
   But `BtlObj_Setup` derives `obj->chara` from the model's file id.
 
-## What a model pack holds (bobj_a.c)
-| Entry | Contents | Battle object field |
-|---|---|---|
-| 0x12 | general params (BtlParam / pparam_com) | +0x91C |
-| 0x13 | melee attacks | +0x920 |
-| 0x14 | 13 ki-blast records of 0x34 bytes | +0x924 |
-| 0x15 | movement | +0x928 |
-| 0x18 | Blast 2 ×2 + Ultimate | +0x92C |
-| 0x19 | Blast 1 ×2 (skills) | +0x930 |
-| 0x17 | secondary-motion chains (hair, cloth, tails) | |
-| 0x1D..0x24 | the model's own animations | |
-| 0x0D / 0x04.. | eyes / mouth textures | |
+## What a model pack holds (bobj_a.c BtlObj_BindTables, verified; game entry n = part n-1 of the file)
+| Entry | Contents |
+|---|---|
+| 0x01 | HUD face |
+| 0x04..0x0B, 0x0D | mouth textures, eyes |
+| 0x12 | general params (BtlParam; byte 3 colour preset / aura, +0x98.. transformations) |
+| 0x13 | melee attack records |
+| 0x14 | 13 ki-blast records of 0x34 bytes |
+| 0x15 | movement |
+| 0x16 | pre/post-fight talk table (per opponent) |
+| 0x17 | hair / cloth chains (belong to the model) |
+| 0x18 | Blast 2 x2 + Ultimate (struct of arrays [3]) |
+| 0x19 | Blast 1 x2 (struct of arrays [2]) |
+| 0x1B | AI parameters |
+| 0x1C | camera cuts, 0x24 each (0..2 starts of slots 2..4, 3 Ultimate intro, 9 rush finish) |
+| 0x1D..0x24 | the model's own motions (fusion, partners) |
+| 0x2D..0x34 | move list text, 8 languages (UTF-16; the n-th '*' line is move slot n) |
+| 0x35.. | lip sync (0x35 + line; +0x64 other language) |
 
-**Moves and stats live inside each costume's pack, so building a moveset means copying those entries from
-other packs.** The readers (btl_tech_a/b.c) are fully matched C.
+Per move slot: its elements of 0x18/0x19, motions in +8 (Blast 1: 0x103+slot; Blast 2/Ultimate: 0x22 from
+0x105+(slot-2)*0x22, Ultimate also 0x16B; motion N = entry N+1), its effect pack (+9 entry slot+1), its cut.
+The whole-moveset swap was checked in the game (2026-11-04).
 
 ## Model
 - Skeleton of 71 nodes (head = node 0x33). Motions are retargeted by height against a reference skeleton, so
