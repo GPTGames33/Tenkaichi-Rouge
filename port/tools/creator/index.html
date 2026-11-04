@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Custom Character</title>
+<style>
+  :root {
+    --gold1: #fff3b0; --gold2: #f5b81c; --gold3: #b86a00;
+    --panel: rgba(46, 26, 92, 0.88); --panel2: rgba(70, 40, 130, 0.92); --row: rgba(255, 255, 255, 0.06);
+    --sel: linear-gradient(90deg, #ffd34d, #f39c12); --ink: #fff; --dim: #c9b8f0; --edge: #f5c542;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #120a24; color: var(--ink);
+    font-family: "Trebuchet MS", "Segoe UI", sans-serif; overflow: hidden; user-select: none; }
+  #stage { position: absolute; left: 50%; top: 50%; width: 1280px; height: 720px; transform-origin: 0 0;
+    background: radial-gradient(ellipse at 70% 30%, #ffd9f0 0%, #f2a0d0 25%, #8a6bd6 60%, #2b1a5a 100%); overflow: hidden; }
+  #stage::before { content: ""; position: absolute; inset: 0;
+    background: repeating-conic-gradient(from 0deg at 72% 40%, rgba(255,255,255,0.07) 0 6deg, transparent 6deg 14deg); }
+  #ground { position: absolute; left: 0; right: 0; bottom: 0; height: 230px;
+    background: linear-gradient(180deg, #7fcf62 0%, #3f9a3a 60%, #2a6b2a 100%); clip-path: polygon(0 35%, 30% 20%, 60% 32%, 100% 15%, 100% 100%, 0 100%); }
+  .frame { position: absolute; inset: 0; border: 10px solid transparent;
+    border-image: repeating-linear-gradient(45deg, #f5c542 0 8px, #c98a10 8px 16px) 10; pointer-events: none; }
+
+  /* title */
+  #title { position: absolute; left: 34px; top: 22px; display: flex; align-items: center; gap: 14px; }
+  #emblem { width: 58px; height: 58px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #ffe680, #f39c12 55%, #a35a00);
+    border: 3px solid #fff2b0; box-shadow: 0 3px 0 #6b3a00; display: grid; place-items: center; font-weight: 900; font-size: 28px;
+    color: #7a2b00; font-family: Impact, "Arial Black", sans-serif; }
+  #heading { font-family: Impact, "Arial Black", sans-serif; font-size: 50px; letter-spacing: 1px; line-height: 1;
+    background: linear-gradient(180deg, #fff6c0 0%, #ffd23f 45%, #f07c00 100%); -webkit-background-clip: text; background-clip: text;
+    color: transparent; -webkit-text-stroke: 2px #5a1d00; filter: drop-shadow(0 4px 0 #3a1200); }
+
+  /* left panel */
+  #left { position: absolute; left: 34px; top: 98px; width: 600px; bottom: 132px; display: flex; flex-direction: column; }
+  #tabs { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
+  .tab { white-space: nowrap; padding: 6px 18px; border-radius: 20px; background: linear-gradient(#c6b5f5, #7d64c8); color: #2b1660; font-weight: 800;
+    border: 2px solid #e7dcff; cursor: pointer; font-size: 15px; letter-spacing: 1px; }
+  .tab.on { background: var(--sel); color: #4a1a00; border-color: #fff1b0; }
+  .chip { font-size: 12px; padding: 2px 6px; border-radius: 4px; background: #3d2a74; border: 1px solid #8c79d6; color: #e0d6ff; }
+  #panel { flex: 1; background: var(--panel); border: 3px solid #b9a5ff; border-radius: 10px; overflow-y: auto; padding: 6px;
+    box-shadow: inset 0 0 0 2px rgba(0,0,0,0.3), 0 6px 0 rgba(0,0,0,0.25); }
+  #panel::-webkit-scrollbar { width: 10px; } #panel::-webkit-scrollbar-thumb { background: #f5c542; border-radius: 5px; }
+  .sec { margin: 8px 4px 4px; display: inline-block; padding: 2px 16px; background: var(--sel); color: #4a1a00; font-weight: 900;
+    border-radius: 12px; font-size: 13px; letter-spacing: 1px; }
+  .row { display: grid; grid-template-columns: 180px 1fr auto; align-items: center; gap: 10px; padding: 6px 12px; margin: 3px 0;
+    border-radius: 18px; background: var(--row); cursor: pointer; font-size: 15px; min-height: 34px; }
+  .row:hover, .row.focus { background: var(--sel); color: #3a1200; }
+  .row:hover .val, .row.focus .val { color: #3a1200; }
+  .row .val { color: #fff; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .sub { color: var(--dim); font-weight: 400; font-size: 12px; }
+  .row:hover .sub, .row.focus .sub { color: #6b3a00; }
+  .row.locked { opacity: 0.55; cursor: default; }
+  .row.locked:hover { background: var(--row); color: inherit; }
+  .btn { width: 24px; height: 24px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 13px; font-weight: 900;
+    background: #2a1a55; border: 2px solid #cdbdff; color: #fff; }
+  .row input[type=text] { width: 100%; background: rgba(0,0,0,0.25); border: 1px solid #a993ff; color: #fff; border-radius: 6px;
+    padding: 4px 8px; font: inherit; }
+  .row input[type=range] { width: 100%; accent-color: #f5b81c; }
+
+  /* right side */
+  #right { position: absolute; right: 40px; top: 30px; width: 560px; bottom: 132px; }
+  #saved { position: absolute; right: 0; top: 0; padding: 4px 18px; border-radius: 14px; background: var(--sel); color: #4a1a00;
+    font-weight: 900; border: 2px solid #fff3c0; font-size: 14px; }
+  #savedsub { position: absolute; right: 8px; top: 30px; color: #2b1660; font-weight: 700; font-size: 13px; }
+  #hero { position: absolute; left: 70px; top: 60px; width: 380px; height: 380px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(255,255,255,0.8), rgba(255,255,255,0) 70%); display: grid; place-items: center; }
+  #hero img { width: 300px; height: 300px; image-rendering: auto; filter: drop-shadow(0 8px 10px rgba(0,0,0,0.45)); }
+  #heroname { position: absolute; left: 30px; right: 30px; top: 445px; text-align: center; }
+  #heroname .n { font-family: Impact, "Arial Black", sans-serif; font-size: 34px; color: #fff; -webkit-text-stroke: 1.5px #3a1660;
+    text-shadow: 0 3px 0 #3a1660; }
+  #heroname .t { font-weight: 800; color: #3a1660; font-size: 16px; }
+  #movecard { position: absolute; left: 70px; right: 40px; top: 515px; background: var(--panel2); border: 2px solid var(--edge);
+    border-radius: 8px; padding: 6px 12px; font-size: 14px; display: none; }
+
+  /* bottom */
+  #tip { position: absolute; left: 34px; right: 34px; bottom: 50px; height: 62px; background: rgba(30, 18, 70, 0.92);
+    border: 2px solid #c7b4ff; border-radius: 8px; display: flex; align-items: center; gap: 14px; padding: 0 16px; }
+  #tipface { width: 46px; height: 46px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #9be0ff, #2c7bd6);
+    border: 3px solid #fff; display: grid; place-items: center; font-size: 24px; }
+  #tiptext { font-size: 18px; font-weight: 700; }
+  #help { position: absolute; right: 40px; bottom: 18px; display: flex; gap: 18px; font-size: 14px; color: #fff; text-shadow: 0 1px 2px #000; }
+  #help span b { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; margin-right: 5px;
+    background: #2a1a55; border: 2px solid #cdbdff; font-size: 11px; }
+
+  /* picker */
+  #pick { position: absolute; inset: 0; background: rgba(10, 5, 30, 0.72); display: none; }
+  #pickbox { position: absolute; left: 60px; right: 60px; top: 40px; bottom: 40px; background: var(--panel); border: 3px solid var(--edge);
+    border-radius: 12px; display: flex; flex-direction: column; padding: 12px 16px; }
+  #pickhead { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
+  #picktitle { font-family: Impact, "Arial Black", sans-serif; font-size: 30px; color: #ffd23f; -webkit-text-stroke: 1px #5a1d00; }
+  #pickfilter { flex: 1; background: rgba(0,0,0,0.3); border: 1px solid #a993ff; color: #fff; border-radius: 16px; padding: 6px 14px; font: inherit; }
+  #grid { flex: 1; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; align-content: start; }
+  .cell { background: linear-gradient(#5a3fa8, #2c1b62); border: 2px solid #8f7ae0; border-radius: 8px; cursor: pointer; text-align: center;
+    padding: 4px; font-size: 11px; line-height: 1.15; }
+  .cell img { width: 92px; height: 92px; display: block; margin: 0 auto 3px; background: rgba(255,255,255,0.08); border-radius: 6px; }
+  .cell:hover, .cell.focus { border-color: #ffe27a; background: linear-gradient(#ffcf4d, #e88a00); color: #3a1200; }
+  #picklist { flex: 1; overflow-y: auto; display: none; }
+  #toast { position: absolute; left: 50%; top: 18px; transform: translateX(-50%); background: #1c1040; border: 2px solid var(--edge);
+    border-radius: 10px; padding: 10px 18px; font-weight: 700; display: none; max-width: 900px; z-index: 9; white-space: pre-wrap; }
+  #toast.err { border-color: #ff6b6b; }
+  .wip { position: absolute; right: 30px; bottom: 120px; color: #ffd23f; font-weight: 900; font-size: 13px; text-shadow: 0 1px 2px #000; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="ground"></div>
+  <div id="title"><div id="emblem">Z</div><div id="heading">CUSTOM CHARACTER</div></div>
+  <div id="left">
+    <div id="tabs"></div>
+    <div id="panel"></div>
+  </div>
+  <div id="right">
+    <div id="saved">NOT SAVED</div><div id="savedsub"></div>
+    <div id="hero"><img id="heroimg" alt=""></div>
+    <div id="heroname"><div class="n" id="hn"></div><div class="t" id="ht"></div></div>
+    <div id="movecard"></div>
+  </div>
+  <div id="tip"><div id="tipface">★</div><div id="tiptext"></div></div>
+  <div id="help"></div>
+  <div class="frame"></div>
+  <div id="pick"><div id="pickbox">
+    <div id="pickhead"><div id="picktitle">CHOOSE</div><input id="pickfilter" placeholder="Search..."><span id="picknone" class="tab" style="display:none"></span><span class="chip">Esc: back</span></div>
+    <div id="grid"></div><div id="picklist"></div>
+  </div></div>
+  <div id="toast"></div>
+</div>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+let roster = [], fighters = [], spec = null, file = null, dirty = false, tab = "home";
+const SLOT_KEYS = ["blast1_1", "blast1_2", "blast2_1", "blast2_2", "ultimate"];
+const SLOT_LABEL = {blast1_1: "Blast 1 (1)", blast1_2: "Blast 1 (2)", blast2_1: "Blast 2 (1)", blast2_2: "Blast 2 (2)", ultimate: "Ultimate"};
+const SLOT_KIND = {blast1_1: ["blast1_1", "blast1_2"], blast1_2: ["blast1_1", "blast1_2"], blast2_1: ["blast2_1", "blast2_2"],
+                   blast2_2: ["blast2_1", "blast2_2"], ultimate: ["ultimate"]};
+
+function fit() {
+  const s = Math.min(innerWidth / 1280, innerHeight / 720);
+  $("stage").style.transform = `scale(${s}) translate(-50%, -50%)`;
+  $("stage").style.left = "50%"; $("stage").style.top = "50%";
+  $("stage").style.transform = `translate(-50%, -50%) scale(${s})`; $("stage").style.transformOrigin = "50% 50%";
+}
+addEventListener("resize", fit);
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+function toast(text, err) {
+  const t = $("toast"); t.textContent = text; t.className = err ? "err" : ""; t.style.display = "block";
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = "none", err ? 7000 : 4500);
+}
+function tip(text) { $("tiptext").textContent = text; }
+function help(items) { $("help").innerHTML = items.map(([b, t]) => `<span><b>${b}</b>${t}</span>`).join(""); }
+function chara(r) { return r ? roster[charaId(r.chara)] : null; }
+function charaId(name) {
+  if (typeof name === "number") return name;
+  const i = roster.findIndex(c => c.name.toLowerCase() === String(name).toLowerCase());
+  return i < 0 ? 0 : i;
+}
+function nm(r, dflt) { const c = chara(r); return c ? c.name + (r.costume > 1 ? ` (costume ${r.costume})` : "") : dflt; }
+function face(id) { return `/face/${id}.png`; }
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c])); }
+function touch() { dirty = true; $("saved").textContent = "NOT SAVED"; hero(); }
+function look() { return spec.look || (spec.costumes && spec.costumes[0]) || spec.base || {chara: 0}; }
+function moveset() { return spec.moveset || look(); }
+function moveOf(key) {
+  const m = (spec.moves || {})[key];
+  const who = m ? m : moveset(), slot = m && m.slot ? m.slot : key;
+  const c = chara(who); const name = c ? (c.moves[SLOT_KEYS.indexOf(slot)] || "?") : "?";
+  return {who, slot, name, shown: (spec.names || {})[key] || name};
+}
+
+function hero() {
+  if (!spec) return;
+  const c = chara(spec.portrait || look());
+  $("heroimg").src = c ? face(c.id) : "";
+  $("hn").textContent = spec.name || "New Warrior";
+  $("ht").textContent = spec.title || "";
+  $("heading").textContent = (spec.name || "NEW WARRIOR").toUpperCase().slice(0, 22);
+}
+
+// -------------------------------------------------------------------------------------------- pickers
+let pickDone = null;
+function openPick(title, onPick, opts = {}) {
+  $("picktitle").textContent = title; $("pick").style.display = "block"; $("pickfilter").value = "";
+  $("grid").style.display = "grid"; $("picklist").style.display = "none";
+  pickDone = onPick; drawGrid(opts); $("pickfilter").oninput = () => drawGrid(opts); $("pickfilter").focus();
+}
+function closePick() { $("pick").style.display = "none"; pickDone = null; }
+function drawGrid(opts) {
+  const q = $("pickfilter").value.toLowerCase();
+  const items = [];
+  const pn = $("picknone");
+  pn.style.display = opts.none ? "inline-block" : "none"; pn.textContent = opts.none || "";
+  pn.onclick = () => { const f = pickDone; closePick(); f(null); };
+  for (const c of roster) {
+    if (q && !c.name.toLowerCase().includes(q)) continue;
+    if (!c.costumes.length) continue;
+    items.push(`<div class="cell" data-id="${c.id}"><img loading="lazy" src="${face(c.id)}" alt="">${esc(c.name)}</div>`);
+  }
+  $("grid").innerHTML = items.join("");
+  for (const el of $("grid").children) el.onclick = () => {
+    const id = +el.dataset.id;
+    const c = roster[id];
+    if (opts.moves) return listMoves(c, opts.moves);
+    if (opts.costume && c.costumes.length > 1) return listCostumes(c);
+    const f = pickDone; closePick(); f({chara: c.name});
+  };
+}
+function listCostumes(c) {
+  $("grid").style.display = "none"; const L = $("picklist"); L.style.display = "block";
+  L.innerHTML = `<div class="sec">${esc(c.name)}: COSTUME</div>` + c.costumes.map(k =>
+    `<div class="row" data-k="${k}"><span>Costume ${k}</span><span class="val"></span><span class="btn">✕</span></div>`).join("");
+  for (const el of L.querySelectorAll(".row")) el.onclick = () => { const f = pickDone; closePick(); f({chara: c.name, costume: +el.dataset.k}); };
+}
+function listMoves(c, kinds) {
+  $("grid").style.display = "none"; const L = $("picklist"); L.style.display = "block";
+  L.innerHTML = `<div class="sec">${esc(c.name)}: WHICH TECHNIQUE?</div>` + kinds.map(k =>
+    `<div class="row" data-k="${k}"><span>${SLOT_LABEL[k]}</span><span class="val">${esc(c.moves[SLOT_KEYS.indexOf(k)] || "-")}</span><span class="btn">✕</span></div>`).join("");
+  for (const el of L.querySelectorAll(".row")) el.onclick = () => { const f = pickDone; closePick(); f({chara: c.name, slot: el.dataset.k}); };
+}
+addEventListener("keydown", e => {
+  if (e.key === "Escape" && $("pick").style.display === "block") { closePick(); e.preventDefault(); }
+  if ((e.key === "Enter" && e.ctrlKey) || (e.key === "s" && e.ctrlKey)) { e.preventDefault(); if (spec) save(); }
+});
+
+// -------------------------------------------------------------------------------------------- rows
+function row(label, value, sub, onclick, extra = "") {
+  return {label, value, sub, onclick, extra};
+}
+function render(rows) {
+  const P = $("panel"); P.innerHTML = "";
+  for (const r of rows) {
+    if (r.sec) { const d = document.createElement("div"); d.className = "sec"; d.textContent = r.sec; P.appendChild(d); continue; }
+    const d = document.createElement("div"); d.className = "row" + (r.locked ? " locked" : "");
+    d.innerHTML = `<span>${esc(r.label)}</span><span class="val">${r.html || esc(r.value || "")}${r.sub ? ` <span class="sub">${esc(r.sub)}</span>` : ""}</span>${r.extra || ""}`;
+    if (r.onclick) d.onclick = ev => { if (ev.target.tagName !== "INPUT") r.onclick(ev, d); };
+    if (r.tip) d.onmouseenter = () => tip(r.tip);
+    P.appendChild(d);
+    if (r.after) r.after(d);
+  }
+}
+function tabs(list) {
+  $("tabs").innerHTML = list.map(([k, t]) => `<div class="tab${tab === k ? " on" : ""}" data-k="${k}">${t}</div>`).join("") +
+    "";
+  for (const el of $("tabs").querySelectorAll(".tab")) el.onclick = () => { tab = el.dataset.k; draw(); };
+}
+const EDIT_TABS = [["warrior", "WARRIOR"], ["parts", "PARTS"], ["moves", "MOVES"], ["forms", "FORMS"], ["finish", "SAVE & PLAY"]];
+
+function draw() {
+  $("movecard").style.display = "none";
+  if (tab === "home" || !spec) return drawHome();
+  tabs(EDIT_TABS); hero();
+  ({warrior: drawWarrior, parts: drawParts, moves: drawMoves, forms: drawForms, finish: drawFinish})[tab]();
+}
+
+function drawHome() {
+  tab = "home"; $("tabs").innerHTML = `<div class="tab on">MY FIGHTERS</div>`;
+  $("heading").textContent = "CUSTOM CHARACTER"; $("hn").textContent = ""; $("ht").textContent = ""; $("heroimg").src = face(3);
+  $("saved").textContent = `${fighters.length} SAVED`; $("savedsub").textContent = "";
+  const rows = [{sec: "NEW"}, {label: "New Warrior", value: "Start from any fighter in the roster", onclick: newFighter,
+    tip: "Pick a body to start from. Everything else can be changed after.", extra: `<span class="btn">✕</span>`}];
+  if (fighters.length) rows.push({sec: "MY FIGHTERS"});
+  for (const f of fighters) {
+    if (f.error) { rows.push({label: f.file, value: "unreadable: " + f.error, locked: true}); continue; }
+    rows.push({label: f.spec.name || f.file, value: nm(f.spec.look || (f.spec.costumes || [])[0] || f.spec.base, ""), sub: f.spec.title || "",
+      onclick: () => { spec = JSON.parse(JSON.stringify(f.spec)); file = f.file; dirty = false; tab = "warrior"; $("saved").textContent = "SAVED"; draw(); },
+      tip: "Edit this fighter.", extra: `<span class="btn">✕</span>`});
+  }
+  render(rows);
+  tip("Make your own warrior! Mix the looks, moves and voices of the whole roster.");
+  help([["✕", "Choose"], ["Esc", "Back"]]);
+}
+
+function newFighter() {
+  openPick("START FROM WHICH BODY?", r => {
+    spec = {name: "", title: "", base: r, look: r, moveset: {chara: r.chara}, slot: {chara: r.chara, costume: r.costume || 1}};
+    file = null; dirty = true; tab = "warrior"; draw();
+    tip("Every great warrior needs a great name! Start with that.");
+  }, {costume: true});
+}
+
+function numRow(label, key, min, max, step, fmt, tipText) {
+  const v = spec[key];
+  return {label, html: `<input type="range" min="${min}" max="${max}" step="${step}" value="${v === undefined ? "" : v}">`,
+    extra: `<span class="sub" style="min-width:110px;text-align:right">${v === undefined ? "base's own" : fmt(v)}</span>`,
+    tip: tipText, after: d => {
+      const inp = d.querySelector("input");
+      if (v === undefined) inp.value = min;
+      inp.oninput = () => { spec[key] = +inp.value; d.querySelector(".sub:last-child").textContent = fmt(+inp.value); touch(); };
+      d.ondblclick = () => { delete spec[key]; touch(); draw(); };
+    }};
+}
+function textRow(label, key, tipText, max) {
+  return {label, html: `<input type="text" maxlength="${max}" value="${esc(spec[key] || "")}">`, tip: tipText,
+    after: d => { const i = d.querySelector("input"); i.oninput = () => { spec[key] = i.value; touch(); }; }};
+}
+function drawWarrior() {
+  render([
+    {sec: "WARRIOR"},
+    textRow("Name", "name", "Every great warrior needs a great name!", 63),
+    textRow("Title", "title", "The line under the name on the roster: \"Super Saiyan\", \"Ultimate Form\"...", 95),
+    {label: "Base", value: nm(spec.base, "the look's"), sub: "AI and roster tables", tip: "The computer plays your warrior like this character.",
+      onclick: () => openPick("WHOSE FIGHTING SPIRIT?", r => { spec.base = r; touch(); draw(); }), extra: `<span class="btn">✕</span>`},
+    {sec: "STATS (own roster cell only)"},
+    numRow("Health", "health", 10000, 150000, 5000, v => (v / 10000).toFixed(1) + " bars", "Health: 10000 is one bar. Double-click for the base's own."),
+    numRow("Ki at start", "ki", 0, 100000, 5000, v => Math.round(v / 1000) + "%", "Ki at the start of a fight. Double-click for the base's own."),
+    numRow("Blast stocks", "blast", 0, 7, 1, v => v + " stocks", "How many blast stocks. Double-click for the base's own."),
+    {sec: "VOICE & FACE"},
+    {label: "Voice", value: nm(spec.voice, "the base's"), tip: "Shouts, callouts, intros and wins, with the mouth moving to match.",
+      onclick: () => openPick("WHOSE VOICE?", r => { if (r) spec.voice = r; else delete spec.voice; touch(); draw(); }, {none: "Base's own"}), extra: `<span class="btn">✕</span>`},
+    {label: "Portrait", value: nm(spec.portrait, "the base's"), tip: "The big picture in the menus and the team picture in fights.",
+      onclick: () => openPick("WHOSE PORTRAIT?", r => { if (r) spec.portrait = r; else delete spec.portrait; touch(); draw(); }, {none: "Base's own"}), extra: `<span class="btn">✕</span>`},
+  ]);
+  tip("Name your warrior, then pick a base, stats, voice and face.");
+  help([["✕", "Change"], ["▢", "Double-click: default"], ["Ctrl+S", "Save"]]);
+}
+
+function drawParts() {
+  const cos = spec.costumes || [look()];
+  const rows = [{sec: "WHOLE LOOK"}];
+  for (let i = 0; i < 4; i++) {
+    const r = cos[i];
+    rows.push({label: `Costume ${i + 1}`, value: r ? nm(r) : "none", sub: i === 0 ? "the look of your warrior" : "",
+      tip: "Body, hair and clothes of a whole character. A warrior can have up to 4 costumes.",
+      onclick: () => openPick(`COSTUME ${i + 1}: WHOSE LOOK?`, p => {
+        const list = (spec.costumes || [look()]).slice();
+        if (p) list[i] = p; else list.splice(i, 1);
+        const clean = list.filter(Boolean);
+        if (!clean.length) return;
+        spec.costumes = clean; spec.look = clean[0]; touch(); draw();
+      }, {costume: true, none: i ? "No costume" : undefined}), extra: `<span class="btn">✕</span>`});
+  }
+  rows.push({sec: "MIX PIECES"});
+  for (const p of ["Hair", "Head", "Face", "Torso", "Arms", "Legs", "Gloves & boots"])
+    rows.push({label: p, value: "The body's own", sub: "coming: needs the model format worked out", locked: true,
+      tip: "Mixing single pieces between characters is the next big step: it needs the 3D model format decoded."});
+  rows.push({sec: "COLOURS"});
+  rows.push({label: "Recolour", value: "Original", sub: "coming: palette editing", locked: true, tip: "Recolouring through the texture palettes is planned."});
+  render(rows);
+  tip("Whose look? Pick the body, hair and clothes of any character.");
+  help([["✕", "Change"], ["Esc", "Back"]]);
+}
+
+function donorRow(label, key, tipText) {
+  return {label, value: nm(spec[key], "the moveset's"), tip: tipText,
+    onclick: () => openPick(`${label.toUpperCase()}: FROM WHOM?`, r => { if (r) spec[key] = {chara: r.chara}; else delete spec[key]; touch(); draw(); },
+      {none: "Moveset's own"}), extra: `<span class="btn">✕</span>`};
+}
+function drawMoves() {
+  const rows = [{sec: "FIGHTING"},
+    {label: "Moveset", value: nm(moveset()), sub: "everything below starts from it", tip: "Stance, animations, stats and the techniques you do not change.",
+      onclick: () => openPick("WHOSE MOVESET?", r => { spec.moveset = {chara: r.chara}; touch(); draw(); }), extra: `<span class="btn">✕</span>`},
+    donorRow("Melee & rush", "melee", "Combos, rushes and finishers."),
+    donorRow("Ki blasts", "ki_blasts", "The ki blasts and charged shots.")];
+  const groups = [["BLAST 1", ["blast1_1", "blast1_2"]], ["BLAST 2", ["blast2_1", "blast2_2"]], ["ULTIMATE", ["ultimate"]]];
+  for (const [sec, keys] of groups) {
+    rows.push({sec});
+    for (const k of keys) {
+      const m = moveOf(k);
+      const renamed = (spec.names || {})[k];
+      rows.push({label: SLOT_LABEL[k], value: m.shown, sub: renamed ? `(${m.name}, ${nm(m.who)})` : `from ${nm(m.who)}`,
+        tip: "Whose technique should your warrior learn? Triangle (the ✎ button) renames it.",
+        onclick: (ev, d) => {
+          if (ev.target.classList.contains("ren")) return rename(k, m);
+          openPick(`${SLOT_LABEL[k].toUpperCase()}: WHOSE TECHNIQUE?`, r => {
+            spec.moves = spec.moves || {};
+            if (r) spec.moves[k] = r; else delete spec.moves[k];
+            touch(); draw(); toast(r ? `${roster[charaId(r.chara)].moves[SLOT_KEYS.indexOf(r.slot)]}! Good choice!` : "Back to the moveset's own.");
+          }, {moves: SLOT_KIND[k], none: "Moveset's own"});
+        },
+        extra: `<span class="btn ren" title="Rename">✎</span>`,
+        after: d => d.onmouseenter = () => { tip("Whose technique should your warrior learn? ✎ renames it."); card(m); }});
+    }
+  }
+  render(rows);
+  tip("Learn techniques from the whole roster!");
+  help([["✕", "Pick technique"], ["✎", "Rename"], ["Ctrl+S", "Save"]]);
+}
+function card(m) {
+  const c = $("movecard"); c.style.display = "block";
+  c.innerHTML = `<b>${esc(m.shown)}</b><br><span class="sub">taken from ${esc(nm(m.who))} (${esc(SLOT_LABEL[m.slot])})</span>`;
+}
+function rename(k, m) {
+  $("picktitle").textContent = "TECHNIQUE NAME"; $("pick").style.display = "block"; $("grid").style.display = "none";
+  $("picknone").style.display = "none";
+  const L = $("picklist"); L.style.display = "block";
+  L.innerHTML = `<div class="sec">NAME YOUR TECHNIQUE! SHOUT IT LOUD!</div>
+    <div class="row"><span>${esc(SLOT_LABEL[k])}</span><input id="renin" type="text" maxlength="40" value="${esc((spec.names || {})[k] || "")}" placeholder="${esc(m.name)}"><span class="btn">✕</span></div>
+    <div class="row" id="renok"><span>OK</span><span class="val">Keep this name (empty: its own, ${esc(m.name)})</span><span class="btn">✕</span></div>`;
+  const i = $("renin"); i.focus();
+  const ok = () => { spec.names = spec.names || {}; if (i.value.trim()) spec.names[k] = i.value.trim(); else delete spec.names[k];
+    closePick(); touch(); draw(); };
+  $("renok").onclick = ok; i.onkeydown = e => { if (e.key === "Enter") ok(); };
+}
+
+function drawForms() {
+  const dirs = [["up", "R3 + Up"], ["left", "R3 + Left"], ["right", "R3 + Right"], ["down", "R3 + Down (back)"]];
+  const rows = [{sec: "TRANSFORMATIONS"}];
+  for (const [d, label] of dirs) {
+    const t = (spec.forms || {})[d];
+    const shown = !t ? "none" : t.startsWith("disc:") ? roster[+t.slice(5)].name : (fighters.find(f => f.file === t) || {spec: {name: t}}).spec.name;
+    rows.push({label, value: shown, sub: t && d !== "down" ? `costs ${(spec.form_costs || {})[d] || 0} blast stocks` : "",
+      tip: "Transform into another of your warriors, or into a roster character. Needs a build with character packages.",
+      onclick: () => pickForm(d), extra: `<span class="btn">✕</span>`});
+    if (t && d !== "down") rows.push(Object.assign(numRowCost(d), {}));
+  }
+  render(rows);
+  tip("Power up! Each direction can lead to another warrior you made.");
+  help([["✕", "Change"], ["Esc", "Back"]]);
+}
+function numRowCost(d) {
+  const v = (spec.form_costs || {})[d] || 0;
+  return {label: "   cost", html: `<input type="range" min="0" max="7" step="1" value="${v}">`, extra: `<span class="sub">${v}</span>`,
+    after: el => { const i = el.querySelector("input"); i.oninput = () => { spec.form_costs = spec.form_costs || {}; spec.form_costs[d] = +i.value;
+      el.querySelector(".sub").textContent = i.value; touch(); }; }};
+}
+function pickForm(d) {
+  $("picktitle").textContent = "TRANSFORM INTO..."; $("pick").style.display = "block"; $("grid").style.display = "none";
+  const L = $("picklist"); L.style.display = "block";
+  const mine = fighters.filter(f => f.file !== file && f.spec);
+  L.innerHTML = `<div class="sec">MY WARRIORS</div>` + (mine.length ? mine.map(f => `<div class="row" data-f="${esc(f.file)}"><span>${esc(f.spec.name)}</span><span class="val">${esc(f.spec.title || "")}</span><span class="btn">✕</span></div>`).join("")
+    : `<div class="row locked"><span>none yet</span><span class="val">save another warrior first</span></div>`) +
+    `<div class="sec">OTHER</div><div class="row" data-disc="1"><span>A roster character</span><span class="val">pick one</span><span class="btn">✕</span></div>
+     <div class="row" data-none="1"><span>Nothing</span><span class="val">no transformation this way</span><span class="btn">✕</span></div>`;
+  for (const el of L.querySelectorAll(".row:not(.locked)")) el.onclick = () => {
+    spec.forms = spec.forms || {};
+    if (el.dataset.none) { delete spec.forms[d]; closePick(); touch(); draw(); return; }
+    if (el.dataset.disc) { closePick(); openPick("TRANSFORM INTO WHOM?", r => { spec.forms[d] = "disc:" + charaId(r.chara); touch(); draw(); }); return; }
+    spec.forms[d] = el.dataset.f; closePick(); touch(); draw();
+  };
+}
+
+function drawFinish() {
+  render([
+    {sec: "SAVE"},
+    {label: "Save", value: file ? `custom_fighters/${file}` : "not saved yet", onclick: save, tip: "Keep your warrior.", extra: `<span class="btn">✕</span>`},
+    {sec: "PLAY NOW (this game)"},
+    {label: "Takes the place of", value: nm(spec.slot, "?"), sub: "while installed", tip: "Your warrior goes into this character's place in the roster.",
+      onclick: () => openPick("WHOSE PLACE?", r => { spec.slot = {chara: r.chara, costume: r.costume || 1}; touch(); draw(); }, {costume: true}), extra: `<span class="btn">✕</span>`},
+    {label: "Install", value: "Put my warrior in the game", onclick: () => act("install"), tip: "Then restart the game and pick that character and costume.", extra: `<span class="btn">✕</span>`},
+    {label: "Uninstall", value: "Give the place back", onclick: () => act("uninstall"), tip: "The character is the disc's again.", extra: `<span class="btn">✕</span>`},
+    {sec: "OWN ROSTER CELL (character packages build)"},
+    {label: "Build package", value: "characters/" + (spec.name || "..."), onclick: () => act("package"),
+      tip: "Its own cell on the roster, with its transformations. Needs the build of the custom-character branch.", extra: `<span class="btn">✕</span>`},
+    {sec: "MORE"},
+    {label: "Summary", value: "What your warrior is made of", onclick: summary, extra: `<span class="btn">✕</span>`},
+    {label: "Delete", value: "Delete this warrior's file", onclick: del, extra: `<span class="btn">✕</span>`},
+    {label: "My Fighters", value: "Back to the list", onclick: () => { if (!dirty || confirm("Leave without saving?")) { tab = "home"; draw(); } }, extra: `<span class="btn">✕</span>`},
+  ]);
+  tip("Name your fighter. Save it. Then play!");
+  help([["✕", "Choose"], ["Ctrl+S", "Save"]]);
+}
+async function save() {
+  try {
+    const r = await api("/api/save", {file, spec}); file = r.file; dirty = false; $("saved").textContent = "SAVED";
+    fighters = await api("/api/fighters"); toast("Saved! " + file);
+  } catch (e) { toast(e.message, true); }
+}
+async function act(what) {
+  if (dirty || !file) await save();
+  if (dirty || !file) return;
+  toast(what === "package" ? "Building the package..." : "Working...");
+  try { const r = await api("/api/" + what, {file}); toast(r.text); } catch (e) { toast(e.message, true); }
+}
+async function summary() { try { const r = await api("/api/describe", {spec}); toast(r.text); } catch (e) { toast(e.message, true); } }
+async function del() {
+  if (!file || !confirm("Delete this warrior?")) return;
+  await api("/api/delete", {file}); fighters = await api("/api/fighters"); spec = null; file = null; tab = "home"; draw();
+}
+
+(async function () {
+  fit(); tip("Reading the roster from your disc...");
+  try { roster = await api("/api/roster"); fighters = await api("/api/fighters"); draw(); }
+  catch (e) { toast(e.message, true); }
+})();
+</script>
+<div class="wip" style="position:fixed"></div>
+</body>
+</html>

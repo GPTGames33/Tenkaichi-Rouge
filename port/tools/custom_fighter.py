@@ -329,6 +329,8 @@ def text_blocks(raw):
     head, blocks, tail, cur = [], [], [], None
     for i, ln in enumerate(lines):
         body = ln[2:] if len(ln) >= 2 else ""
+        if body.startswith("&"):  # an unlock condition: '&' and three digits
+            body = body[4:]
         if body.startswith("*"):
             cur = [ln]
             blocks.append(cur)
@@ -349,8 +351,9 @@ def join_text(head, blocks, tail):
 
 
 def rename_block(block, name):
-    """The '*' line: two prefix characters, '*', three digits, then the name."""
-    m = re.match(r"^(..\*\d\d\d)", block[0])
+    """The '*' line: two prefix characters, an optional unlock condition ('&' and three digits), '*', three digits
+    (the cost shown), then the name."""
+    m = re.match(r"^(..(?:&\d\d\d)?\*\d\d\d)", block[0])
     if m is None:
         raise Fail(f"unexpected move line {block[0]!r}")
     return [m.group(1) + name] + block[1:]
@@ -359,7 +362,7 @@ def rename_block(block, name):
 def move_names(pack):
     """The five move names in English (entry 0x2D)."""
     _, blocks, _ = text_blocks(pack[0x2D])
-    return [re.sub(r"^..\*\d\d\d", "", b[0]) for b in blocks]
+    return [re.sub(r"^..(?:&\d\d\d)?\*\d\d\d", "", b[0]) for b in blocks]
 
 
 # --------------------------------------------------------------------------------------------------- the builder
