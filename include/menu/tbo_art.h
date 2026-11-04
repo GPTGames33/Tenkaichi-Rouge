@@ -55,7 +55,8 @@
     X(MM_LOCK, "mm_lock") \
     X(MM_PIP, "mm_pip") \
     X(MM_PIP_OFF, "mm_pip_off") \
-    X(MM_BG_DUSK, "mm_bg_dusk")     /* the character select's mod grid */
+    X(MM_BG_DUSK, "mm_bg_dusk")     /* the character select's mod grid */ \
+    X(TBO_RADAR, "radar")                   /* the Dragon Radar of the search: its frames, 11 a row (src/menu/port_tbo.c Tb_Radar) */
 
 #define TBO_ART_ENUM(id, name) id,
 enum { TBO_ART_LIST(TBO_ART_ENUM) TBO_ART_COUNT };
@@ -71,12 +72,9 @@ enum { TBO_ART_LIST(TBO_ART_ENUM) TBO_ART_COUNT };
 #define TBO_TEXT_BASE 0x100
 #define TBO_TEXT_SLOTS 256
 
-/* Optional artwork for the first-run language selector, copied into game-text/assets/. */
+/* Native artwork for the first-run language selector, decoded from the player's EU disc. */
 #define TBO_LANG_BG 0x200
 #define TBO_LANG_ARROW_LEFT 0x201
 #define TBO_LANG_ARROW_RIGHT 0x202
-#define TBO_LANG_BG_FILE "5c759e1f4a26d5c7-daf6036d928dd6c7-00002613.png"
-#define TBO_LANG_ARROW_LEFT_FILE "563a01a16b7a01fc-46b3733838fe48ce-00001553.png"
-#define TBO_LANG_ARROW_RIGHT_FILE "facc78c71c9e6bf4-46b3733838fe48ce-00001553.png"
 
 #endif
