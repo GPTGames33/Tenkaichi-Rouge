@@ -299,6 +299,15 @@ def texture_colours(model_pack, limit=8):
     return out
 
 
+def node_keys(opts):
+    """Workshop options with their per-node keys as numbers (JSON keeps them as text)."""
+    if not opts or "nodes" not in opts:
+        return opts
+    out = dict(opts)
+    out["nodes"] = {(int(k, 0) if isinstance(k, str) else k): v for k, v in opts["nodes"].items()}
+    return out
+
+
 def mix_module():
     here = pathlib.Path(__file__).resolve().parent / "creator"
     if str(here) not in sys.path:
@@ -677,8 +686,13 @@ class Fighter:
                 raise Fail(f"unknown piece {k!r}: one of {', '.join(order)}")
         # a piece may be one donor or a list of them, layered in order (two hairs: both sets of locks)
         # ({"chara": ..., "add": true}: that donor's hair locks / capes are added on top, the model's own kept)
-        self.parts = [(k + ("+" if isinstance(v, dict) and v.get("add") else ""), ref(v)) for k in order if parts.get(k)
+        self.parts = [(k + ("+" if isinstance(v, dict) and v.get("add") else ""), ref(v),
+                       (v.get("adjust") if isinstance(v, dict) else None) or {})
+                      for k in order if parts.get(k)
                       for v in (parts[k] if isinstance(parts[k], list) else [parts[k]]) if v]
+        self.body = node_keys(spec.get("body") or {})
+        self.parts = [(p_, w, node_keys(o)) for p_, w, o in self.parts]
+        self.notes, self.mix_notes = [], []
         self.colours = []
         for c in spec.get("colours", []):
             try:
@@ -706,13 +720,8 @@ class Fighter:
         """One model (a costume, or its damaged version) with the fighter's moves, names and voice."""
         d = self.disc
         m = d.model(*costume, damaged)
-        if self.parts:  # pieces of other characters' models (port/tools/creator/mix.py)
-            mix = mix_module()
-            sel = [(d.model(*who, damaged).bytes(), piece) for piece, who in self.parts]
-            try:
-                m = Pack(mix.mix(m.bytes(), sel), 252)
-            except mix.MixError as e:
-                raise Fail(f"the pieces do not fit together: {e}")
+        if self.parts or self.body:  # pieces of other characters' models, workshop (port/tools/creator/mix.py)
+            m = self.mixed(m, damaged)
         if self.colours:
             m[0xC] = recolour(m[0xC], self.colours)
         ms = d.model(*self.moveset, damaged)
@@ -754,6 +763,38 @@ class Fighter:
             for e in LIP_ENTRIES:
                 m[e] = v[e]
         return m
+
+    def mixed(self, m, damaged):
+        """The look with its pieces and workshop changes. A layer that cannot be put on is left out (with a
+        note in self.notes), so a warrior can always be built."""
+        mix = mix_module()
+        d = self.disc
+        sel = []
+        for piece, who, opts in self.parts:
+            try:
+                sel.append((d.model(*who, damaged).bytes(), piece, opts))
+            except Fail as e:
+                self.note(f"{piece} from {name(who[0])} left out: {e}")
+        while True:
+            kw = {}
+            if self.body:
+                kw["adjust"] = self.body
+            try:
+                try:
+                    out = mix.mix(m.bytes(), sel, report=self.mix_notes, **kw)
+                except (TypeError, ValueError):  # (a mixer without opts / adjust: the plain selections)
+                    out = mix.mix(m.bytes(), [(b, p) for b, p, _ in sel], report=self.mix_notes)
+                return Pack(out, 252)
+            except mix.MixError as e:
+                if not sel:
+                    self.note(f"the body's workshop changes left out: {e}")
+                    return m
+                dropped = sel.pop()
+                self.note(f"one {dropped[1].rstrip('+')} layer left out: {e}")
+
+    def note(self, text):
+        if text not in self.notes:
+            self.notes.append(text)
 
     def anims(self):
         a = self.disc.anims(self.moveset[0])
@@ -812,6 +853,9 @@ def load_spec(path):
 def folder_name(name):
     s = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", name).strip().rstrip(".")
     return s[:63] or "Custom Fighter"
+
+
+BUILD_NOTES = []  # what the last builds had to change or leave out (shown by the creator)
 
 
 def write_package(disc, spec_path, chars_dir, done):
@@ -885,6 +929,8 @@ def write_package(disc, spec_path, chars_dir, done):
     for direction, cost in spec.get("form_costs", {}).items():
         manifest.append(f"{direction}_cost={int(cost)}")
     (out / "character.txt").write_text("\n".join(manifest) + "\n", encoding="utf-8")
+    for n in f.notes + f.mix_notes:
+        BUILD_NOTES.append(f"{spec['name']}: {n}")
     print(f.describe())
     print(f"  -> characters/{folder}/")
     return folder

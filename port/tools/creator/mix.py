@@ -6,6 +6,15 @@
                                      [--render front.png] [--check]
 
     import mix; mix.pieces(pack_bytes); new_pack = mix.mix(base_pack, [(donor_pack, "hair"), ...])
+    mix.mix(base, [(d1, "hair"), (d2, "hair+", {"size": 1.1, "nodes": {0x52: {"turn": [0, 0, 20]}}})],
+            report=[], adjust={"build": {"torso": 120}, 0x4F: {"shown": False}}, force=True, declip=True)
+    mix.layer_nodes(base, selections), mix.base_nodes(base): the nodes a UI can list for the workshop
+
+force (default): budget overflows degrade instead of refusing (palettes shared / merged, cel-shading ramps mapped
+to the nearest, donor textures halved, smallest extras left out), every step noted in `report`. declip (default):
+hair from another head is scaled to the base's face width, centred on it and pushed out of a per-direction radius
+map of the head (later layers further out); swapped limbs / torso get their cross-section matched to the base's at
+both ends of each bone. Workshop edits (see mix()) move meshes; extras' joints follow, core joints never move.
 
 What the game reads, and so what a mix has to keep consistent (from the decompilation):
 
@@ -41,7 +50,7 @@ Mixing rules (the safe subset):
 * Donor textures are appended to the base's material textures, ramp CLUTs merged (identical ones shared), every TEX0
   in every chain (and the seam section) repointed; the GS budget is checked and the mix refused if it does not fit.
 """
-import argparse, pathlib, struct, sys
+import argparse, math, pathlib, struct, sys
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -314,7 +323,12 @@ def rewrite_chain(chain, texmap, rampmap, dA=None, dB=None):
         key = (lo & 0x3FFF, (hi >> 5) & 0x3FFF)
         if key not in texmap:
             raise MixError("chain uses a texture that is not in its texture file (TBP %d CBP %d)" % key)
-        tbp, cbp = texmap[key]
+        v = texmap[key]
+        tbp, cbp = v[0], v[1]
+        if len(v) > 2 and v[2] is not None:   # a resized texture: its TBW / PSM / TW / TH (bits 14..33)
+            bits = v[2]
+            lo = (lo & 0x3FFF) | (bits & 0xFFFFC000)
+            hi = (hi & ~0x3) | ((bits >> 32) & 0x3)
         struct.pack_into("<II", buf, pos + 20, (lo & ~0x3FFF) | tbp, (hi & 0xFFF8001F) | (cbp << 5))
         r = (hi2 >> 5) & 0x3FFF
         if r not in rampmap:
@@ -467,111 +481,551 @@ def pieces(pack_bytes):
 
 
 # ----------------------------------------------------------------------------------------------------- mix
-def mix(base_pack, selections, report=None):
-    """A new pack: the base with the chosen pieces from donors. selections: [(donor_pack, piece_name), ...]; later
-    selections win where they overlap ("head" then "hair" = one donor's head with another's hair). report (a list)
-    gets notes. Raises MixError when the result would not be safe (GS budget, ids, slots)."""
-    notes = report if report is not None else []
-    base = Source(base_pack, "base")
-    donors = {}
-    core_src = {}          # core node -> Source
-    extra_src = {}         # region of extras -> Source
-    extra_add = []         # (region, Source): a donor's extras added on top, the model's own kept ("hair+")
-    for k, (pack, piece) in enumerate(selections):
+NODE_NAMES = {
+    0x00: "Root", 0x01: "Root 2", 0x02: "Hips root", 0x03: "Pelvis", 0x04: "Tail 1", 0x05: "Tail 2", 0x06: "Tail 3",
+    0x07: "Tail 4", 0x08: "Right hip", 0x09: "Right thigh", 0x0A: "Right shin", 0x0B: "Right foot", 0x0C: "Left hip",
+    0x0D: "Left thigh", 0x0E: "Left shin", 0x0F: "Left foot", 0x10: "Belly", 0x11: "Chest", 0x12: "Right chest",
+    0x13: "Right upper arm", 0x14: "Right forearm", 0x15: "Right hand", 0x16: "Right thumb", 0x17: "Right finger 1a",
+    0x18: "Right finger 1b", 0x19: "Right finger 2a", 0x1A: "Right finger 2b", 0x1B: "Right finger 3a",
+    0x1C: "Right finger 3b", 0x1D: "Right finger 4a", 0x1E: "Right finger 4b", 0x1F: "Right hand tip",
+    0x20: "Left chest", 0x21: "Left upper arm", 0x22: "Left forearm", 0x23: "Left hand", 0x24: "Left thumb",
+    0x25: "Left finger 1a", 0x26: "Left finger 1b", 0x27: "Left finger 2a", 0x28: "Left finger 2b",
+    0x29: "Left finger 3a", 0x2A: "Left finger 3b", 0x2B: "Left finger 4a", 0x2C: "Left finger 4b",
+    0x2D: "Left hand tip", 0x2E: "Neck", 0x2F: "Head", 0x30: "Face", 0x31: "Jaw", 0x32: "Head top", 0x33: "Head 2",
+    0x40: "Accessory (hand)", 0x41: "Accessory 2", 0x42: "Accessory (back)", 0x43: "Accessory 4", 0x6F: "Halo",
+    0x76: "Hat / extra",
+}
+EXTRA_WORD = {"hair": "Strand", "torso": "Cloth", "tail": "Tail part", "arms": "Arm part", "hands": "Hand part",
+              "legs": "Leg part", "feet": "Foot part"}
+# node ids no model on the disc and no game code uses by number (code names 0..0x36, 0x40, 0x41, 0x6F, 0x76;
+# BtlObj_IsNodeShown also 0x42, 0x43); 0x44..0x46 last: ids < 71 can be animated
+ID_POOL = [i for i in range(0x47, 0x80) if i not in ACCESSORY] + [0x44, 0x45, 0x46]
+MAX_RECORDS_FORCE = 112   # guess: two fighters of 112 leave half of the 512-part pool to everything else
+
+
+class Layer:
+    def __init__(self, k, src, piece, add, opts):
+        self.k, self.src, self.piece, self.add, self.opts = k, src, piece, add, opts or {}
+        self.region = "hair" if piece in ("hair", "head") else piece
+
+
+def _layers(selections, donors, src_cache):
+    out = []
+    for k, s in enumerate(selections, 1):
+        pack, piece = s[0], s[1]
+        opts = s[2] if len(s) > 2 else None
         add = piece.endswith("+")
         piece = piece.rstrip("+")
         if piece not in PIECES:
             raise MixError(f"unknown piece {piece!r} (one of {', '.join(PIECES)})")
-        d = donors.get(id(pack))
+        d = src_cache.get(id(pack))
         if d is None:
-            d = donors[id(pack)] = Source(pack, f"donor {len(donors) + 1}")
-        if add:
-            extra_add.append(("hair" if piece == "head" else piece, d))
-            continue
-        if piece == "hair":
-            extra_src["hair"] = d
-        else:
-            for n in REGIONS[piece]:
-                core_src[n] = d
-            extra_src["hair" if piece == "head" else piece] = d
-    head_src = core_src.get(0x30)
+            d = src_cache[id(pack)] = Source(pack, f"donor {len(src_cache) + 1}")
+            donors.append(d)
+        out.append(Layer(k, d, piece, add, opts))
+    return out
 
+
+# ---- small vector helpers (game axes: Y down, face towards -Z; the UI's axes: Y up, face towards +Z)
+def v_sub(a, b):
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def v_add(a, b):
+    return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+
+
+def v_dot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def v_len(a):
+    return math.sqrt(v_dot(a, a))
+
+
+def m_mul(a, b):
+    return tuple(tuple(sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)) for i in range(3))
+
+
+def m_vec(m, v):
+    return (m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2], m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+            m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2])
+
+
+IDENT3 = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+
+
+def ui_xform(o):
+    """(M, Ninv, t) of a workshop entry in game axes: p -> M (p - pivot) + pivot + t; normals by Ninv.
+    o: {"scale" or "stretch": [x, y, z] factors, "size": factor, "turn": [x, y, z] degrees (X, then Y, then Z, UI
+    axes), "move": [x, y, z] model units in UI axes (a fighter is about 20 high)}."""
+    st = o.get("stretch", o.get("scale", (1, 1, 1)))
+    size = float(o.get("size", 1))
+    sx, sy, sz = (max(0.05, float(st[0]) * size), max(0.05, float(st[1]) * size), max(0.05, float(st[2]) * size))
+    rx, ry, rz = (math.radians(float(a)) for a in o.get("turn", (0, 0, 0)))
+    # rotations in UI axes, conjugated by C = diag(1, -1, -1) into game axes
+    cx, sx_, cy, sy_, cz, sz_ = math.cos(rx), math.sin(rx), math.cos(ry), math.sin(ry), math.cos(rz), math.sin(rz)
+    RX = ((1, 0, 0), (0, cx, -sx_), (0, sx_, cx))
+    RY = ((cy, 0, sy_), (0, 1, 0), (-sy_, 0, cy))
+    RZ = ((cz, -sz_, 0), (sz_, cz, 0), (0, 0, 1))
+    R = m_mul(RZ, m_mul(RY, RX))
+    C = ((1, 0, 0), (0, -1, 0), (0, 0, -1))
+    R = m_mul(C, m_mul(R, C))
+    S = ((sx, 0, 0), (0, sy, 0), (0, 0, sz))
+    Si = ((1 / sx, 0, 0), (0, 1 / sy, 0), (0, 0, 1 / sz))
+    mv = o.get("move", (0, 0, 0))
+    t = (float(mv[0]), -float(mv[1]), -float(mv[2]))
+    return m_mul(R, S), m_mul(R, Si), t
+
+
+def is_identity(o):
+    if not o:
+        return True
+    M, _, t = ui_xform(o)
+    return all(abs(M[i][j] - IDENT3[i][j]) < 1e-9 for i in range(3) for j in range(3)) and not any(t)
+
+
+class Mesh:
+    """The vertices of one chain, editable in place (game axes)."""
+
+    def __init__(self, chain):
+        self.buf = bytearray(chain)
+        self.offs = []
+        walk_chain(self.buf, on_vertex=lambda q, w: self.offs.append(q))
+        self.P = [list(struct.unpack_from("<3f", self.buf, q)) for q in self.offs]
+        self.N = [list(struct.unpack_from("<3f", self.buf, q + 16)) for q in self.offs]
+        self.W = [struct.unpack_from("<f", self.buf, q + 12)[0] for q in self.offs]
+        self.dirty = False
+
+    def shift(self, dA, dB):
+        for i, p in enumerate(self.P):
+            w = self.W[i]
+            for k in range(3):
+                p[k] += w * dA[k] + (1 - w) * dB[k]
+        self.dirty = True
+
+    def apply(self, M, Ni, t, pivot, weighted=False):
+        for i, p in enumerate(self.P):
+            q = m_vec(M, v_sub(p, pivot))
+            q = (q[0] + pivot[0] + t[0], q[1] + pivot[1] + t[1], q[2] + pivot[2] + t[2])
+            n = m_vec(Ni, self.N[i])
+            if weighted:
+                w = self.W[i]
+                q = tuple(p[k] + w * (q[k] - p[k]) for k in range(3))
+                n = tuple(self.N[i][k] + w * (n[k] - self.N[i][k]) for k in range(3))
+            ln = v_len(n) or 1.0
+            self.P[i] = list(q)
+            self.N[i] = [n[0] / ln, n[1] / ln, n[2] / ln]
+        self.dirty = True
+
+    def bytes(self):
+        if self.dirty:
+            for i, q in enumerate(self.offs):
+                struct.pack_into("<3f", self.buf, q, *self.P[i])
+                struct.pack_into("<3f", self.buf, q + 16, *self.N[i])
+        return bytes(self.buf)
+
+    def bbox(self):
+        if not self.P:
+            return None
+        lo = [min(p[k] for p in self.P) for k in range(3)]
+        hi = [max(p[k] for p in self.P) for k in range(3)]
+        return lo, hi
+
+
+def axis_of(model_nodes, node, origin_of):
+    """Bone axis of a core node: from its joint to its main core child's joint (else onwards from the parent)."""
+    r = model_nodes.get(node)
+    j = origin_of(node)
+    best, bl = None, 0
+    for c in (r.children if r else []):
+        if c.node in CORE and c.node not in FIXED:
+            l = v_len(v_sub(origin_of(c.node), j))
+            if l > bl:
+                best, bl = c.node, l
+    if best is not None and bl > 1e-3:
+        e = origin_of(best)
+    elif r is not None and r.parent is not None:
+        d = v_sub(j, origin_of(r.parent.node))
+        l = v_len(d)
+        if l < 1e-3:
+            return None
+        e = v_add(j, d)
+    else:
+        return None
+    return j, e
+
+
+def radial_scale(mesh, ax, s0, s1=None):
+    """Scale every vertex's distance from the bone axis (joints stay): s0 at the joint end, s1 at the far end."""
+    j, e = ax
+    d = v_sub(e, j)
+    L2 = v_dot(d, d)
+    s1 = s0 if s1 is None else s1
+    for i, p in enumerate(mesh.P):
+        t = max(0.0, min(1.0, v_dot(v_sub(p, j), d) / L2))
+        c = (j[0] + d[0] * t, j[1] + d[1] * t, j[2] + d[2] * t)
+        s = s0 + (s1 - s0) * t
+        mesh.P[i] = [c[k] + (p[k] - c[k]) * s for k in range(3)]
+    mesh.dirty = True
+
+
+def end_radii(mesh, ax):
+    """Median distance from the bone axis near the joint (t < 0.3) and near the far end (t > 0.7)."""
+    j, e = ax
+    d = v_sub(e, j)
+    L2 = v_dot(d, d)
+    a, b = [], []
+    for p in mesh.P:
+        t = v_dot(v_sub(p, j), d) / L2
+        c = (j[0] + d[0] * t, j[1] + d[1] * t, j[2] + d[2] * t)
+        r = v_len(v_sub(p, c))
+        if t < 0.3:
+            a.append(r)
+        elif t > 0.7:
+            b.append(r)
+    med = lambda x: sorted(x)[len(x) // 2] if len(x) >= 6 else None
+    return med(a), med(b)
+
+
+class HeadShell:
+    """The head's outer surface as a radius per direction around its centre (12 x 24 bins), for pushing hair out."""
+    NE, NA = 12, 24
+
+    def __init__(self, pts):
+        lo = [min(p[k] for p in pts) for k in range(3)]
+        hi = [max(p[k] for p in pts) for k in range(3)]
+        self.c = tuple((lo[k] + hi[k]) / 2 for k in range(3))
+        self.width = hi[0] - lo[0]
+        self.lo, self.hi = lo, hi
+        self.R = [[0.0] * self.NA for _ in range(self.NE)]
+        for p in pts:
+            e, a, r = self.bin(p)
+            if r > self.R[e][a]:
+                self.R[e][a] = r
+        for _ in range(3):   # fill empty bins from their neighbours
+            for e in range(self.NE):
+                for a in range(self.NA):
+                    if self.R[e][a] == 0:
+                        nb = [self.R[e2][(a + da) % self.NA] for e2 in (e - 1, e, e + 1) if 0 <= e2 < self.NE
+                              for da in (-1, 0, 1)]
+                        nb = [x for x in nb if x > 0]
+                        if nb:
+                            self.R[e][a] = sum(nb) / len(nb)
+        self.radius = sum(map(sum, self.R)) / (self.NE * self.NA)
+
+    def bin(self, p):
+        d = v_sub(p, self.c)
+        r = v_len(d)
+        if r < 1e-6:
+            return self.NE // 2, 0, 0.0
+        el = math.acos(max(-1.0, min(1.0, d[1] / r)))
+        az = math.atan2(d[2], d[0])
+        e = min(self.NE - 1, int(el / math.pi * self.NE))
+        a = int((az + math.pi) / (2 * math.pi) * self.NA) % self.NA
+        return e, a, r
+
+    def push(self, mesh, margin, grow):
+        n = 0
+        for i, p in enumerate(mesh.P):
+            e, a, r = self.bin(p)
+            R = self.R[e][a] + margin
+            target = r * grow
+            if target < R:
+                target = R
+                n += 1
+            if r > 1e-6 and target != r:
+                f = target / r
+                mesh.P[i] = [self.c[k] + (p[k] - self.c[k]) * f for k in range(3)]
+        mesh.dirty = True
+        return n
+
+
+# ---- texture tools (GS swizzles from model.py)
+def _upload_mem(t):
+    w, h, dofs, _ = mdlx.parse_gs_upload(t.pix, 0)
+    dbw = struct.unpack_from("<I", t.ent, 0x18)[0] & 0x3F
+    words = struct.unpack_from(f"<{w * h}I", t.pix, dofs)
+    mem = {}
+    for y in range(h):
+        for x in range(w):
+            mem[mdlx.addr32(dbw, x, y)] = words[y * w + x]
+    return mem, w, h, dofs
+
+
+def tex_shape(t):
+    tex0 = struct.unpack_from("<Q", t.ent, 0x30)[0]
+    return (tex0 >> 20) & 0x3F, (tex0 >> 14) & 0x3F, 1 << ((tex0 >> 26) & 15), 1 << ((tex0 >> 30) & 15)
+
+
+def tex_indices(t):
+    psm, tbw, tw, th = tex_shape(t)
+    mem, _, _, _ = _upload_mem(t)
+
+    def byte(a):
+        return (mem.get(a >> 2, 0) >> ((a & 3) * 8)) & 0xFF
+    out = []
+    for y in range(th):
+        for x in range(tw):
+            if psm == 0x14:
+                a = mdlx.addr4(tbw, x, y)
+                v = byte(a >> 1)
+                out.append((v >> 4) if a & 1 else (v & 15))
+            else:
+                out.append(byte(mdlx.addr8(tbw, x, y)))
+    return out
+
+
+def halve_texture(t):
+    """A copy of texture entry t at half the width and height (nearest pixel): new upload packet, TEX0 TBW / TW /
+    TH, pixel size, block count, BITBLTBUF width. UVs are normalised, so the chains only need the new TEX0 bits."""
+    psm, tbw, tw, th = tex_shape(t)
+    if psm not in (0x13, 0x14) or tw < 16 or th < 16:
+        return None
+    idx = tex_indices(t)
+    nw, nh = tw // 2, th // 2
+    small = [idx[(2 * y) * tw + 2 * x] for y in range(nh) for x in range(nw)]
+    ntbw = nw // 64 if nw >= 128 else 0
+    w, h, dofs, _ = mdlx.parse_gs_upload(t.pix, 0)
+    rect = find_rect(psm, ntbw, nw, nh)   # a PSMCT32 rectangle that writes exactly the texture's blocks
+    if rect is None:
+        return None
+    uw, uh, dbw = rect
+    nbytes = {}
+    blocks = set()
+    for y in range(nh):
+        for x in range(nw):
+            v = small[y * nw + x]
+            if psm == 0x14:
+                a = mdlx.addr4(ntbw, x, y)
+                b = a >> 1
+                cur = nbytes.get(b, 0)
+                nbytes[b] = (cur & 0x0F) | (v << 4) if a & 1 else (cur & 0xF0) | v
+                blocks.add(a >> 9)
+            else:
+                a = mdlx.addr8(ntbw, x, y)
+                nbytes[a] = v
+                blocks.add(a >> 8)
+    words = []
+    for y in range(uh):
+        for x in range(uw):
+            wa = mdlx.addr32(dbw, x, y) * 4
+            words.append(nbytes.get(wa, 0) | (nbytes.get(wa + 1, 0) << 8) | (nbytes.get(wa + 2, 0) << 16) |
+                         (nbytes.get(wa + 3, 0) << 24))
+    data = struct.pack(f"<{len(words)}I", *words)
+    if len(data) % 16:
+        return None
+    # the packet: the original head (DIRECT, A+D TRXPOS / TRXREG / TRXDIR, IMAGE tag) with new sizes
+    head = bytearray(t.pix[:dofs])
+    old_nloop = h * w * 4 // 16
+    pad = len(t.pix) - dofs - (h * w * 4)
+    new_nloop = len(data) // 16
+    for q in range(0, dofs, 16):
+        lo, hi = struct.unpack_from("<QQ", head, q)
+        if hi == 0x52:   # TRXREG
+            struct.pack_into("<Q", head, q, uw | (uh << 32))
+        if (lo >> 58) & 3 == 2 and q + 16 == dofs:   # IMAGE tag
+            struct.pack_into("<Q", head, q, (lo & ~0x7FFF) | (len(data) // 16))
+    for q in range(0, 16, 4):   # VIF DIRECT word in front: its count covers the GIF data
+        c = struct.unpack_from("<I", head, q)[0]
+        if (c >> 24) & 0x7F == 0x50:
+            imm = c & 0xFFFF
+            struct.pack_into("<I", head, q, (c & ~0xFFFF) | max(0, imm - (old_nloop - new_nloop)))
+    pix = bytes(head) + data + b"\0" * max(0, pad)
+    e = bytearray(t.ent)
+    struct.pack_into("<i", e, 0x08, len(pix))
+    struct.pack_into("<i", e, 0x10, max(blocks) + 1)
+    struct.pack_into("<I", e, 0x18, (struct.unpack_from("<I", e, 0x18)[0] & ~0x3F) | dbw)
+    tex0 = struct.unpack_from("<Q", e, 0x30)[0]
+    tex0 = (tex0 & ~(0xFFFFF << 14)) | (ntbw << 14) | (psm << 20) | ((((tex0 >> 26) & 15) - 1) << 26) | \
+           ((((tex0 >> 30) & 15) - 1) << 30)
+    struct.pack_into("<Q", e, 0x30, tex0)
+    n = Tex(e, pix, t.clut, t.src, t.old)
+    return n
+
+
+def find_rect(psm, tbw, w, h):
+    """(width, height, DBW) of the PSMCT32 upload whose blocks are exactly those of a PSMT4 / PSMT8 texture."""
+    want = set()
+    bw, bh = (32, 16) if psm == 0x14 else (16, 16)
+    for y in range(0, h, bh):
+        for x in range(0, w, bw):
+            want.add((mdlx.addr4(tbw, x, y) >> 9) if psm == 0x14 else (mdlx.addr8(tbw, x, y) >> 8))
+    nbytes = len(want) * 256
+    for rw in (8, 16, 32, 64, 128, 256, 512):
+        rh = nbytes // 4 // rw
+        if rh < 8 or rh * rw * 4 != nbytes or rh % 8:
+            continue
+        for dbw in sorted({rw // 64, max(1, rw // 64)}):
+            got = {mdlx.addr32(dbw, x, y) >> 6 for y in range(0, rh, 8) for x in range(0, rw, 8)}
+            if got == want:
+                return rw, rh, dbw
+    return None
+
+
+def clut_colors(t):
+    if not t.clut:
+        return []
+    cw, ch, cofs, _ = mdlx.parse_gs_upload(t.clut, 0)
+    return [t.clut[cofs + k * 4:cofs + k * 4 + 3] for k in range(cw * ch)]
+
+
+def color_dist(a, b):
+    if len(a) != len(b) or not a:
+        return 1e9
+    return sum(abs(x[0] - y[0]) + abs(x[1] - y[1]) + abs(x[2] - y[2]) for x, y in zip(a, b)) / len(a)
+
+
+def ramp_colors(t):
+    w, h, dofs, _ = mdlx.parse_gs_upload(t.pix, 0)
+    return [t.pix[dofs + k * 4:dofs + k * 4 + 3] for k in range(w * h)]
+
+
+# ---- the mix
+def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True):
+    """A new pack: the base with pieces from donors.
+
+    selections: [(donor_pack, piece) or (donor_pack, piece, opts), ...] in layer order. piece is one of PIECES; a
+    trailing "+" ("hair+", "torso+") adds that donor's extras of the region on top and keeps the model's own (any
+    number of layers). Later selections win where they replace the same thing.
+    opts (all optional): "scale" / "stretch": [x, y, z] factors, "size": factor, "turn": [x, y, z] degrees,
+    "move": [x, y, z] model units (UI axes: X right, Y up, Z towards the viewer; a fighter is ~20 high), applied to
+    the layer around its attach joint; "nodes": {donor node id: {"shown": bool, "stretch", "size", "move",
+    "turn"}} per node around that node's joint (extras: children follow; core nodes: that node's mesh only).
+    adjust: the same per-node dict for the base's own nodes ({node id: {...}}), plus "build": {"torso", "arms",
+    "legs", "head", "hands", "feet": percent (100 = unchanged)} = thickness around each bone (joints stay put;
+    "head" scales the head and what is on it).
+    force (default): never refuse for the GS budget, ids or record count: degrade (share / merge palettes and
+    ramps, halve donor textures, drop the smallest extras) and say so in report. declip (default): fit hair to the
+    head and push it out of the head, match swapped limbs' cross-sections at the seams, layer hairs outwards."""
+    notes = report if report is not None else []
+    adjust = adjust or {}
+    cap = MAX_RECORDS_FORCE if force else MAX_RECORDS
+    base = Source(base_pack, "base")
+    donors, cache = [], {}
+    layers = _layers(selections, donors, cache)
+    core_layer, extra_layer, add_layers = {}, {}, []
+    for L in layers:
+        if L.add:
+            add_layers.append(L)
+            continue
+        if L.piece != "hair":
+            for n in REGIONS[L.piece]:
+                core_layer[n] = L
+        extra_layer[L.region] = L
+    head_layer = core_layer.get(0x30)
+    head_src = head_layer.src if head_layer else None
     bm = base.model
-    # ---- base records
+
+    def fail(msg):
+        raise MixError(msg)
+
+    # ---- plan the base records
     plan = []
     for r in bm.recs:
         reg = bm.region(r)
-        src = None
+        L = None
         if r.node in CORE and r.node not in FIXED:
-            src = core_src.get(r.node)
+            L = core_layer.get(r.node)
         elif reg not in ("accessories", "root") and r.node not in CORE:
-            src = extra_src.get(reg)
-        plan.append((r, src))
+            L = extra_layer.get(reg)
+        plan.append((r, L))
+
+    def subtree(r):   # an extra and the extras below it (a core node below an extra starts its own subtree)
+        out = [r]
+        for c in r.children:
+            if c.node not in ACCESSORY and c.node not in CORE:
+                out += subtree(c)
+        return out
+
+    def tris(r):
+        return sum(max(0, len(s["verts"]) - 2) for s in mdlx.parse_chain(r.chain, 0, len(r.chain))) if r.mesh else 0
+
+    # ---- donor extras to add, then what fits (records, ids)
+    adds = []   # [layer, donor root rec, base attach rec]
+    for L in [extra_layer[k] for k in extra_layer] + add_layers:
+        if L.add or extra_layer.get(L.region) is L:
+            dm = L.src.model
+            for dr in dm.recs:
+                if dr.node in CORE or dm.region(dr) != L.region:
+                    continue
+                if dr.parent is not None and dr.parent.node in CORE and dr.parent.node in bm.by_node:
+                    adds.append((L, dr, bm.by_node[dr.parent.node]))
+    used_ids = {r.node for r in bm.recs}
+    pool = [i for i in (ID_POOL if force else FREE_IDS + [i for i in range(0x47, 0x76) if i not in ACCESSORY])
+            if i not in used_ids]
+    wanted = []   # (layer, donor rec, depth) breadth first, bigger first within a depth
+    for L, dr, _ in adds:
+        for x in subtree(dr):
+            d, p = 0, x
+            while p is not dr:
+                p, d = p.parent, d + 1
+            wanted.append((d, -tris(x), L.k, L, x))
+    wanted.sort(key=lambda w: (w[0], w[1], w[2]))
+    room = cap - len(bm.recs)
+    accepted = {}   # (layer k, donor node) -> new id
+    dropped = []
+    for d, _, _, L, x in wanted:
+        par_ok = d == 0 or (L.k, x.parent.node) in accepted
+        nid = x.node
+        if par_ok and room > 0:
+            if nid < 0x47 or nid in used_ids or nid in ACCESSORY:
+                nid = pool.pop(0) if pool else None
+            elif nid in pool:
+                pool.remove(nid)
+            if nid is not None:
+                used_ids.add(nid)
+                accepted[(L.k, x.node)] = nid
+                room -= 1
+                continue
+        dropped.append((L, x))
+    if dropped:
+        if not force:
+            fail(f"{len(dropped)} donor extras do not fit (record count {cap} or node ids)")
+        notes.append(f"left out {len(dropped)} small extra part(s) (record limit {cap} / free node ids): "
+                     + ", ".join(f"layer {L.k} node 0x{x.node:X}" for L, x in dropped[:8]))
 
     # ---- textures used
-    uses = {}              # Source -> set of texture indices (material) needed
-    ramp_uses = {}
+    uses, ramp_uses = {}, {}
 
     def need(src, chain):
         for tbp, cbp, rc in chain_texrefs(chain):
             t = src.tex_by_ofs(tbp, cbp)
             if t is None:
-                raise MixError(f"{src.name}: a chain names a texture the file does not have (TBP {tbp})")
+                fail(f"{src.name}: a chain names a texture the file does not have (TBP {tbp})")
             uses.setdefault(src, set()).add(t.old)
             rt = src.ramp_by_ofs(rc)
             if rt is None:
-                raise MixError(f"{src.name}: a chain names a ramp CLUT the file does not have ({rc})")
+                fail(f"{src.name}: a chain names a ramp CLUT the file does not have ({rc})")
             ramp_uses.setdefault(src, set()).add(rt.old)
 
-    for r, src in plan:
-        if src is None and r.mesh:
-            need(base, r.chain)
-        elif src is not None and r.node in CORE:
-            dr = src.model.by_node.get(r.node)
+    main_used = set()
+
+    def need_main(src, chain):
+        need(src, chain)
+        main_used.update((src, src.tex_by_ofs(a, b).old) for a, b, _ in chain_texrefs(chain))
+
+    for r, L in plan:
+        if L is None and r.mesh:
+            need_main(base, r.chain)
+        elif L is not None and r.node in CORE:
+            dr = L.src.model.by_node.get(r.node)
             if dr is not None and dr.mesh:
-                need(src, dr.chain)
-    # donor extras to add
-    additions = []         # (donor Source, donor root Rec, base attach Rec)
-    for reg, src in list(extra_src.items()) + extra_add:
-        if src is base:
-            continue
-        dm = src.model
-        for dr in dm.recs:
-            if dr.node in CORE or dm.region(dr) != reg:
-                continue
-            if dr.parent is not None and dr.parent.node in CORE:   # root of an extra subtree
-                attach = bm.by_node.get(dr.parent.node)
-                if attach is None:
-                    raise MixError(f"base has no node 0x{dr.parent.node:X}")
-                additions.append((src, dr, attach))
-
-    def subtree(r):
-        out = [r]
-        for c in r.children:
-            if c.node not in ACCESSORY:
-                out += subtree(c)
-        return out
-
-    for src, dr, _ in additions:
+                need_main(L.src, dr.chain)
+    for L, dr, _ in adds:
         for x in subtree(dr):
-            if x.mesh:
-                need(src, x.chain)
-    if head_src is not None:
-        for n in E_MOUTH_A:
-            c = entry(head_src.parts, n)
-            if c:
-                need(head_src, c)
-        uses.setdefault(head_src, set()).add(head_src.faceTex)
-    else:
-        for n in E_MOUTH_A:
-            c = entry(base.parts, n)
-            if c:
-                need(base, c)
+            if x.mesh and (L.k, x.node) in accepted:
+                need_main(L.src, x.chain)
+    face_src = head_src or base
+    for n in E_MOUTH_A:
+        c = entry(face_src.parts, n)
+        if c:
+            need(face_src, c)
+    uses.setdefault(face_src, set()).add(face_src.faceTex)
     seam = bm.seams()
     if seam:
         vc, tc, vo, to = seam
-        raw = bm.raw[to + 0x10:to + 0x20]
-        tb, ts = struct.unpack("<QQ", raw)
+        tb, ts = struct.unpack("<QQ", bm.raw[to + 0x10:to + 0x20])
         t = base.tex_by_ofs(tb & 0x3FFF, (tb >> 37) & 0x3FFF)
         if t is not None:
             uses.setdefault(base, set()).add(t.old)
@@ -579,51 +1033,105 @@ def mix(base_pack, selections, report=None):
         if rt is not None:
             ramp_uses.setdefault(base, set()).add(rt.old)
 
-    # ---- the new texture file
-    keep_base = [t for t in base.texs if base.material(t.old)]
-    mats = list(keep_base)
-    for src in donors.values():
+    # ---- material textures: base, then donors; exact duplicates shared
+    mats = [t for t in base.texs if base.material(t.old)]
+    alias = {}   # (src, old) -> the Tex that stands for it
+    for t in mats:
+        alias[(base, t.old)] = t
+    for src in donors:
         for i in sorted(uses.get(src, ())):
-            mats.append(src.texs[i])
-
-    def fits(ms):
-        return sum(t.tbpStep for t in ms) <= TEX_BLOCKS and sum(t.cbpStep for t in ms) <= CLUT_BLOCKS
-
-    if not fits(mats):   # drop the base's textures no remaining chain uses
-        used = uses.get(base, set()) | {base.faceTex}
-        if base.noAlpha:
-            used.add(base.noAlpha)
-        dropped = [t.old for t in keep_base if t.old not in used]
-        mats = [t for t in mats if t.src is not base or t.old in used]
-        notes.append(f"dropped unused base textures {dropped} to fit the GS budget")
-    tsum, csum = sum(t.tbpStep for t in mats), sum(t.cbpStep for t in mats)
-    if tsum > TEX_BLOCKS:
-        raise MixError(f"textures need {tsum} GS blocks, a fighter has {TEX_BLOCKS} (0x3480..0x3C00)")
-    if csum > CLUT_BLOCKS:
-        raise MixError(f"palettes need {csum} GS blocks, the fighter palette area has {CLUT_BLOCKS} (0x3C00..0x3C40)")
+            t = src.texs[i]
+            same = next((m for m in mats if m.pix == t.pix and m.clut == t.clut and m.ent[0x30:0x38] == t.ent[0x30:0x38]),
+                        None)
+            if same is not None:
+                alias[(src, i)] = same
+            else:
+                mats.append(t)
+                alias[(src, i)] = t
+    faces = {id(alias[(face_src, face_src.faceTex)])}
+    if base.noAlpha:
+        faces.add(id(alias[(base, base.noAlpha)]))
+    used_now = {id(alias[(s, i)]) for s, ix in uses.items() for i in ix}
+    if sum(t.tbpStep for t in mats) > TEX_BLOCKS or sum(t.cbpStep for t in mats) > CLUT_BLOCKS:
+        drop = [t for t in mats if t.src is base and id(t) not in used_now and id(t) not in faces]
+        if drop:
+            mats = [t for t in mats if t not in drop]
+            notes.append(f"dropped {len(drop)} unused base texture(s) to fit the GS budget")
+    # pixels: halve the largest donor textures (then base ones) until they fit
+    halved = 0
+    while sum(t.tbpStep for t in mats) > TEX_BLOCKS:
+        if not force:
+            fail(f"textures need {sum(t.tbpStep for t in mats)} GS blocks, a fighter has {TEX_BLOCKS}")
+        cand = sorted([t for t in mats if id(t) not in faces], key=lambda t: (t.src is base, -t.tbpStep))
+        cand = [t for t in cand if tex_shape(t)[2] >= 16 and tex_shape(t)[3] >= 16]
+        if not cand:
+            fail("textures cannot be made to fit the GS budget")
+        big = cand[0]
+        small = halve_texture(big)
+        if small is None:
+            faces.add(id(big))   # cannot shrink this one; try the next
+            continue
+        k = mats.index(big)
+        mats[k] = small
+        for key, v in list(alias.items()):
+            if v is big:
+                alias[key] = small
+        if id(big) in used_now:
+            used_now.add(id(small))
+        halved += 1
+    if halved:
+        notes.append(f"halved the resolution of {halved} texture(s) to fit the 0x780-block texture budget")
     # the lowest TBP / CBP of the main chains must be 0 (MdlTex_RebaseChain subtracts it)
-    main_used = set()
-    for r, src in plan:
-        if src is None and r.mesh:
-            main_used |= {(base, base.tex_by_ofs(a, b).old) for a, b, _ in chain_texrefs(r.chain)}
-        elif src is not None and r.node in CORE:
-            dr = src.model.by_node.get(r.node)
-            if dr is not None and dr.mesh:
-                main_used |= {(src, src.tex_by_ofs(a, b).old) for a, b, _ in chain_texrefs(dr.chain)}
-    for src, dr, _ in additions:
-        for x in subtree(dr):
-            if x.mesh:
-                main_used |= {(src, src.tex_by_ofs(a, b).old) for a, b, _ in chain_texrefs(x.chain)}
-    if not ((mats[0].src, mats[0].old) in main_used and mats[0].clut):
-        first = next((t for t in mats if (t.src, t.old) in main_used and t.clut), None)
+    main_ids = {id(alias[k]) for k in main_used}
+    if not (id(mats[0]) in main_ids and mats[0].clut):
+        first = next((t for t in mats if id(t) in main_ids and t.clut), None)
         if first is None:
-            raise MixError("no main chain uses a texture with a palette")
+            fail("no main chain uses a texture with a palette")
         mats.remove(first)
         mats.insert(0, first)
-    # slots (byte 0x2C of an entry): the per-material id of the alpha table, 0..14
+    # palettes: share identical, then merge the most similar until they fit the tint pass's 64 blocks
+    groups = [[t, [t]] for t in mats if t.clut]   # [leader Tex, [members]]: members share the leader's CLUT
+    if sum(g[0].cbpStep for g in groups) > CLUT_BLOCKS and force:   # identical palettes first
+        ng = []
+        for g0 in groups:
+            g = next((g for g in ng if g[0].clut == g0[0].clut and g[0].cbpStep == g0[0].cbpStep), None)
+            if g:
+                g[1].extend(g0[1])
+            else:
+                ng.append(g0)
+        if len(ng) < len(groups):
+            notes.append(f"{len(groups) - len(ng)} identical palette(s) shared")
+        groups = ng
+    if sum(g[0].cbpStep for g in groups) > CLUT_BLOCKS:
+        if not force:
+            fail(f"palettes need {sum(g[0].cbpStep for g in groups)} GS blocks, the palette area has {CLUT_BLOCKS}")
+        cols = {id(g[0]): clut_colors(g[0]) for g in groups}
+        merged = 0
+        while sum(g[0].cbpStep for g in groups) > CLUT_BLOCKS:
+            best = None
+            for i in range(len(groups)):
+                for j in range(len(groups)):
+                    if i == j or groups[i][0].cbpStep != groups[j][0].cbpStep:
+                        continue
+                    a, b = groups[i], groups[j]
+                    dist = color_dist(cols[id(a[0])], cols[id(b[0])])
+                    if b[0].src is base:
+                        dist *= 2   # keep the base's own colours where possible
+                    if best is None or dist < best[0]:
+                        best = (dist, i, j)
+            if best is None:
+                fail("palettes cannot be made to fit")
+            _, i, j = best
+            groups[i][1].extend(groups[j][1])
+            if j == 0:   # keep palette 0 at block 0
+                groups[i], groups[j] = groups[j], groups[i]
+                i, j = j, i
+            del groups[j]
+            merged += 1
+        notes.append(f"merged {merged} similar palette(s) to fit the 64-block palette area")
+    # slots (byte 0x2C): the per-material id of the alpha table, 0..14
     slots_used = {t.ent[0x2C] for t in mats if t.src is base}
-    slot_map = {}
-    shared = 0
+    slot_map, shared = {}, 0
     for t in mats:
         if t.src is base:
             continue
@@ -635,7 +1143,7 @@ def mix(base_pack, selections, report=None):
                 free = [k for k in range(15) if k not in slots_used]
                 if free:
                     s = free[0]
-                else:   # share a base slot with the same base alpha (what the slot carries besides its id)
+                else:
                     same = [b.ent[0x2C] for b in mats if b.src is base and b.ent[0x2D] == t.ent[0x2D]]
                     s = same[len(slot_map) % len(same)] if same else 0
                     shared += 1
@@ -644,12 +1152,10 @@ def mix(base_pack, selections, report=None):
         t.ent[0x2C] = slot_map[key]
     if shared:
         notes.append(f"{shared} donor material slot(s) share a base slot (same alpha): all 15 are taken")
-    # ramps
+    # ramps: base, donors' new ones; over 16: drop unused base ones, then map to the nearest kept one
     ramps = [t for t in base.texs if base.ramp(t.old)]
-    ramp_new = {}
-    for t in ramps:
-        ramp_new[(base, t.old)] = t
-    for src in donors.values():
+    ramp_new = {(base, t.old): t for t in ramps}
+    for src in donors:
         for i in sorted(ramp_uses.get(src, ())):
             t = src.texs[i]
             same = next((b for b in ramps if b.pix == t.pix and b.tbpStep == t.tbpStep), None)
@@ -657,108 +1163,123 @@ def mix(base_pack, selections, report=None):
                 ramps.append(t)
                 same = t
             ramp_new[(src, i)] = same
-    if sum(t.tbpStep for t in ramps) > RAMP_BLOCKS:   # keep only the ramps something still uses
+    if sum(t.tbpStep for t in ramps) > RAMP_BLOCKS:
         required = {id(ramp_new[(src, i)]) for src, ix in ramp_uses.items() for i in ix}
-        dropped = [t.old for t in ramps if t.src is base and id(t) not in required]
-        ramps = [t for t in ramps if id(t) in required]
-        notes.append(f"dropped unused base shading ramps {dropped}")
+        nd = [t for t in ramps if t.src is base and id(t) not in required]
+        if nd:
+            ramps = [t for t in ramps if t not in nd]
+            notes.append(f"dropped {len(nd)} unused base shading ramp(s)")
+    if sum(t.tbpStep for t in ramps) > RAMP_BLOCKS:
+        if not force:
+            fail(f"shading ramps need {sum(t.tbpStep for t in ramps)} GS blocks, there are {RAMP_BLOCKS}")
+        keep = ramps[:RAMP_BLOCKS // 4]
+        extra = ramps[RAMP_BLOCKS // 4:]
+        kc = [ramp_colors(t) for t in keep]
+        for t in extra:
+            c = ramp_colors(t)
+            near = min(range(len(keep)), key=lambda k: color_dist(kc[k], c))
+            for key, v in list(ramp_new.items()):
+                if v is t:
+                    ramp_new[key] = keep[near]
+        ramps = keep
+        notes.append(f"{len(extra)} shading ramp(s) (cel shading) mapped to the most similar kept one")
     if any(t.tbpStep != 4 for t in ramps):
-        raise MixError("a shading ramp CLUT is not 4 blocks (BtlObjLight_FindRes1 assumes 4)")
+        fail("a shading ramp CLUT is not 4 blocks (BtlObjLight_FindRes1 assumes 4)")
     others = [t for t in base.texs if not base.material(t.old) and not base.ramp(t.old)]
-    # positions
-    out_texs = []
-    pos_of = {}
-    tb = cb = 0
+
+    # ---- positions in the new file
+    out_texs, pos_of = [], {}
+    tb = 0
+    clut_at = {}
+    cb = 0
+    for g in groups:
+        for m in g[1]:
+            clut_at[id(m)] = cb
+        cb += g[0].cbpStep
     for t in mats:
         e = Tex(t.ent, t.pix, t.clut, t.src, t.old)
-        struct.pack_into("<ii", e.ent, 0x20, tb, cb)
-        pos_of[(t.src, t.old)] = (tb, cb, len(out_texs))
+        c = clut_at.get(id(t), 0)
+        struct.pack_into("<ii", e.ent, 0x20, tb, c)
+        if t.clut and not g_leader(groups, t):
+            struct.pack_into("<i", e.ent, 0x14, 0)   # shares another texture's palette
+        pos_of[id(t)] = (tb, c, len(out_texs), struct.unpack_from("<Q", t.ent, 0x30)[0])
         tb += t.tbpStep
-        cb += t.cbpStep
         out_texs.append(e)
     clut_first = len(out_texs)
-    rb = 0
-    ramp_pos = {}
+    ramp_pos, rb = {}, 0
     for t in ramps:
         e = Tex(t.ent, t.pix, t.clut, t.src, t.old)
         struct.pack_into("<i", e.ent, 0x20, rb)
         ramp_pos[id(t)] = rb
         rb += t.tbpStep
         out_texs.append(e)
-    if rb > RAMP_BLOCKS:
-        raise MixError(f"shading ramps need {rb} GS blocks, there are {RAMP_BLOCKS} (0x3D00..0x3D40)")
     other_first = len(out_texs)
     for t in others:
         out_texs.append(Tex(t.ent, t.pix, t.clut, t.src, t.old))
 
-    def maps(src):
-        tm, rm = {}, {}
-        for t in src.texs:
-            if src.material(t.old) and (src, t.old) in pos_of:
-                a, b, _ = pos_of[(src, t.old)]
-                tm[(t.tbpOfs, t.cbpOfs)] = (a, b)
-            if src.ramp(t.old) and (src, t.old) in ramp_new:
-                if id(ramp_new[(src, t.old)]) in ramp_pos:
-                    rm[t.tbpOfs] = ramp_pos[id(ramp_new[(src, t.old)])]
-        return tm, rm
-
     mapcache = {}
 
-    def remap(src, chain, dA=None, dB=None):
-        if src not in mapcache:
-            mapcache[src] = maps(src)
-        tm, rm = mapcache[src]
-        return rewrite_chain(chain, tm, rm, dA, dB)
+    def maps(src):
+        if src in mapcache:
+            return mapcache[src]
+        tm, rm = {}, {}
+        for t in src.texs:
+            if src.material(t.old) and (src, t.old) in alias and id(alias[(src, t.old)]) in pos_of:
+                a, b, _, tex0 = pos_of[id(alias[(src, t.old)])]
+                old0 = struct.unpack_from("<Q", t.ent, 0x30)[0]
+                tm[(t.tbpOfs, t.cbpOfs)] = (a, b, tex0 if tex0 != old0 else None)
+            if src.ramp(t.old) and (src, t.old) in ramp_new and id(ramp_new[(src, t.old)]) in ramp_pos:
+                rm[t.tbpOfs] = ramp_pos[id(ramp_new[(src, t.old)])]
+        mapcache[src] = (tm, rm)
+        return tm, rm
+
+    def remap(src, chain):
+        tm, rm = maps(src)
+        return rewrite_chain(chain, tm, rm)
 
     def new_index(src, old):
         if src.material(old):
-            v = pos_of.get((src, old))
+            v = pos_of.get(id(alias.get((src, old))))
             return v[2] if v else None
         if src is base and base.ramp(old):
             t = ramp_new.get((base, old))
             return clut_first + ramps.index(t) if t in ramps else None
         if src is base:
-            k = [t.old for t in others].index(old) if old in [t.old for t in others] else None
-            return None if k is None else other_first + k
+            olds = [t.old for t in others]
+            return other_first + olds.index(old) if old in olds else None
         return None
 
     # ---- records
-    def sub(a, b):
-        return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
-
     def add3(hdr, off, d):
         x, y, z = struct.unpack_from("<3f", hdr, off)
         struct.pack_into("<3f", hdr, off, x + d[0], y + d[1], z + d[2])
 
-    # part flag bit 0 = drawn by the fade pass (program 1); only meaningful when the base model fades
     fade_mask = 0xFFFF if base.flags & 1 else 0xFFFE
     hidden = set()
-    used_ids = {r.node for r in bm.recs}
-    # ids >= 0x47 are generic (chains find their slot by id); 0x6F and 0x76 are switched by gameplay flags
-    free_ids = [i for i in FREE_IDS if i not in used_ids] +                [i for i in range(0x47, 0x76) if i not in used_ids and i not in FREE_IDS and i not in ACCESSORY]
-    out = []               # list of Rec (new objects), base order, with donor subtrees inserted
     clone = {}
-    for r, src in plan:
+    meshes = {}      # clone -> Mesh (vertex edits), created on demand
+    kind = {}        # clone -> "base" / "core" (donor core mesh) / "adopt" / "extra" (donor extra)
+    layer_of = {}    # clone -> Layer
+    donor_rec = {}   # clone -> donor Rec (core swaps, extras)
+    for r, L in plan:
         n = Rec(r.hdr, r.chain)
         n.src = base
         clone[r] = n
-        if src is None:
+        kind[n] = "base"
+        if L is None:
             if r.mesh:
                 n.chain = remap(base, r.chain)
         elif r.node in CORE:
+            src = L.src
             dr = src.model.by_node.get(r.node)
+            layer_of[n] = L
             if r.node in ADOPT and dr is not None and adopt_ok(bm, src.model, r.node):
-                # nodes that bring their own bones: models without a tail have nodes 4..7 sitting on the hips (the
-                # donor's tail hung on those would fold into the pelvis); the jaw / head nodes 0x31..0x33 sit at
-                # different places inside different heads. Moved by the anchor's (3 / 0x2F) joint offset.
                 anchor = ADOPT[r.node]
-                d = sub(bm.by_node[anchor].ofsA, src.model.by_node[anchor].ofsA)
+                d = v_sub(bm.by_node[anchor].ofsA, src.model.by_node[anchor].ofsA)
                 hdr = bytearray(dr.hdr[:0x40]) + (bytearray(dr.hdr[0x40:0x60]) if dr.mesh else bytearray(0x20))
                 hdr[0:8] = r.hdr[0:8]
                 add3(hdr, 0x10, d)
                 add3(hdr, 0x20, d)
-                if dr.mesh:
-                    add3(hdr, 0x40, d)
                 if len(r.hdr) >= 0x60:
                     hdr[0x5C:0x60] = r.hdr[0x5C:0x60]
                 struct.pack_into("<H", hdr, 0xC, struct.unpack_from("<H", dr.hdr, 0xC)[0] & fade_mask)
@@ -766,7 +1287,10 @@ def mix(base_pack, selections, report=None):
                 n.hdr = hdr
                 n.enabled = dr.enabled if dr.mesh else 0
                 if dr.mesh:
-                    n.chain = remap(src, dr.chain, d, d)
+                    n.chain = remap(src, dr.chain)
+                    meshes[n] = Mesh(n.chain)
+                    meshes[n].shift(d, d)
+                    kind[n], donor_rec[n] = "adopt", dr
                 else:
                     n.chain = empty_chain()
                     hidden.add(r.node)
@@ -775,30 +1299,30 @@ def mix(base_pack, selections, report=None):
                 if r.node == 0x31:
                     notes.append("head: nodes 0x31..0x33 take the donor's bone offsets")
             elif dr is not None and dr.mesh:
-                dA, dB = sub(r.ofsA, dr.ofsA), sub(r.ofsB, dr.ofsB)
+                dA, dB = v_sub(r.ofsA, dr.ofsA), v_sub(r.ofsB, dr.ofsB)
                 hdr = bytearray(r.hdr[:0x40]) + bytearray(dr.hdr[0x40:0x60])
-                add3(hdr, 0x40, dA)
                 if len(r.hdr) >= 0x60:
-                    hdr[0x5C:0x60] = r.hdr[0x5C:0x60]        # gameplay reads +0x5C: keep the base's
+                    hdr[0x5C:0x60] = r.hdr[0x5C:0x60]
                 struct.pack_into("<H", hdr, 8, dr.enabled)
                 struct.pack_into("<H", hdr, 0xC, struct.unpack_from("<H", dr.hdr, 0xC)[0] & fade_mask)
                 n.hdr = hdr
                 n.enabled = dr.enabled
-                n.chain = remap(src, dr.chain, dA, dB)
+                n.chain = remap(src, dr.chain)
+                meshes[n] = Mesh(n.chain)
+                meshes[n].shift(dA, dB)
+                kind[n], donor_rec[n] = "core", dr
             else:
                 hide(n, r)
                 hidden.add(r.node)
         else:
             hide(n, r)
             hidden.add(r.node)
-        out.append(n)
-    for r in bm.recs:   # hierarchy of the clones
+    for r in bm.recs:
         n = clone[r]
         n.parent = clone[r.parent] if r.parent is not None else None
         n.children = [clone[c] for c in r.children]
+    by_node = {n.node: n for n in clone.values()}
 
-    # hidden records below a node that took the donor's bone: their origins follow the parent (origin = parent
-    # origin + rest, ofsB = parent origin, as in every model on the disc); nothing of them is drawn
     def follow(n):
         for c in n.children:
             if not c.enabled and c.node in hidden:
@@ -811,79 +1335,318 @@ def mix(base_pack, selections, report=None):
         if r.parent is None:
             follow(clone[r])
 
-    # donor extras
-    renum = {}             # (Source, old id) -> new id
-    for src, dr, attach in additions:
+    def origin(n):
+        return struct.unpack_from("<3f", n.hdr, 0x10)
+
+    def mesh_of(n):
+        if n not in meshes and n.enabled and n.chain:
+            meshes[n] = Mesh(n.chain)
+        return meshes.get(n)
+
+    # donor extras (joint offset only for now; fitting below)
+    renum = []       # (src, old id, new id)
+    joints = {}      # extra clone -> origin (moves with the workshop)
+    for L, dr, attach in adds:
+        if (L.k, dr.node) not in accepted:
+            continue
         parent_clone = clone[attach]
-        d = sub(struct.unpack_from("<3f", parent_clone.hdr, 0x10), src.model.by_node[dr.parent.node].ofsA)
+        d = v_sub(origin(parent_clone), L.src.model.by_node[dr.parent.node].ofsA)
 
         def copy(x, par):
-            nid = x.node
-            if nid < 0x47 or nid in used_ids or nid in ACCESSORY:
-                if not free_ids:
-                    raise MixError("no free node ids left for the donor's extra parts")
-                nid = free_ids.pop(0)
-            used_ids.add(nid)
-            renum[(src, x.node)] = nid
+            nid = accepted[(L.k, x.node)]
+            renum.append((L.src, x.node, nid))
             n = Rec(x.hdr, x.chain)
-            n.src = src
-            n.node = nid
-            n.hdr = bytearray(x.hdr)
+            n.src, n.node, n.hdr = L.src, nid, bytearray(x.hdr)
             struct.pack_into("<H", n.hdr, 0xA, nid)
             add3(n.hdr, 0x10, d)
             add3(n.hdr, 0x20, d)
-            if len(n.hdr) >= 0x60:
-                add3(n.hdr, 0x40, d)
             struct.pack_into("<H", n.hdr, 0xC, struct.unpack_from("<H", n.hdr, 0xC)[0] & fade_mask)
+            kind[n], layer_of[n], donor_rec[n] = "extra", L, x
             if x.mesh:
-                n.chain = remap(src, x.chain, d, d)
+                n.chain = remap(L.src, x.chain)
+                meshes[n] = Mesh(n.chain)
+                meshes[n].shift(d, d)
             n.parent = par
             par.children.append(n)
             for c in x.children:
-                if c.node not in ACCESSORY:
+                if c.node not in ACCESSORY and c.node not in CORE and (L.k, c.node) in accepted:
                     copy(c, n)
         copy(dr, parent_clone)
 
-    # serialize depth first, pops from the depths
+    def descendants(n):
+        out = [n]
+        for c in n.children:
+            out += descendants(c)
+        return out
+
+    for n in clone.values():
+        if n.node not in CORE:
+            joints[n] = origin(n)
+    for n in kind:
+        if kind[n] == "extra":
+            joints[n] = origin(n)
+
+    moved = {n for n in kind if kind[n] == "extra"}
+
+    def move_subtree(n, M, Ni, t, pivot, nodes=None):
+        """Applies p -> M (p - pivot) + pivot + t to the meshes and joints of n and everything below it."""
+        for x in (nodes if nodes is not None else descendants(n)):
+            m = mesh_of(x)
+            if m is not None:
+                m.apply(M, Ni, t, pivot)
+            if x in joints:
+                q = m_vec(M, v_sub(joints[x], pivot))
+                joints[x] = (q[0] + pivot[0] + t[0], q[1] + pivot[1] + t[1], q[2] + pivot[2] + t[2])
+                moved.add(x)
+
+    def hide_clone(n):
+        n.enabled = 0
+        struct.pack_into("<H", n.hdr, 8, 0)
+        if len(n.hdr) < 0x60:
+            n.hdr = bytearray(n.hdr) + bytearray(0x20)
+        n.chain = empty_chain()
+        meshes.pop(n, None)
+        hidden.add(n.node)
+
+    # ---- (b) swapped core pieces: cross-section matched to the base's at the seams
+    stats = {"fit_nodes": 0, "pushed": 0, "hair_scaled": 0, "build": 0}
+    if declip:
+        for r, L in plan:
+            n = clone[r]
+            if kind.get(n) != "core" or not r.mesh or r.node in (0x2F, 0x30, 0x31, 0x32, 0x33):
+                continue
+            ax = axis_of(by_node, r.node, lambda k: origin(by_node[k]))
+            if ax is None:
+                continue
+            bmesh = Mesh(r.chain)
+            ra0, ra1 = end_radii(bmesh, ax)
+            da0, da1 = end_radii(meshes[n], ax)
+            if not (ra0 and da0):
+                continue
+            s0 = max(0.75, min(1.33, ra0 / da0))
+            s1 = max(0.75, min(1.33, ra1 / da1)) if (ra1 and da1) else s0
+            if abs(s0 - 1) > 0.02 or abs(s1 - 1) > 0.02:
+                radial_scale(meshes[n], ax, s0, s1)
+                stats["fit_nodes"] += 1
+
+    # ---- workshop on the core pieces (mesh only: the base's joints stay where the game expects them)
+    def pivot_of_core(L, node):
+        """The topmost joint of the piece above `node` (torso: pelvis, arms: each upper arm)."""
+        x = by_node[node]
+        while x.parent is not None and x.parent.node in REGIONS.get(L.piece, ()):
+            x = x.parent
+        return origin(x)
+
+    for L in layers:
+        lo = {k: v for k, v in L.opts.items() if k != "nodes"}
+        for n in [n for n in kind if layer_of.get(n) is L and kind[n] in ("core", "adopt")]:
+            if not is_identity(lo) and n in meshes:
+                M, Ni, t = ui_xform(lo)
+                meshes[n].apply(M, Ni, t, pivot_of_core(L, n.node), weighted=_is_piece_root(L, by_node, n.node))
+            o = node_key(L.opts.get("nodes") or {}, donor_rec[n].node)
+            if o is None:
+                continue
+            if o.get("shown", True) is False:
+                hide_clone(n)
+            elif not is_identity(o) and n in meshes:
+                M, Ni, t = ui_xform(o)
+                meshes[n].apply(M, Ni, t, origin(n), weighted=True)
+    for n in list(by_node.values()):
+        if n.node not in CORE or kind.get(n) != "base":
+            continue
+        o = node_key(adjust, n.node)
+        if o is None:
+            continue
+        if o.get("shown", True) is False:
+            if n.enabled:
+                hide_clone(n)
+        elif not is_identity(o) and mesh_of(n) is not None:
+            M, Ni, t = ui_xform(o)
+            mesh_of(n).apply(M, Ni, t, origin(n), weighted=True)
+
+    # ---- build: thickness around the bones (joints stay); "head" scales the head and what is on it
+    build = adjust.get("build") or {}
+    head_nodes = [by_node[k] for k in (0x2F, 0x30, 0x31, 0x32, 0x33) if k in by_node]
+    head_build = None
+    for reg, pct in build.items():
+        f = max(0.3, min(3.0, float(pct) / 100.0))
+        if reg not in REGIONS or abs(f - 1) < 1e-3:
+            continue
+        if reg == "head":
+            pts = [p for h in head_nodes if mesh_of(h) for p in mesh_of(h).P]
+            if not pts:
+                continue
+            c = tuple((min(p[k] for p in pts) + max(p[k] for p in pts)) / 2 for k in range(3))
+            S = ((f, 0, 0), (0, f, 0), (0, 0, f))
+            for h in head_nodes:
+                if mesh_of(h):
+                    mesh_of(h).apply(S, IDENT3, (0, 0, 0), c)
+            head_build = (S, c)
+            stats["build"] += 1
+            continue
+        for node in REGIONS[reg]:
+            n = by_node.get(node)
+            m = mesh_of(n) if n is not None else None
+            if m is None:
+                continue
+            ax = axis_of(by_node, node, lambda k: origin(by_node[k]))
+            if ax is not None:
+                radial_scale(m, ax, f)
+        stats["build"] += 1
+
+    # ---- (a) hair from another head: scaled and centred onto the (final) head
+    final_head_src = head_src or base
+    refit = [L for L in layers if L.region == "hair" and L.src is not final_head_src]
+    shell = None
+    if declip:
+        pts = [p for h in head_nodes if mesh_of(h) for p in mesh_of(h).P]
+        shell = HeadShell(pts) if len(pts) > 30 else None
+    if shell is not None:
+        for L in refit:
+            mine = [n for n in kind if kind[n] == "extra" and layer_of.get(n) is L]
+            # reference: the face (skin, no hair cap) when both have one, else the head mesh
+            ref = 0x30 if (L.src.model.by_node.get(0x30) is not None and L.src.model.by_node[0x30].mesh and
+                           mesh_of(by_node[0x30]) is not None) else 0x2F
+            dr = L.src.model.by_node.get(ref)
+            dpts = Mesh(dr.chain).P if dr is not None and dr.mesh else []
+            bpts = mesh_of(by_node[ref]).P if mesh_of(by_node[ref]) is not None else []
+            if not mine or not dpts or not bpts:
+                continue
+            dlo = [min(p[k] for p in dpts) for k in range(3)]
+            dhi = [max(p[k] for p in dpts) for k in range(3)]
+            blo = [min(p[k] for p in bpts) for k in range(3)]
+            bhi = [max(p[k] for p in bpts) for k in range(3)]
+            bc = tuple((blo[k] + bhi[k]) / 2 for k in range(3))
+            s = max(0.7, min(1.43, (bhi[0] - blo[0]) / max(1e-3, dhi[0] - dlo[0])))
+            M = ((s, 0, 0), (0, s, 0), (0, 0, s))
+            for n in [n for n in mine if layer_of.get(n.parent) is not L]:
+                # where the donor's head centre is after the joint offset this root got
+                dpar = L.src.model.by_node.get(donor_rec[n].parent.node)
+                off = v_sub(origin(n.parent), dpar.ofsA) if dpar is not None else (0, 0, 0)
+                dc = v_add(tuple((dlo[k] + dhi[k]) / 2 for k in range(3)), off)
+                move_subtree(n, M, IDENT3, v_sub(bc, dc), dc)
+            if abs(s - 1) > 0.02:
+                stats["hair_scaled"] += 1
+    # the head build for what hangs on the head and was not fitted to it
+    if head_build is not None:
+        S, c = head_build
+        neck = by_node.get(0x2E)
+        for n in list(kind):
+            if n.node in CORE or n.parent is None or n.parent.node not in (0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33):
+                continue
+            if kind.get(n) == "extra" and layer_of.get(n) in refit and shell is not None:
+                continue
+            move_subtree(n, S, IDENT3, (0, 0, 0), c)
+
+    # ---- workshop on extras (the layer around its attach joint, per node around the node; children follow)
+    for L in layers:
+        lo = {k: v for k, v in L.opts.items() if k != "nodes"}
+        mine = [n for n in kind if kind[n] == "extra" and layer_of.get(n) is L]
+        if not is_identity(lo):
+            M, Ni, t = ui_xform(lo)
+            for n in [n for n in mine if layer_of.get(n.parent) is not L]:
+                move_subtree(n, M, Ni, t, origin(n.parent))
+        for n in mine:
+            o = node_key(L.opts.get("nodes") or {}, donor_rec[n].node)
+            if o is None:
+                continue
+            if o.get("shown", True) is False:
+                for x in descendants(n):
+                    hide_clone(x)
+            elif not is_identity(o):
+                M, Ni, t = ui_xform(o)
+                move_subtree(n, M, Ni, t, joints.get(n, origin(n)))
+    for n in list(by_node.values()):
+        if n.node in CORE or kind.get(n) != "base":
+            continue
+        o = node_key(adjust, n.node)
+        if o is None:
+            continue
+        if o.get("shown", True) is False:
+            for x in descendants(n):
+                if x.enabled:
+                    hide_clone(x)
+        elif not is_identity(o):
+            M, Ni, t = ui_xform(o)
+            move_subtree(n, M, Ni, t, joints.get(n, origin(n)))
+
+    # ---- (a) / (c) push fitted hair out of the head; later layers a little further out
+    if shell is not None:
+        for rank, L in enumerate(refit):
+            margin = shell.radius * (0.02 + 0.015 * rank)
+            grow = 1.0 + 0.008 * rank
+            for n in [n for n in kind if kind[n] == "extra" and layer_of.get(n) is L and n in meshes]:
+                stats["pushed"] += shell.push(meshes[n], margin, grow)
+    if stats["fit_nodes"]:
+        notes.append(f"declip: {stats['fit_nodes']} swapped part(s) scaled to the base's thickness at the joints")
+    if stats["hair_scaled"]:
+        notes.append(f"declip: {stats['hair_scaled']} hair layer(s) scaled to the base's head")
+    if stats["pushed"]:
+        notes.append(f"declip: {stats['pushed']} hair vertices pushed out of the head")
+
+    # ---- write meshes, joints, bounds back into the records
+    for n, m in meshes.items():
+        if not n.enabled or not m.dirty:
+            continue
+        n.chain = m.bytes()
+        bb = m.bbox()
+        if bb and len(n.hdr) >= 0x60:
+            lo, hi = bb
+            w5c = n.hdr[0x5C:0x60]
+            struct.pack_into("<3f", n.hdr, 0x40, *((lo[k] + hi[k]) / 2 for k in range(3)))
+            struct.pack_into("<f", n.hdr, 0x4C, 1.0)
+            struct.pack_into("<3f", n.hdr, 0x50, *((hi[k] - lo[k]) / 2 for k in range(3)))
+            n.hdr[0x5C:0x60] = w5c
+
+    def fix_joints(n):
+        for c in n.children:
+            if c in joints and (c in moved or n in moved):
+                o = joints[c]
+                po = origin(n)
+                struct.pack_into("<3f", c.hdr, 0x10, *o)
+                struct.pack_into("<3f", c.hdr, 0x20, *po)
+                struct.pack_into("<3f", c.hdr, 0x30, *v_sub(o, po))
+            fix_joints(c)
+    for r in bm.recs:
+        if r.parent is None:
+            fix_joints(clone[r])
+
+    # ---- serialize depth first, pops from the depths
     order = []
 
     def dfs(n):
         order.append(n)
         for c in n.children:
             dfs(c)
-    roots = [clone[r] for r in bm.recs if r.parent is None]
-    for rt in roots:
-        dfs(rt)
-    if len(order) > MAX_RECORDS:
-        raise MixError(f"{len(order)} records: more than {MAX_RECORDS}")
+    for r in bm.recs:
+        if r.parent is None:
+            dfs(clone[r])
     if order[-1] is not clone[bm.recs[-1]]:
-        raise MixError("internal: the base's last record moved")
+        fail("internal: the base's last record moved")
     depths = {id(n): depth(n) for n in order}
     body = bytearray()
     for k, n in enumerate(order):
-        if k + 1 < len(order):
+        last = k + 1 == len(order)
+        if not last:
             nxt = order[k + 1]
             pop = depths[id(n)] - (depths[id(nxt.parent)] if nxt.parent is not None else -1)
-            last = 0
         else:
-            pop, last = bm.last_pop, 1
+            pop = bm.last_pop
         hdr = bytearray(n.hdr)
         if last:
-            hdr = hdr[:0x40]
-            chain = b""
+            hdr, chain = hdr[:0x40], b""
         else:
-            chain = n.chain
+            chain = n.chain if n.enabled or len(hdr) > 0x40 else b""
             if len(hdr) < 0x60 and chain:
-                raise MixError("internal: chain on a short record")
-        ln = len(hdr) + len(chain) if not last else 0x40
-        struct.pack_into("<iHH", hdr, 0, ln if not last else struct.unpack_from("<i", n.hdr, 0)[0], pop, last)
+                fail("internal: chain on a short record")
+        ln = len(hdr) + len(chain) if not last else struct.unpack_from("<i", n.hdr, 0)[0]
+        struct.pack_into("<iHH", hdr, 0, ln, pop, 1 if last else 0)
         body += hdr + chain
-    # header
     head = bytearray(bm.head)
     struct.pack_into("<I", head, 8, len(order))
-    face_new = new_index(head_src, head_src.faceTex) if head_src is not None else new_index(base, base.faceTex)
+    face_new = new_index(face_src, face_src.faceTex)
     if face_new is None:
-        raise MixError("the face texture did not make it into the texture file")
+        fail("the face texture did not make it into the texture file")
     head[0x4C] = face_new
     head[0x4E] = 0
     head[0x4F] = len(mats)
@@ -899,8 +1662,7 @@ def mix(base_pack, selections, report=None):
         head[0x54] = v if v is not None else 0
     if head_src is not None:
         fl = struct.unpack_from("<I", head, 0xC)[0]
-        fl = (fl & ~0xC00000) | (head_src.flags & 0xC00000)
-        struct.pack_into("<I", head, 0xC, fl)
+        struct.pack_into("<I", head, 0xC, (fl & ~0xC00000) | (head_src.flags & 0xC00000))
     new_end = len(head) + len(body)
     tail = bytearray(bm.tail)
     if bm.seamOfs:
@@ -909,14 +1671,15 @@ def mix(base_pack, selections, report=None):
         struct.pack_into("<i", head, 0x70, bm.seamOfs + delta)
         vc, tc, vo, to = struct.unpack_from("<4i", tail, so)
         struct.pack_into("<4i", tail, so, vc, tc, vo + delta, to + delta)
-        # seam triangles: their TEX0 pairs (tex0Base relative to the model's blocks, tex0Shade to the ramps)
         tm, rm = maps(base)
         for i in range(tc):
             b = to - bm.end + i * 0x20 + 0x10
             t0, t1 = struct.unpack_from("<QQ", tail, b)
             key = (t0 & 0x3FFF, (t0 >> 37) & 0x3FFF)
             if key in tm:
-                a, c = tm[key]
+                a, c, bits = tm[key]
+                if bits is not None:
+                    t0 = (t0 & ~(0xFFFFF << 14)) | (bits & (0xFFFFF << 14))
                 t0 = (t0 & ~0x3FFF & 0xFFF8001FFFFFFFFF) | a | (c << 37)
             r = (t1 >> 37) & 0x3FFF
             if r in rm:
@@ -924,29 +1687,141 @@ def mix(base_pack, selections, report=None):
             struct.pack_into("<QQ", tail, b, t0, t1)
     pmdl = bytes(head + body + tail)
 
-    # ---- the other entries
     parts = list(base.parts)
     parts[E_MODEL - 1] = pmdl
     parts[E_TEX - 1] = build_texfile(out_texs, base.texeo)
+    # the face chains (mouth shapes) get the face mesh's own vertex edits
+    face_clone = by_node.get(0x30)
+    for n_ in E_MOUTH_A:
+        c = entry(face_src.parts, n_)
+        if not c:
+            parts[n_ - 1] = b""
+            continue
+        c = remap(face_src, c)
+        m = Mesh(c)
+        if head_src is not None:
+            d30 = head_src.model.by_node.get(0x30)
+            if d30 is not None:
+                m.shift(v_sub(bm.by_node[0x30].ofsA, d30.ofsA), v_sub(bm.by_node[0x30].ofsB, d30.ofsB))
+        _replay(m, face_clone, meshes, build, by_node, origin, adjust, layers, layer_of)
+        parts[n_ - 1] = m.bytes()
     if head_src is not None:
-        hd = head_src
-        r30 = bm.by_node[0x30]
-        d30 = hd.model.by_node.get(0x30)
-        dA = sub(r30.ofsA, d30.ofsA) if d30 else (0, 0, 0)
-        dB = sub(r30.ofsB, d30.ofsB) if d30 else (0, 0, 0)
-        for n in E_MOUTH_A:
-            c = entry(hd.parts, n)
-            parts[n - 1] = remap(hd, c, dA, dB) if c else b""
-        for n in [E_EYES] + E_MOUTH_B:
-            parts[n - 1] = entry(hd.parts, n)
+        for n_ in [E_EYES] + E_MOUTH_B:
+            parts[n_ - 1] = entry(head_src.parts, n_)
         notes.append("face: mouth shapes, eye frames and mouth textures from the head's donor")
-    else:
-        for n in E_MOUTH_A:
-            c = entry(base.parts, n)
-            if c:
-                parts[n - 1] = remap(base, c)
     parts[E_CHAIN - 1] = merge_chains(base, order, renum, hidden, notes)
     return join(parts)
+
+
+def node_key(d, node):
+    """d[node] with the key as an int or a hex / decimal string."""
+    for k in (node, hex(node), "0x%X" % node, "0x%02X" % node, str(node)):
+        if k in d:
+            return d[k]
+    return None
+
+
+def _ancestors(n):
+    out = []
+    while n.parent is not None:
+        n = n.parent
+        out.append(n)
+    return out
+
+
+def _is_piece_root(L, by_node, node):
+    x = by_node[node]
+    return x.parent is None or x.parent.node not in REGIONS.get(L.piece, ())
+
+
+def g_leader(groups, t):
+    return any(g[0] is t for g in groups)
+
+
+def _replay(m, face_clone, meshes, build, by_node, origin, adjust, layers, layer_of):
+    """Mouth-shape chains replace the face mesh: give them the face's head-build and workshop edits."""
+    if face_clone is None:
+        return
+    f = float(build.get("head", 100)) / 100.0 if build else 1.0
+    fm = meshes.get(face_clone)
+    L = layer_of.get(face_clone)
+    if L is not None:
+        lo = {k: v for k, v in L.opts.items() if k != "nodes"}
+        if not is_identity(lo):
+            M, Ni, t = ui_xform(lo)
+            x = face_clone
+            while x.parent is not None and x.parent.node in REGIONS.get(L.piece, ()):
+                x = x.parent
+            m.apply(M, Ni, t, origin(x))
+        o = node_key(L.opts.get("nodes") or {}, 0x30)
+        if o and not is_identity(o):
+            M, Ni, t = ui_xform(o)
+            m.apply(M, Ni, t, origin(face_clone), weighted=True)
+    o = node_key(adjust, 0x30)
+    if L is None and o and not is_identity(o):
+        M, Ni, t = ui_xform(o)
+        m.apply(M, Ni, t, origin(face_clone), weighted=True)
+    if abs(f - 1) > 1e-3:
+        pts = []
+        for k in (0x2F, 0x30, 0x31, 0x32, 0x33):
+            n = by_node.get(k)
+            if n is not None and n in meshes:
+                pts += meshes[n].P
+        if pts:
+            # the head meshes are already scaled: invert to find the centre the build used
+            c = tuple((min(p[k] for p in pts) + max(p[k] for p in pts)) / 2 for k in range(3))
+            f = max(0.3, min(3.0, f))
+            m.apply(((f, 0, 0), (0, f, 0), (0, 0, f)), IDENT3, (0, 0, 0), c)
+
+
+# ---- node lists for the UI
+def _node_entry(m, r, name):
+    t = sum(max(0, len(s["verts"]) - 2) for s in mdlx.parse_chain(r.chain, 0, len(r.chain))) if r.mesh else 0
+    return {"node": r.node, "name": name, "parent": r.parent.node if r.parent is not None else None,
+            "region": m.region(r), "triangles": t}
+
+
+def base_nodes(base_pack):
+    """The base model's nodes with a mesh: [{node, name, parent, region, triangles}] (keys for `adjust`)."""
+    s = Source(base_pack, "base")
+    m = s.model
+    out, counts = [], {}
+    for r in m.recs:
+        if not r.mesh:
+            continue
+        reg = m.region(r)
+        if r.node in NODE_NAMES:
+            name = NODE_NAMES[r.node]
+        else:
+            counts[reg] = counts.get(reg, 0) + 1
+            name = f"{EXTRA_WORD.get(reg, 'Part')} {counts[reg]}"
+        out.append(_node_entry(m, r, name))
+    return out
+
+
+def layer_nodes(base_pack, selections):
+    """For each selection, the donor nodes it brings: [[{node (donor id, the key of opts["nodes"]), name ("Strand
+    2.3" = layer 2, strand 3; core nodes by body part), parent, region, triangles}], ...]."""
+    out = []
+    cache = {}
+    for k, s in enumerate(selections, 1):
+        pack, piece = s[0], s[1].rstrip("+")
+        if piece not in PIECES:
+            raise MixError(f"unknown piece {piece!r}")
+        src = cache.get(id(pack)) or cache.setdefault(id(pack), Source(pack, "donor"))
+        m = src.model
+        region = "hair" if piece in ("hair", "head") else piece
+        items, i = [], 0
+        for r in m.recs:
+            if r.node in CORE:
+                if piece != "hair" and not s[1].endswith("+") and r.node in REGIONS[piece] and r.mesh:
+                    items.append(_node_entry(m, r, NODE_NAMES.get(r.node, f"Node 0x{r.node:X}")))
+                continue
+            if m.region(r) == region and r.mesh:
+                i += 1
+                items.append(_node_entry(m, r, f"{EXTRA_WORD.get(region, 'Part')} {k}.{i}"))
+        out.append(items)
+    return out
 
 
 TAIL = {4, 5, 6, 7}
@@ -1004,9 +1879,12 @@ def merge_chains(base, order, renum, hidden, notes):
         for i in range(count):
             if blk[nofs + i] in hidden:
                 blk[nofs + i] = 0
-    added = set(renum.values())
-    for (src, old), new in renum.items():
-        if src.chain is None:
+    renum = list(renum.items()) if isinstance(renum, dict) else renum
+    renum = [(k[0], k[1], v) for k, v in renum] if renum and len(renum[0]) == 2 else renum
+    added = {new for _, _, new in renum}
+    still = []
+    for src, old, new in renum:
+        if src.chain is None or new in hidden or new not in present:
             continue
         for layout, count in ((CHAIN_A, 16), (CHAIN_B, 8)):
             nofs = layout[0][0]
@@ -1018,7 +1896,7 @@ def merge_chains(base, order, renum, hidden, notes):
             free = stale + [j for j in range(count) if j not in stale and
                             (blk[nofs + j] == 0 or (blk[nofs + j] not in present and blk[nofs + j] not in added))]
             if not free:
-                notes.append(f"no free secondary-motion slot for node 0x{new:X}: it stays still")
+                still.append(new)
                 continue
             j = free[0]
             for k in stale[1:]:
@@ -1026,6 +1904,9 @@ def merge_chains(base, order, renum, hidden, notes):
             for off, size in layout:
                 blk[off + j * size:off + (j + 1) * size] = src.chain[off + i * size:off + (i + 1) * size]
             blk[nofs + j] = new
+    if still:
+        notes.append(f"{len(still)} added hair / cloth part(s) hang still: the 16 + 8 secondary-motion slots are "
+                     f"taken (nodes {' '.join('%02X' % n for n in still[:12])})")
     return bytes(blk)
 
 
@@ -1042,7 +1923,7 @@ def check(pack_bytes):
     e = m.raw
     if struct.unpack_from("<I", e, 8)[0] != len(m.recs):
         bad.append("header +8 is not the record count")
-    if len(m.recs) > MAX_RECORDS:
+    if len(m.recs) > MAX_RECORDS_FORCE:
         bad.append("too many records")
     o = m.meshOfs
     for r in m.recs:
@@ -1113,8 +1994,25 @@ def check(pack_bytes):
                 bad.append(f"node 0x{r.node:X}: ramp CLUT {rc} missing")
     if mins != [0, 0]:
         bad.append(f"lowest TBP / CBP of the main chains is {mins}, must be 0")
-    tsum = sum(t.tbpStep for t in s.texs if s.material(t.old))
-    csum = sum(t.cbpStep for t in s.texs if s.material(t.old))
+    # every TEX0 has the shape (TBW, PSM, TW, TH) of the texture it names
+    def shape_check(chain, what):
+        buf = bytearray(chain)
+
+        def tex(pos):
+            lo, hi = struct.unpack_from("<II", buf, pos + 20)
+            t = s.tex_by_ofs(lo & 0x3FFF, (hi >> 5) & 0x3FFF)
+            if t is not None:
+                want = struct.unpack_from("<Q", t.ent, 0x30)[0]
+                got = lo | (hi << 32)
+                if (got ^ want) & (0xFFFFF << 14):
+                    bad.append(f"{what}: TEX0 shape differs from texture {t.old}")
+        walk_chain(buf, on_tex=tex)
+    for r in m.recs:
+        if r.mesh:
+            shape_check(r.chain, f"node 0x{r.node:X}")
+    # (mouth chains are not checked: three models on the disc name a texture of another shape there already)
+    tsum = max([t.tbpOfs + t.tbpStep for t in s.texs if s.material(t.old)] or [0])
+    csum = max([t.cbpOfs + max(1, t.cbpStep) for t in s.texs if s.material(t.old) and t.clut] or [0])
     rsum = max([t.tbpOfs + t.tbpStep for t in s.texs if s.ramp(t.old)] or [0])
     if tsum > TEX_BLOCKS or csum > CLUT_BLOCKS or rsum > RAMP_BLOCKS:
         bad.append(f"GS budget: {tsum} pixel, {csum} CLUT, {rsum} ramp blocks")

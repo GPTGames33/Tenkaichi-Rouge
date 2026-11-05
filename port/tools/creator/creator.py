@@ -229,7 +229,7 @@ class App:
         spec = dict(spec, name=spec.get("name") or "preview")
         f = cf.Fighter(self.disc, spec, "preview")
         look = f.costumes[min(costume, len(f.costumes) - 1)]
-        key = json.dumps([look, spec.get("parts"), spec.get("colours")], sort_keys=True)
+        key = json.dumps([look, spec.get("parts"), spec.get("colours"), spec.get("body")], sort_keys=True)
         if getattr(self, "_model_key", None) != key:
             pack = f.model(look, False)
             self._model = mdl.extract(pack.bytes(), pose="relaxed", hide_optional=True)
@@ -237,6 +237,25 @@ class App:
             self._model_key = key
         m = self._model
         return {k: m[k] for k in ("positions", "normals", "uvs", "indices", "groups", "textures", "bbox")}
+
+    def layer_nodes(self, spec):
+        """For the Workshop: the strands (nodes) of every piece layer, and the body's own parts."""
+        import mix
+        spec = dict(spec, name=spec.get("name") or "preview")
+        f = cf.Fighter(self.disc, spec, "preview")
+        base = self.disc.model(*f.look).bytes()
+        donors = [(self.disc.model(*who).bytes(), piece, opts) for piece, who, opts in f.parts]
+        layers, body = [], []
+        if hasattr(mix, "layer_nodes"):
+            for (piece, who, _), nodes in zip(f.parts, mix.layer_nodes(base, donors)):
+                layers.append({"piece": piece.rstrip("+"), "label": f"{piece.rstrip('+')} from {cf.name(who[0])}", "nodes": nodes})
+            body = mix.base_nodes(base) if hasattr(mix, "base_nodes") else []
+        else:
+            for piece, who, _ in f.parts:
+                p = next((x for x in mix.pieces(self.disc.model(*who).bytes()) if x["name"] == piece.rstrip("+")), None)
+                nodes = [{"node": n, "name": f"Part {k + 1}"} for k, n in enumerate((p or {}).get("nodes", []))]
+                layers.append({"piece": piece.rstrip("+"), "label": f"{piece.rstrip('+')} from {cf.name(who[0])}", "nodes": nodes})
+        return {"layers": layers, "body": body}
 
     def colours(self, spec):
         """The textures the warrior's look draws with (costume 1, pieces and colour changes applied): their picture
@@ -292,10 +311,13 @@ class App:
         if name not in lst:
             lst.append(name)
         self.roster_save(lst)
+        cf.BUILD_NOTES.clear()
         self.rebuild_roster()
         spec = json.loads(self.path_of(name).read_text(encoding="utf-8-sig"))
+        notes = "".join(f"\n  - {n}" for n in dict.fromkeys(cf.BUILD_NOTES))
         return (f"{spec.get('name')} is on the roster with a cell of its own. Start Tenkaichi3Decomp-Custom.exe "
-                f"(restart it if it is open) and look at the end of the character select.")
+                f"(restart it if it is open) and look at the end of the character select."
+                + (f"\nTo make it fit, the builder:{notes}" if notes else ""))
 
     def unpackage(self, name):
         lst = [n for n in self.roster_list() if n != name]
@@ -505,6 +527,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.send(200, {"text": a.uninstall(body["file"])})
                 if act == "/api/package":
                     return self.send(200, {"text": a.package(body["file"])})
+                if act == "/api/layernodes":
+                    return self.send(200, a.layer_nodes(body["spec"]))
                 if act == "/api/colours":
                     return self.send(200, a.colours(body["spec"]))
                 if act == "/api/quit":
@@ -566,7 +590,7 @@ def main():
             if theirs == VERSION:
                 print(f"The creator is already open: {base}/", flush=True)
                 if not args.no_browser:
-                    webbrowser.open(base + "/")
+                    webbrowser.open(f"{base}/?v={VERSION}")
                 return
             if attempt == 0:
                 print("An older creator is open: closing it...", flush=True)
@@ -580,7 +604,7 @@ def main():
             time.sleep(0.5)
     if srv is None:
         sys.exit(f"port {args.port} is in use by another program: close it, or start with --port <another number>")
-    url = f"http://127.0.0.1:{args.port}/"
+    url = f"http://127.0.0.1:{args.port}/?v={VERSION}"  # (a new address per version: no browser shows an old copy)
     print(f"Custom Character creator: {url}  (Ctrl+C to stop)", flush=True)
     if not args.no_browser:
         webbrowser.open(url)

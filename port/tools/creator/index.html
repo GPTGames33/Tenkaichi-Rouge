@@ -98,6 +98,9 @@
   #pickhead { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
   #picktitle { font-family: Impact, "Arial Black", sans-serif; font-size: 30px; color: #ffd23f; -webkit-text-stroke: 1px #5a1d00; }
   #pickfilter { flex: 1; background: rgba(0,0,0,0.3); border: 1px solid #a993ff; color: #fff; border-radius: 16px; padding: 6px 14px; font: inherit; }
+  #pick.side { background: transparent; pointer-events: none; }
+  #pick.side #pickbox { right: 640px; pointer-events: auto; }
+  #pick.side #pickfilter { visibility: hidden; }
   #grid { flex: 1; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; align-content: start; }
   .cell { background: linear-gradient(#5a3fa8, #2c1b62); border: 2px solid #8f7ae0; border-radius: 8px; cursor: pointer; text-align: center;
     padding: 4px; font-size: 11px; line-height: 1.15; }
@@ -216,7 +219,7 @@ function initView() {
 }
 async function loadModel() {
   if (!V.gl || !spec) return;
-  const key = JSON.stringify([look(), spec.parts || null, spec.colours || null]);
+  const key = JSON.stringify([look(), spec.parts || null, spec.colours || null, spec.body || null]);
   if (key === V.key || V.loading) return;
   V.loading = true; V.key = key;
   try {
@@ -241,7 +244,7 @@ async function loadModel() {
     $("view3d").classList.add("on"); $("hero").style.display = "none";
   } catch (e) { V.key = ""; $("view3d").classList.remove("on"); $("hero").style.display = ""; toast(e.message, true); }
   V.loading = false;
-  if (JSON.stringify([look(), spec.parts || null, spec.colours || null]) !== V.key) loadModel();
+  if (JSON.stringify([look(), spec.parts || null, spec.colours || null, spec.body || null]) !== V.key) loadModel();
 }
 function mat4mul(a, b) { const o = new Array(16).fill(0);
   for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) for (let k = 0; k < 4; k++) o[j * 4 + i] += a[k * 4 + i] * b[j * 4 + k]; return o; }
@@ -281,11 +284,12 @@ function hero() {
 // -------------------------------------------------------------------------------------------- pickers
 let pickDone = null, pickGame = "All";
 function openPick(title, onPick, opts = {}) {
+  $("pick").classList.remove("side");
   $("picktitle").textContent = title; $("pick").style.display = "block"; $("pickfilter").value = "";
   $("grid").style.display = "grid"; $("picklist").style.display = "none";
   pickDone = onPick; drawGrid(opts); $("pickfilter").oninput = () => drawGrid(opts); $("pickfilter").focus();
 }
-function closePick() { $("pick").style.display = "none"; pickDone = null; }
+function closePick() { $("pick").style.display = "none"; $("pick").classList.remove("side"); pickDone = null; }
 function drawGrid(opts) {
   const q = $("pickfilter").value.toLowerCase();
   const items = [];
@@ -489,12 +493,17 @@ function drawParts() {
     rows.push({label, value: ls.length ? (ls[0].add ? "The body's own  +  " : "") + ls.map(r => nm(r)).join("  +  ") : "The body's own",
       tip: about + " Click to pick whose; ＋ layers another one on top.",
       onclick: (ev) => {
+        if (ev.target.classList.contains("tune")) return openWorkshop(k);
         if (ev.target.classList.contains("addlayer")) {
           return openPick(`${label.toUpperCase()}: LAYER ANOTHER ON TOP`, p => { if (p) setLayers(k, layers(k).concat([Object.assign({add: true}, p)])); }, {costume: true});
         }
         openPick(`${label.toUpperCase()}: WHOSE?`, p => setLayers(k, p ? [p] : []), {costume: true, none: "The body's own"});
-      }, extra: `<span class="btn addlayer" title="Layer another on top">＋</span>`});
+      }, extra: `<span class="btn addlayer" title="Layer another on top">＋</span>` +
+        (ls.length ? `<span class="btn tune" title="Workshop: reshape it" style="margin-left:6px">🔧</span>` : "")});
   }
+  rows.push({sec: "BODY"});
+  rows.push({label: "Workshop", value: "Build, and reshape the body's own parts", onclick: () => openWorkshop(null),
+    tip: "Stretch it, move it, turn it! Your warrior changes as you go.", extra: `<span class="btn">🔧</span>`});
   rows.push({sec: "COLOURS"});
   const nc = (spec.colours || []).length;
   rows.push({label: "Recolour", value: nc ? `${nc} colour change${nc > 1 ? "s" : ""}` : "Original colours",
@@ -506,7 +515,85 @@ function drawParts() {
   help([["✕", "Change"], ["Esc", "Back"]]);
 }
 
+// ---- the Workshop: a piece's layers and their strands, or the body's own parts and its build
+const WS = {piece: null, layer: 0, node: null, info: null};
+function wsTarget() {
+  // the opts object being edited: a layer's ({...} of spec.parts[piece][layer].adjust) or the body's (spec.body)
+  if (WS.piece === null) { spec.body = spec.body || {}; return spec.body; }
+  const v = spec.parts[WS.piece]; const list = Array.isArray(v) ? v : [v];
+  const layer = list[Math.min(WS.layer, list.length - 1)];
+  layer.adjust = layer.adjust || {}; return layer.adjust;
+}
+function wsPrune() {
+  const clean = o => { for (const k of Object.keys(o)) { const v = o[k];
+    if (v && typeof v === "object" && !Array.isArray(v)) { clean(v); if (!Object.keys(v).length) delete o[k]; } } };
+  if (spec.body) { clean(spec.body); if (!Object.keys(spec.body).length) delete spec.body; }
+  for (const k of Object.keys(spec.parts || {})) for (const l of [].concat(spec.parts[k])) if (l && l.adjust) { clean(l.adjust); if (!Object.keys(l.adjust).length) delete l.adjust; }
+}
+async function openWorkshop(piece, layer = 0) {
+  WS.piece = piece; WS.layer = layer; WS.node = null; $("pick").classList.add("side");
+  $("picktitle").textContent = "WORKSHOP"; $("pick").style.display = "block"; $("grid").style.display = "none";
+  $("picknone").style.display = "none"; $("pickgames").innerHTML = "";
+  const L = $("picklist"); L.style.display = "block";
+  L.innerHTML = `<div class="sec">READING THE PARTS...</div>`;
+  try { WS.info = await api("/api/layernodes", {spec}); } catch (e) { L.innerHTML = `<div class="sec">${esc(e.message)}</div>`; return; }
+  drawWorkshop();
+}
+const FMT = {pct: v => Math.round(v * 100) + "%", pct100: v => Math.round(v) + "%", deg: v => Math.round(v) + "°", num: v => (+v).toFixed(1)};
+function slider(label, path, min, max, step, dflt, fmt) {
+  // path: [obj, key, index?]; fmt: a key of FMT
+  const [o, k, i] = path, cur = i === undefined ? o[k] : (o[k] || [])[i];
+  const v = cur === undefined ? dflt : cur;
+  return `<div class="row" style="grid-template-columns: 150px 1fr 90px; cursor: default">
+    <span>${label}</span><input type="range" min="${min}" max="${max}" step="${step}" value="${v}" data-k="${k}" data-i="${i === undefined ? "" : i}" data-d="${dflt}" data-f="${fmt}">
+    <span class="sub">${FMT[fmt](v)}</span></div>`;
+}
+function drawWorkshop() {
+  const L = $("picklist"), info = WS.info;
+  const layers = WS.piece === null ? [] : (info.layers || []).filter(l => l.piece === WS.piece);
+  const nodes = WS.piece === null ? (info.body || []) : ((layers[WS.layer] || {}).nodes || []);
+  const t = wsTarget();
+  const tgt = WS.node === null ? t : ((t.nodes = t.nodes || {})[WS.node] = t.nodes[WS.node] || {});
+  let h = "";
+  if (layers.length > 1) h += `<div class="sec">LAYER</div><div>${layers.map((l, i) => `<span class="tab${i === WS.layer ? " on" : ""}" data-layer="${i}" style="margin:4px;display:inline-block">${esc(l.label)}</span>`).join("")}</div>`;
+  h += `<div class="sec">${WS.piece === null ? "BODY" : esc((layers[WS.layer] || {}).label || WS.piece)}: WHICH PART?</div><div>` +
+    `<span class="tab${WS.node === null ? " on" : ""}" data-node="" style="margin:4px;display:inline-block">${WS.piece === null ? "Build" : "Whole layer"}</span>` +
+    nodes.map(n => `<span class="tab${WS.node === String(n.node) ? " on" : ""}" data-node="${n.node}" style="margin:4px;display:inline-block">${esc(n.name)}</span>`).join("") + `</div>`;
+  if (WS.piece === null && WS.node === null) {
+    const b = (t.build = t.build || {});
+    h += `<div class="sec">BUILD</div>` + [["torso", "Torso build"], ["arms", "Arm build"], ["legs", "Leg build"], ["head", "Head size"]].map(([k, lab]) =>
+      slider(lab, [b, k], 50, 160, 1, 100, "pct100")).join("");
+  } else {
+    if (WS.node !== null) h += `<div class="row" style="grid-template-columns: 150px 1fr auto"><span>Shown</span><span class="val">${tgt.shown === false ? "Off" : "On"}</span><span class="btn wsshow">✕</span></div>`;
+    const sk = WS.node === null ? "scale" : "stretch";
+    h += `<div class="sec">SHAPE</div>` +
+      ["X", "Y", "Z"].map((a, i) => slider(`Stretch ${a}`, [tgt, sk, i], 0.25, 3, 0.01, 1, "pct")).join("") +
+      slider("Size", [tgt, "size"], 0.25, 3, 0.01, 1, "pct") +
+      `<div class="sec">PLACE</div>` + ["X", "Y", "Z"].map((a, i) => slider(`Move ${a}`, [tgt, "move", i], -8, 8, 0.05, 0, "num")).join("") +
+      ["X", "Y", "Z"].map((a, i) => slider(`Turn ${a}`, [tgt, "turn", i], -180, 180, 1, 0, "deg")).join("");
+  }
+  h += `<div class="row wsreset" style="grid-template-columns: 150px 1fr auto"><span>Reset</span><span class="val">Put this part back as it was</span><span class="btn">↺</span></div>`;
+  L.innerHTML = h;
+  for (const el of L.querySelectorAll("[data-layer]")) el.onclick = () => { WS.layer = +el.dataset.layer; WS.node = null; drawWorkshop(); };
+  for (const el of L.querySelectorAll("[data-node]")) el.onclick = () => { WS.node = el.dataset.node === "" ? null : el.dataset.node; drawWorkshop(); };
+  const show = L.querySelector(".wsshow");
+  if (show) show.parentElement.onclick = () => { tgt.shown = tgt.shown === false; if (tgt.shown) delete tgt.shown; touch(); drawWorkshop(); };
+  L.querySelector(".wsreset").onclick = () => {
+    if (WS.node !== null) delete t.nodes[WS.node]; else if (WS.piece === null) delete t.build; else for (const k of ["scale", "size", "move", "turn"]) delete t[k];
+    wsPrune(); touch(); drawWorkshop();
+  };
+  let timer = null;
+  for (const inp of L.querySelectorAll("input[type=range]")) inp.oninput = () => {
+    const o = WS.piece === null && WS.node === null ? t.build : tgt;
+    const k = inp.dataset.k, i = inp.dataset.i, d = +inp.dataset.d, v = +inp.value;
+    if (i === "") o[k] = v; else { o[k] = o[k] || [d, d, d]; o[k][+i] = v; }
+    inp.parentElement.querySelector(".sub").textContent = FMT[inp.dataset.f](v);
+    clearTimeout(timer); timer = setTimeout(() => { wsPrune(); touch(); }, 250);
+  };
+  tip("Stretch it, move it, turn it! Your warrior changes as you go. Esc when done.");
+}
 async function openColours() {
+  $("pick").classList.add("side");
   $("picktitle").textContent = "COLOURS"; $("pick").style.display = "block"; $("grid").style.display = "none";
   $("picknone").style.display = "none"; $("pickgames").innerHTML = "";
   const L = $("picklist"); L.style.display = "block";
