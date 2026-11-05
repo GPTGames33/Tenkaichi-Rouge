@@ -65,7 +65,7 @@ def main():
             checksum = int(p[1], 16)
     placed = mac_placed(exe) if toolchain.MAC else {}
     for l in open(str(exe) + ".map") if not toolchain.MAC else ():
-        m = re.match(r"^\s*\.data\s+0x([0-9a-f]+)\s+0x([0-9a-f]+)\s+\S*obj_data\w*/(\S+)\.o\s*$", l)
+        m = re.match(r"^\s*\.data\s+0x([0-9a-f]+)\s+0x([0-9a-f]+)\s+.*?obj_data\w*/(\S+)\.o\s*$", l)  # (.*?: a folder name may have spaces)
         if m and int(m.group(2), 16):
             placed[m.group(3)] = (int(m.group(1), 16), int(m.group(2), 16))
     records = []
