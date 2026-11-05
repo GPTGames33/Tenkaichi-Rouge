@@ -491,7 +491,6 @@ def mix(base_pack, selections, report=None):
     head_src = core_src.get(0x30)
 
     bm = base.model
-    new_recs = []          # (Rec, kind) in base order; kind: base / swapped / hidden
     # ---- base records
     plan = []
     for r in bm.recs:
@@ -1178,7 +1177,11 @@ def main(argv=None):
             cache[path] = pathlib.Path(path).read_bytes()
         sel.append((cache[path], name))
     notes = []
-    out = mix(pathlib.Path(a.base).read_bytes(), sel, notes)
+    try:
+        out = mix(pathlib.Path(a.base).read_bytes(), sel, notes)
+    except MixError as e:
+        print("refused:", e)
+        return 1
     pathlib.Path(a.out).write_bytes(out)
     for n in notes:
         print("note:", n)

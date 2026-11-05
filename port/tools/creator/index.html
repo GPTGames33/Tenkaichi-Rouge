@@ -230,7 +230,7 @@ async function loadModel() {
     if (V.model) V.gl.deleteVertexArray(V.model.vao);
     V.model = {vao, groups: m.groups, texs, bbox: m.bbox};
     $("view3d").classList.add("on"); $("hero").style.display = "none";
-  } catch (e) { V.key = ""; $("view3d").classList.remove("on"); $("hero").style.display = ""; }
+  } catch (e) { V.key = ""; $("view3d").classList.remove("on"); $("hero").style.display = ""; toast(e.message, true); }
   V.loading = false;
   if (JSON.stringify([look(), spec.parts || null]) !== V.key) loadModel();
 }
@@ -355,21 +355,58 @@ function drawHome() {
   $("saved").textContent = `${fighters.length} SAVED`; $("savedsub").textContent = "";
   const rows = [{sec: "NEW"}, {label: "New Warrior", value: "Start from any fighter in the roster", onclick: newFighter,
     tip: "Pick a body to start from. Everything else can be changed after.", extra: `<span class="btn">✕</span>`}];
-  if (fighters.length) rows.push({sec: "MY FIGHTERS"});
+  if (roster.some(c => c.game === "BT4"))
+    rows.push({label: "Add a BT4 fighter", value: "A BT4 character with a cell of its own", onclick: addBt4,
+      tip: "Brings a whole BT4 character (look, moves, voice, portrait) into this game as a new roster character.", extra: `<span class="btn">✕</span>`});
+  rows.push({label: "New forms", value: "Give a roster character new transformations", onclick: rosterForms,
+    tip: "Goku can transform into one of your warriors: pick the character, the direction and the warrior.", extra: `<span class="btn">✕</span>`});
+  if (fighters.length) rows.push({sec: "MY FIGHTERS (✓ = on the roster)"});
   for (const f of fighters) {
     if (f.error) { rows.push({label: f.file, value: "unreadable: " + f.error, locked: true}); continue; }
-    rows.push({label: f.spec.name || f.file, value: nm(f.spec.look || (f.spec.costumes || [])[0] || f.spec.base, ""), sub: f.spec.title || "",
+    rows.push({label: (rosterInfo.roster.includes(f.file) ? "✓ " : "") + (f.spec.name || f.file),
+      value: nm(f.spec.look || (f.spec.costumes || [])[0] || f.spec.base, ""), sub: f.spec.title || "",
       onclick: () => { spec = JSON.parse(JSON.stringify(f.spec)); file = f.file; dirty = false; tab = "warrior"; $("saved").textContent = "SAVED"; draw(); },
-      tip: "Edit this fighter.", extra: `<span class="btn">✕</span>`});
+      tip: "Load this warrior and edit it.", extra: `<span class="btn">✕</span>`});
   }
   render(rows);
   tip("Make your own warrior! Mix the looks, moves and voices of the whole roster.");
   help([["✕", "Choose"], ["Esc", "Back"]]);
 }
 
+function addBt4() {
+  pickGame = "BT4";
+  openPick("WHICH BT4 FIGHTER?", async r => {
+    toast("Bringing " + r.chara.slice(5) + " over... (a few seconds)");
+    try { await api("/api/addbt4", {chara: r.chara}); fighters = await api("/api/fighters"); await refreshRoster(); draw();
+      toast(r.chara.slice(5) + " is on the roster! Restart Tenkaichi3Decomp-Custom.exe to fight with it."); }
+    catch (e) { toast(e.message, true); }
+  });
+}
+function rosterForms() {
+  openPick("NEW FORMS FOR WHOM?", r => {
+    const id = String(charaId(r.chara)), f = rosterInfo.forms[id] || {};
+    $("picktitle").textContent = r.chara.toUpperCase() + ": NEW FORMS"; $("pick").style.display = "block"; $("grid").style.display = "none";
+    $("picknone").style.display = "none"; $("pickgames").innerHTML = "";
+    const L = $("picklist"); L.style.display = "block";
+    const name = t => t ? ((fighters.find(x => x.file === t) || {spec: {name: t}}).spec.name) : "none (the character's own)";
+    L.innerHTML = `<div class="sec">R3 + DIRECTION: TRANSFORMS INTO ONE OF YOUR WARRIORS</div>` + ["left", "up", "right"].map(d =>
+      `<div class="row" data-d="${d}"><span>R3 + ${d[0].toUpperCase() + d.slice(1)}</span><span class="val">${esc(name(f[d]))}</span><span class="btn">✕</span></div>`).join("");
+    for (const el of L.querySelectorAll(".row")) el.onclick = () => {
+      const d = el.dataset.d;
+      L.innerHTML = `<div class="sec">${esc(r.chara)} + R3 ${d.toUpperCase()}: INTO WHICH WARRIOR?</div>` +
+        fighters.filter(x => x.spec).map(x => `<div class="row" data-f="${esc(x.file)}"><span>${esc(x.spec.name)}</span><span class="val">${esc(x.spec.title || "")}</span><span class="btn">✕</span></div>`).join("") +
+        `<div class="row" data-f=""><span>Nothing</span><span class="val">the character's own form this way</span><span class="btn">✕</span></div>`;
+      for (const el2 of L.querySelectorAll(".row")) el2.onclick = async () => {
+        closePick();
+        try { const res = await api("/api/rosterform", {chara: r.chara, dir: d, target: el2.dataset.f || null, cost: 1});
+          await refreshRoster(); toast(res.text); } catch (e) { toast(e.message, true); }
+      };
+    };
+  }, {bt3only: true});
+}
 function newFighter() {
   openPick("START FROM WHICH BODY?", r => {
-    spec = {name: "", title: "", base: r, look: r, moveset: {chara: r.chara}, slot: {chara: r.chara, costume: r.costume || 1}};
+    spec = {name: "", title: "", base: charaId(r.chara) >= 1000 ? {chara: "Goku (End)"} : r, look: r, moveset: {chara: r.chara}};
     file = null; dirty = true; tab = "warrior"; draw();
     tip("Every great warrior needs a great name! Start with that.");
   }, {costume: true});
@@ -426,10 +463,22 @@ function drawParts() {
         spec.costumes = clean; spec.look = clean[0]; touch(); draw();
       }, {costume: true, none: i ? "No costume" : undefined}), extra: `<span class="btn">✕</span>`});
   }
-  rows.push({sec: "MIX PIECES"});
-  for (const p of ["Hair", "Head", "Face", "Torso", "Arms", "Legs", "Gloves & boots"])
-    rows.push({label: p, value: "The body's own", sub: "coming: needs the model format worked out", locked: true,
-      tip: "Mixing single pieces between characters is the next big step: it needs the 3D model format decoded."});
+  rows.push({sec: "MIX PIECES (layer on top of costume 1)"});
+  const PIECES = [["head", "Whole head", "Neck, head and face, with its mouth shapes and eyes."],
+    ["hair", "Hair", "The hanging hair locks (the scalp is part of the head)."],
+    ["torso", "Torso", "Chest, belt and shoulders, and capes or sashes hanging on them."],
+    ["arms", "Arms", "Upper arms and forearms."], ["hands", "Hands", "Hands and gloves."],
+    ["legs", "Legs", "Thighs and shins."], ["feet", "Feet", "Feet and boots."], ["tail", "Tail", "A tail (only some characters have one)."]];
+  for (const [k, label, about] of PIECES) {
+    const r = (spec.parts || {})[k];
+    rows.push({label, value: r ? nm(r) : "The body's own", sub: r ? "" : "", tip: about + " Pick whose to wear.",
+      onclick: () => openPick(`${label.toUpperCase()}: WHOSE?`, p => {
+        spec.parts = spec.parts || {};
+        if (p) spec.parts[k] = p; else delete spec.parts[k];
+        if (!Object.keys(spec.parts).length) delete spec.parts;
+        touch(); draw();
+      }, {costume: true, none: "The body's own"}), extra: `<span class="btn">✕</span>`});
+  }
   rows.push({sec: "COLOURS"});
   rows.push({label: "Recolour", value: "Original", sub: "coming: palette editing", locked: true, tip: "Recolouring through the texture palettes is planned."});
   render(rows);
@@ -516,28 +565,47 @@ function pickForm(d) {
   const mine = fighters.filter(f => f.file !== file && f.spec);
   L.innerHTML = `<div class="sec">MY WARRIORS</div>` + (mine.length ? mine.map(f => `<div class="row" data-f="${esc(f.file)}"><span>${esc(f.spec.name)}</span><span class="val">${esc(f.spec.title || "")}</span><span class="btn">✕</span></div>`).join("")
     : `<div class="row locked"><span>none yet</span><span class="val">save another warrior first</span></div>`) +
-    `<div class="sec">OTHER</div><div class="row" data-disc="1"><span>A roster character</span><span class="val">pick one</span><span class="btn">✕</span></div>
+    `<div class="sec">OTHER</div><div class="row" data-new="1"><span>A new form</span><span class="val">make a new warrior from this one and transform into it</span><span class="btn">✕</span></div>
+     <div class="row" data-disc="1"><span>A roster character</span><span class="val">pick one</span><span class="btn">✕</span></div>
      <div class="row" data-none="1"><span>Nothing</span><span class="val">no transformation this way</span><span class="btn">✕</span></div>`;
   for (const el of L.querySelectorAll(".row:not(.locked)")) el.onclick = () => {
     spec.forms = spec.forms || {};
     if (el.dataset.none) { delete spec.forms[d]; closePick(); touch(); draw(); return; }
+    if (el.dataset.new) { closePick(); newForm(d); return; }
     if (el.dataset.disc) { closePick(); openPick("TRANSFORM INTO WHOM?", r => { spec.forms[d] = "disc:" + charaId(r.chara); touch(); draw(); }); return; }
     spec.forms[d] = el.dataset.f; closePick(); touch(); draw();
   };
 }
 
+async function newForm(d) {
+  if (!spec.name) { toast("Name your warrior first.", true); return; }
+  if (dirty || !file) await save();
+  if (dirty || !file) return;
+  const parentFile = file, parent = JSON.parse(JSON.stringify(spec));
+  const child = JSON.parse(JSON.stringify(parent));
+  delete child.forms; delete child.form_costs; delete child.bt4_slot;
+  child.name = (parent.name + " " + (d === "up" ? "Super" : d === "left" ? "Form 2" : "Form 3")).slice(0, 63);
+  child.title = "a form of " + parent.name;
+  child.forms = {down: parentFile};
+  try {
+    const r = await api("/api/save", {file: null, spec: child});
+    parent.forms = parent.forms || {}; parent.forms[d] = r.file;
+    parent.form_costs = parent.form_costs || {}; parent.form_costs[d] = parent.form_costs[d] || 2;
+    await api("/api/save", {file: parentFile, spec: parent});
+    fighters = await api("/api/fighters");
+    spec = child; file = r.file; dirty = false; tab = "parts"; draw();
+    toast(`New form made: ${child.name}. Change its look, moves and name; it turns back with R3 + Down.`);
+  } catch (e) { toast(e.message, true); }
+}
 function drawFinish() {
   render([
     {sec: "SAVE"},
     {label: "Save", value: file ? `custom_fighters/${file}` : "not saved yet", onclick: save, tip: "Keep your warrior.", extra: `<span class="btn">✕</span>`},
-    {sec: "PLAY NOW (this game)"},
-    {label: "Takes the place of", value: nm(spec.slot, "?"), sub: "while installed", tip: "Your warrior goes into this character's place in the roster.",
-      onclick: () => openPick("WHOSE PLACE?", r => { spec.slot = {chara: r.chara, costume: r.costume || 1}; touch(); draw(); }, {costume: true, bt3only: true}), extra: `<span class="btn">✕</span>`},
-    {label: "Install", value: "Put my warrior in the game", onclick: () => act("install"), tip: "Then restart the game and pick that character and costume.", extra: `<span class="btn">✕</span>`},
-    {label: "Uninstall", value: "Give the place back", onclick: () => act("uninstall"), tip: "The character is the disc's again.", extra: `<span class="btn">✕</span>`},
-    {sec: "OWN ROSTER CELL (character packages build)"},
-    {label: "Build package", value: "characters/" + (spec.name || "..."), onclick: () => act("package"),
-      tip: "Its own cell on the roster, with its transformations. Needs the build of the custom-character branch.", extra: `<span class="btn">✕</span>`},
+    {sec: "ROSTER (Tenkaichi3Decomp-Custom.exe)"},
+    {label: "Add to roster", value: onRoster() ? "On the roster: update it" : "Give my warrior a cell of its own",
+      sub: onRoster() ? "✓" : "", onclick: () => act("package"),
+      tip: "Your warrior gets its own cell at the end of the character select, with its forms. Restart the Custom game after.", extra: `<span class="btn">✕</span>`},
+    {label: "Take off roster", value: "Remove its cell", onclick: () => act("unpackage"), extra: `<span class="btn">✕</span>`},
     {sec: "BT4 (a copy of your BT4 disc)"},
     {label: "BT4 place", value: nm(spec.bt4_slot, "pick a BT4 character"), sub: "your warrior takes this place in BT4",
       tip: "Which BT4 character your warrior replaces in the copy of the BT4 disc.",
@@ -561,11 +629,14 @@ async function save() {
     fighters = await api("/api/fighters"); toast("Saved! " + file);
   } catch (e) { toast(e.message, true); }
 }
+let rosterInfo = {roster: [], forms: {}};
+function onRoster() { return file && rosterInfo.roster.includes(file); }
+async function refreshRoster() { try { rosterInfo = await api("/api/rosterinfo"); } catch (e) {} }
 async function act(what) {
   if (dirty || !file) await save();
   if (dirty || !file) return;
-  toast(what === "package" ? "Building the package..." : "Working...");
-  try { const r = await api("/api/" + what, {file}); toast(r.text); } catch (e) { toast(e.message, true); }
+  toast(what === "package" ? "Building your warrior for the roster..." : "Working...");
+  try { const r = await api("/api/" + what, {file}); toast(r.text); await refreshRoster(); draw(); } catch (e) { toast(e.message, true); }
 }
 async function bt4Install(remove) {
   if (!remove && !spec.bt4_slot) { toast("First pick the BT4 place.", true); return; }
@@ -591,7 +662,7 @@ async function del() {
 
 (async function () {
   fit(); initView(); tip("Reading the roster from your disc...");
-  try { roster = await api("/api/roster"); fighters = await api("/api/fighters"); draw(); }
+  try { roster = await api("/api/roster"); fighters = await api("/api/fighters"); await refreshRoster(); draw(); }
   catch (e) { toast(e.message, true); }
 })();
 </script>

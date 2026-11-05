@@ -148,6 +148,11 @@ class App:
         self.fighters.mkdir(exist_ok=True)
         self.cache = self.game / "custom_fighters" / ".cache"
         self.cache.mkdir(exist_ok=True)
+        self.state = self.game / "custom_fighters" / ".state"  # the roster, forms and BT4 lists (not fighters)
+        self.state.mkdir(exist_ok=True)
+        for n in ("bt4_installed.json", "roster.json", "roster_forms.json"):
+            if (self.fighters / n).exists() and not (self.state / n).exists():
+                (self.fighters / n).replace(self.state / n)
         self._roster = None
 
     def roster(self):
@@ -254,12 +259,104 @@ class App:
                 n += 1
         return f"{cf.name(slot[0])}, costume {slot[1] + 1} is back to the disc's ({n} files removed)."
 
+    # ---- the roster: every warrior is a character package of its own (characters/<name>/), for
+    #      Tenkaichi3Decomp-Custom.exe; the list of those on the roster is custom_fighters/roster.json
+    def roster_list(self):
+        p = self.state / "roster.json"
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
+
+    def roster_save(self, lst):
+        (self.state / "roster.json").write_text(json.dumps(sorted(set(lst)), indent=2), encoding="utf-8")
+
     def package(self, name):
-        folder = cf.write_package(self.disc, self.path_of(name), self.game / "characters", {})
-        return (f"Character package written to characters/{folder}. It shows on the roster in a build with "
-                f"character packages (the custom-character branch).")
+        lst = self.roster_list()
+        if name not in lst:
+            lst.append(name)
+        self.roster_save(lst)
+        self.rebuild_roster()
+        spec = json.loads(self.path_of(name).read_text(encoding="utf-8-sig"))
+        return (f"{spec.get('name')} is on the roster with a cell of its own. Start Tenkaichi3Decomp-Custom.exe "
+                f"(restart it if it is open) and look at the end of the character select.")
+
+    def unpackage(self, name):
+        lst = [n for n in self.roster_list() if n != name]
+        self.roster_save(lst)
+        self.rebuild_roster()
+        return "Taken off the roster."
+
+    def rebuild_roster(self):
+        """characters/ made again from the warriors on the roster (and their forms), and the roster
+        characters' new forms (custom_fighters/roster_forms.json). Folders this tool did not make stay."""
+        chars = self.game / "characters"
+        chars.mkdir(exist_ok=True)
+        mine = chars / ".custom_fighters.json"
+        old = json.loads(mine.read_text(encoding="utf-8")) if mine.exists() else []
+        done = {}
+        for name in self.roster_list():
+            if self.path_of(name).exists():
+                cf.write_package(self.disc, self.path_of(name), chars, done)
+        made = set(done.values())
+        forms = self.roster_forms()
+        for key, f in forms.items():
+            c = cf.chara_id(f["chara"])
+            folder = cf.folder_name(f"{cf.name(c)} - new forms")
+            out = chars / folder
+            out.mkdir(exist_ok=True)
+            lines = ["# made by the Custom Character creator: new forms of a roster character", "format=1",
+                     f"replaces={c}"]
+            for d in ("left", "up", "right"):
+                if f.get(d) and self.path_of(f[d]).exists():
+                    lines.append(f"{d}={cf.write_package(self.disc, self.path_of(f[d]), chars, done)}")
+                    lines.append(f"{d}_cost={int(f.get(d + '_cost', 1))}")
+            (out / "character.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+            made.add(folder)
+        made |= set(done.values())
+        import shutil
+        for folder in old:
+            if folder not in made and (chars / folder).is_dir():
+                shutil.rmtree(chars / folder)
+        mine.write_text(json.dumps(sorted(made), indent=2), encoding="utf-8")
+        return sorted(made)
+
+    def roster_forms(self):
+        p = self.state / "roster_forms.json"
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+
+    def set_roster_form(self, chara, direction, target, cost):
+        if direction not in ("left", "up", "right"):
+            raise cf.Fail("a new form goes on left, up or right")
+        c = cf.chara_id(chara)
+        if cf.is_bt4(c):
+            raise cf.Fail("new forms go on BT3 roster characters (add the BT4 one to the roster first)")
+        forms = self.roster_forms()
+        f = forms.setdefault(str(c), {"chara": cf.name(c)})
+        if target:
+            self.path_of(target)
+            f[direction] = target
+            f[direction + "_cost"] = int(cost)
+        else:
+            f.pop(direction, None)
+        if not any(f.get(d) for d in ("left", "up", "right")):
+            forms.pop(str(c))
+        (self.state / "roster_forms.json").write_text(json.dumps(forms, indent=2, ensure_ascii=False), encoding="utf-8")
+        self.rebuild_roster()
+        return f"{cf.name(c)}: forms updated. Restart Tenkaichi3Decomp-Custom.exe to use them."
+
+    def add_bt4(self, chara, base):
+        """A BT4 character as a warrior of its own (everything its own), put on the roster."""
+        c = cf.chara_id(chara)
+        if not cf.is_bt4(c):
+            raise cf.Fail("pick a BT4 character")
+        label = cf.name(c)[5:]
+        spec = {"name": label[:63], "title": "from BT4", "base": {"chara": cf.name(cf.chara_id(base or 3))},
+                "look": {"chara": cf.name(c)}, "moveset": {"chara": cf.name(c)}, "voice": {"chara": cf.name(c)},
+                "portrait": {"chara": cf.name(c)}}
+        name = self.save(None, spec)
+        self.package(name)
+        return name
 
     def delete(self, name):
+        self.unpackage(name)
         self.path_of(name).unlink()
         return "deleted"
 
@@ -267,7 +364,7 @@ class App:
     bt4_job = {"running": False, "log": [], "error": None}
 
     def bt4_list(self):
-        p = self.fighters / "bt4_installed.json"
+        p = self.state / "bt4_installed.json"
         return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
 
     def bt4_set(self, name, slot):
@@ -277,7 +374,7 @@ class App:
         else:
             cf.ref(slot)
             lst[name] = slot
-        (self.fighters / "bt4_installed.json").write_text(json.dumps(lst, indent=2, ensure_ascii=False), encoding="utf-8")
+        (self.state / "bt4_installed.json").write_text(json.dumps(lst, indent=2, ensure_ascii=False), encoding="utf-8")
         return lst
 
     def bt4_start(self, name, slot):
@@ -331,6 +428,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.send(200, (HERE / "index.html").read_bytes(), "text/html; charset=utf-8")
             if u.path == "/api/roster":
                 return self.send(200, self.app.roster())
+            if u.path == "/api/rosterinfo":
+                return self.send(200, {"roster": self.app.roster_list(), "forms": self.app.roster_forms()})
             if u.path == "/api/bt4status":
                 return self.send(200, dict(App.bt4_job, installed=self.app.bt4_list()))
             if u.path == "/api/fighters":
@@ -368,6 +467,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.send(200, {"text": a.uninstall(body["file"])})
                 if act == "/api/package":
                     return self.send(200, {"text": a.package(body["file"])})
+                if act == "/api/unpackage":
+                    return self.send(200, {"text": a.unpackage(body["file"])})
+                if act == "/api/rosterform":
+                    return self.send(200, {"text": a.set_roster_form(body["chara"], body["dir"], body.get("target"), body.get("cost", 1))})
+                if act == "/api/addbt4":
+                    return self.send(200, {"file": a.add_bt4(body["chara"], body.get("base"))})
                 if act == "/api/delete":
                     return self.send(200, {"text": a.delete(body["file"])})
             self.send(404, {"error": "not found"})

@@ -172,6 +172,14 @@ def bt4_names():
     return _bt4["names"]
 
 
+def mix_module():
+    here = pathlib.Path(__file__).resolve().parent / "creator"
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
+    import mix
+    return mix
+
+
 def is_bt4(c):
     return c >= BT4_BASE
 
@@ -519,6 +527,12 @@ class Fighter:
         self.portrait = ref(spec.get("portrait"), self.base)
         self.melee = ref(spec.get("melee"))
         self.kiblasts = ref(spec.get("ki_blasts"))
+        order = ("head", "hair", "torso", "tail", "arms", "hands", "legs", "feet")  # later ones win where they overlap
+        parts = spec.get("parts") or {}
+        for k in parts:
+            if k not in order:
+                raise Fail(f"unknown piece {k!r}: one of {', '.join(order)}")
+        self.parts = [(k, ref(parts[k])) for k in order if parts.get(k)]
         self.moves = {}
         for key, v in spec.get("moves", {}).items():
             if key not in SLOTS:
@@ -540,6 +554,13 @@ class Fighter:
         """One model (a costume, or its damaged version) with the fighter's moves, names and voice."""
         d = self.disc
         m = d.model(*costume, damaged)
+        if self.parts:  # pieces of other characters' models (port/tools/creator/mix.py)
+            mix = mix_module()
+            sel = [(d.model(*who, damaged).bytes(), piece) for piece, who in self.parts]
+            try:
+                m = Pack(mix.mix(m.bytes(), sel), 252)
+            except mix.MixError as e:
+                raise Fail(f"the pieces do not fit together: {e}")
         ms = d.model(*self.moveset, damaged)
         for e in MOVESET_ENTRIES + tuple(TEXT_ENTRIES):
             m[e] = ms[e]
