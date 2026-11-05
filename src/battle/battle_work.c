@@ -99,7 +99,15 @@ BattleMemberPool *Battle_GetWork5A8(void) {
 /* Loads everything a battle needs (blocking, behind the loading screen) and creates the two sides' objects. */
 s32 Battle_Load(void) {
     BtlObj_Init(1);
+#ifdef PORT
+    {   /* the battle script's commands and the Story Creator's own (menu/port_story.c: the scenes of a saga) */
+        extern s32 *PortStory_Commands(s32 *game);
+
+        Gsc_InitDefault(PortStory_Commands(gBtlScriptCommands));
+    }
+#else
     Gsc_InitDefault(gBtlScriptCommands);
+#endif
     BtlScript_Init();
     BtlLoad_PushInitialJob();
     Load_RunBlocking();

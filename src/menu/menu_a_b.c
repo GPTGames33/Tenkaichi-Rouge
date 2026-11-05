@@ -129,6 +129,20 @@ s32 Progress_Main(s32 arg) {
         }
 #endif
     }
+#ifdef PORT
+    { /* a Story Creator saga's episode (menu/port_story.c): however its battle ended, the Story Creator follows (it reads
+         the result and goes on with the saga, or back to its list) */
+        extern s32 PortStory_AfterBattle(s32 flags, s32 reason);
+        extern s32 gPortDuelRole;
+
+        if (PortStory_AfterBattle(flags, reason)) {
+            gProgress->flags &= ~MPROG_FLAG10;
+            gProgress->flags &= ~MPROG_FLAG20;
+            gPortDuelRole = 4;
+            gProgress->mode = 38;
+        }
+    }
+#endif
     if (gProgress->mode == 1 || gProgress->mode == 4) {
         if (gMenuArc1 == NULL) {
             gMenuArc1 = File_LoadSync(gProgress->baseFile + 1, NULL, 0);

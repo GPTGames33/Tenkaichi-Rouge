@@ -1797,12 +1797,20 @@ static void vk_frame_end(void) {
         {   /* BT3_UI_SHOT=<frame>:<file.ppm>: the window's picture with the settings window on it, for checking
                 the settings window without a person or a screen capture (drawn a second time into a texture) */
             static int frame = -1;
-            static const char *file;
-            if (frame < 0) {
+            static const char *file, *next;
+            static char name[512];
+            if (frame < 0 || (frame == 0 && next != NULL)) { /* (several: "<frame>:<file>;<frame>:<file>...") */
+                const char *spec = frame < 0 ? getenv("BT3_UI_SHOT") : next;
                 frame = 0;
-                if (getenv("BT3_UI_SHOT") != NULL && (file = strchr(getenv("BT3_UI_SHOT"), ':')) != NULL) {
-                    frame = atoi(getenv("BT3_UI_SHOT"));
+                next = NULL;
+                if (spec != NULL && (file = strchr(spec, ':')) != NULL) {
+                    size_t n;
+                    frame = atoi(spec);
                     file++;
+                    n = strcspn(file, ";");
+                    snprintf(name, sizeof(name), "%.*s", (int)n, file);
+                    file = name;
+                    next = spec[strcspn(spec, ";")] == ';' ? spec + strcspn(spec, ";") + 1 : NULL;
                 }
             }
             if (frame > 0 && gGsFrame >= (unsigned)frame) {
