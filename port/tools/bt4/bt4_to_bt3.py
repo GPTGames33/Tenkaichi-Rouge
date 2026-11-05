@@ -254,7 +254,15 @@ def bt3_voice_files(bt4disc, c, bt3_c):
     """{BT3 file id: bytes} of BT4 character c's voice, for BT3 character slot bt3_c: two banks, 2 x 100 lines.
     Lines and banks are plain copies (ADX / IECS banks, same formats); a placeholder (empty) line is skipped."""
     s = _src(bt4disc)
-    out = {BT3_BANK_US + bt3_c: s.raw(BT4_BANK_US + c), BT3_BANK_JP + bt3_c: s.raw(BT4_BANK_JP + c)}
+    us, jp = s.raw(BT4_BANK_US + c), s.raw(BT4_BANK_JP + c)
+    # A bank is a pack. Some BT4 characters have a lone ADX line in one language's bank slot (Time Patroller's
+    # English one): the game read it as a bank and crashed loading the fight (Snd_LoadBank, SndHd_GetVagInfo).
+    # That language then takes the other one's bank.
+    if not is_pack(us) and is_pack(jp):
+        us = jp
+    elif not is_pack(jp) and is_pack(us):
+        jp = us
+    out = {BT3_BANK_US + bt3_c: us, BT3_BANK_JP + bt3_c: jp}
     for l in range(LINES):
         for b3, b4 in ((BT3_LINE_US, BT4_LINE_US), (BT3_LINE_JP, BT4_LINE_JP)):
             d = s.raw(b4 + c * LINES + l)

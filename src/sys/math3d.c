@@ -305,6 +305,15 @@ void Quat_Unpack(Quat *out, u64 packed) {
     float w;
 
     largest = packed >> 60;
+#ifdef PORT
+    /* PC build: the index of the largest component is 0..3 in every motion of the disc, but some BT4 motions
+       converted into character packages have keys with more (Frieza (DBS)'s Ultimate, motion 0x162; Hit's,
+       Golden Frieza's, ...). The original then writes w past v[3], over the saved registers here: the fight
+       crashed as the move played. Such a key keeps w last. */
+    if (largest > 3) {
+        largest = 3;
+    }
+#endif
     for (i = 0; i < 3; i++) {
         sum = (u32)(packed >> (i * 20)) & 0xFFFFF;
         v[i] = (sum * (1.0f / 1048575.0f) - 0.5f) * 1.41421356f;
