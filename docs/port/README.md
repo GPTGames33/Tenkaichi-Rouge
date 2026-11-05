@@ -4867,3 +4867,42 @@ Tenkaichi 3" on the title / "Press START" screen.
 - A texture pack that has the logo wins over this (its lookup comes first).
 - Checked offscreen (Vulkan) from the start through the title into the attract demo at scale 2 (4:3, and a 1920 x
   1080 window): the logo sharp with clean edges on the sky, its zoom-in and fades; `title_logo=0` the original.
+
+## Story Creator (2026-11-05)
+
+- **Main menu item 14, "Story Creator"** (after Custom Character; label 18 = the third row of the third label sheets,
+  `MAINMENU_ITEM_MAX` 15; Dragon History's icon; not listed in an online session). It opens the Duel mode with
+  `gPortDuelRole 4`, which runs `PortStory_Run` (`src/menu/port_story.c`): the Mod Manager's dusk backdrop and platform
+  with the Character Reference's viewer, under the screens of `port/src/gs/story_ui.cpp` (Dear ImGui, the Custom
+  Character screen's look: My Sagas, a saga, an episode, a scene, a line, the lines said during a fight; the character
+  grid, the on-screen keyboard, voice lists with Square to hear a line).
+- **Sagas** are JSON files in `sagas/` next to the game (`BT3_SAGAS` another folder; progress in `_progress.json`
+  there); the format is docs/port/sagas.md. A sample saga is built in (`port/src/gs/story_sample.h`).
+- **How an episode is played**: as a battle of the story mode (battle mode 1), as Dragon History's are. story_ui.cpp
+  makes a GSC script of the episode (setup action 1000 with the game's commands 10 / 11 / 12; the opening in action
+  10000 during the sequence's intro state; the scenes after the fight in event actions 10040 / 10041 won, 10030 /
+  10031 lost, during the winner state); `BtlLoad` takes it in place of the script file (`PortStory_Script`,
+  battle_load.c state 0x5A, script number 900). The Story Creator's commands 9001..9006 are added to the game's table
+  for every battle (`PortStory_Commands`, battle_work.c): `src/battle/port_story_btl.c` places the fighters on the
+  stage (between its start places, their distance in heights of the taller), works out the camera shots from where
+  they stand and how tall they are (their highest model node), puts them back on their marks at each line (a story
+  gesture can carry a fighter off), plays poses (scripted moves), auras and charge effects, voices (a spoken line
+  lip-synced, `BOBJ_MOUTH_LIP`; else the talk loop) and types the text out (Cross completes, Cross goes on; START skips
+  a scene as in Dragon History). A referee task (command 9004) watches the win / lose conditions (a whole team knocked
+  out, holding out, a time limit) and says the lines of the fight in a box with the speaker's face; once it has
+  decided it puts the scene's request in the game's trigger list (`gBtlScript.pending`), which starts it as soon as the
+  fight allows. After the battle `PortStory_AfterBattle` (menu_a_b.c) sends the menus back to the Story Creator, which
+  shows the result and follows the episode's branch.
+- **Voices**: a character's 100 spoken lines (`Voice_PlayChara`), and Dragon History's voiced lines with their text
+  (4,143 on the US disc), found from the 49 story scripts' speaker lists (`story_lines.h`, read in the background).
+- Testing: `BT3_TEST_MODMGR=story` opens the screens, `=menustory` the main menu on the item; `BT3_TEST_STORY=play:<saga
+  file>:<episode>[:<scene>]` plays an episode at once; `BT3_STORY_AUTO=<frames>` lines go on by themselves;
+  `BT3_STORY_SCRIPT=<frame>:<button>,...` presses buttons on the screens; `BT3_STORY_DUMP=<file>` writes the script
+  made. `BT3_UI_SHOT` takes several pictures now (`<frame>:<file>;<frame>:<file>...`).
+- Checked from the window's pictures (Vulkan, scratch saves / settings / sagas folders): the main menu's item, the
+  screens (My Sagas, a saga, an episode, a scene, a line, the voice list with Dragon History's lines), a scene with every
+  camera shot, the title card, an aura and a ki burst, a lost fight (the CPU beating an idle player) to its scene and
+  "DEFEATED", a held-out fight (15 s) with lines said in it to its scene, "EPISODE CLEAR", Continue to a scene-only
+  episode and "SAGA COMPLETE" with the progress file written; the sample's first episode. Not checked: voices and lips
+  by ear and close eye, a controller, typing on a real keyboard, the pause menu's way out of a saga's battle (any way out
+  leads back to the Story Creator), added stages and characters in a saga, a member switch line.

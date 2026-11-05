@@ -24,6 +24,7 @@ s32 Duel_Mode41(s32 arg);
 extern s32 gPortDuelRole;
 extern s32 PortModMgr_Run(void);
 extern s32 PortCreator_Run(void);
+extern s32 PortStory_Run(void);
 #endif
 s32 Duel_Main(void) {
     s32 bgm = 0;
@@ -55,6 +56,14 @@ s32 Duel_Main(void) {
         Adx_StopAll();
         gPortDuelRole = 0;
         gProgress->mode = result ? 45 : 4; /* (left for a test fight: a training battle is set up) */
+        done = 1;
+    }
+    if (gPortDuelRole == 4) { /* opened from the main menu's Story Creator item (menu/port_story.c): its screens; a saga's
+                                 episode is a battle of the story mode, after which the Duel mode opens them again */
+        result = PortStory_Run();
+        Adx_StopAll();
+        gPortDuelRole = 0;
+        gProgress->mode = 4; /* (after a saga's battle, PortStory_AfterBattle in menu_a_b.c sends it back here) */
         done = 1;
     }
 #endif

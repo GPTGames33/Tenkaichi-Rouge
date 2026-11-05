@@ -636,6 +636,18 @@ s32 BtlLoad_StepInitial(BtlJob *job) {
         BtlJob_Free(job);
         return 1;
     case 0x5A:
+#ifdef PORT
+        {   /* a Story Creator saga's episode brings its own script (menu/port_story.c: made from the saga's file, in a
+               block of the heap as the file would be) */
+            extern void *PortStory_Script(s32 script);
+
+            res->script = PortStory_Script(job->kind);
+            if (res->script != NULL) {
+                job->state++;
+                return 0;
+            }
+        }
+#endif
         res->script = File_Request3(job->kind + BTL_FILE_SCRIPT, NULL, 0);
         job->state++;
         return 0;

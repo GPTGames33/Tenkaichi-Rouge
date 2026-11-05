@@ -119,6 +119,12 @@ extern "C" int Mods_HudActive(void);            // gs/mods.c: they drew somethin
 bool Creator_Frame(bool input);                 // gs/creator_ui.cpp: the Custom Character screen (main menu item 13)
 bool Creator_Typing(void);                      // ... it takes typed letters now
 extern "C" int PortCreator_Active(void);        // ... it is open (its keyboard and controller are its own)
+bool Story_Frame(bool input);                   // gs/story_ui.cpp: the Story Creator's screens (main menu item 14)
+bool Story_Typing(void);
+bool Story_OverlayOn(void);                     // ... a saga's battle: its text boxes over the picture
+void Story_Overlay(void);
+extern "C" int PortStoryUi_Active(void);
+static int screen_owned(void) { return PortCreator_Active() || PortStoryUi_Active(); } // a screen of ours has the input
 static const char *spec_view_name(int view);
 static int sForceTab = -1;                     // BT3_UI_OPEN=<tab>: open at start on that tab (testing)
 static int sCapKind, sCapPlayer, sCapAction;   // waiting for a key (1) or a controller button (2) to bind
@@ -616,7 +622,7 @@ int Ui_Init(SDL_Window *window, SDL_GPUDevice *device, void *gl_context, const c
 // The game gets nothing from keyboard or controller while the window or the exit question is up; and the button
 // that closed either is not the game's.
 static void input_owner(void) {
-    int up = sOpen || sQuit || PortCreator_Active();
+    int up = sOpen || sQuit || screen_owned();
     if (gPortOverlayOpen && !up) {
         PortInput_Swallow();
     }
@@ -1249,7 +1255,7 @@ int Ui_Event(const SDL_Event *ev) {
         return ev->type == SDL_EVENT_KEY_DOWN || ev->type == SDL_EVENT_KEY_UP || ev->type == SDL_EVENT_TEXT_INPUT ||
                ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN || ev->type == SDL_EVENT_MOUSE_BUTTON_UP || ev->type == SDL_EVENT_MOUSE_WHEEL;
     }
-    if (!sOpen && !sQuit && PortCreator_Active()) { // the Custom Character screen: its keys, letters and mouse (Esc is its "back")
+    if (!sOpen && !sQuit && screen_owned()) { // the Custom Character screen (and the Story Creator's): its keys, letters and mouse (Esc is its "back")
         ImGui_ImplSDL3_ProcessEvent(ev);
         return ev->type == SDL_EVENT_KEY_DOWN || ev->type == SDL_EVENT_KEY_UP || ev->type == SDL_EVENT_TEXT_INPUT ||
                ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN || ev->type == SDL_EVENT_MOUSE_BUTTON_UP || ev->type == SDL_EVENT_MOUSE_WHEEL;
@@ -3009,7 +3015,7 @@ static bool frame_build(void) {
     PortInput_TboClipboard();
     { // a keypad of Tenkaichi Budokai Online takes text: the system's text input is on for it (letters as typed)
         static SDL_Window *on = NULL;
-        SDL_Window *want = (gPortTboTyping || Creator_Typing()) && !sOpen && !sQuit && !sChat ? SDL_GetKeyboardFocus() : NULL;
+        SDL_Window *want = (gPortTboTyping || Creator_Typing() || Story_Typing()) && !sOpen && !sQuit && !sChat ? SDL_GetKeyboardFocus() : NULL;
         if (want != on) {
             if (on != NULL) { SDL_StopTextInput(on); }
             if (want != NULL) { SDL_StartTextInput(want); }
@@ -3071,7 +3077,8 @@ static bool frame_build(void) {
     bool saving = save_icon_on(now) && sReady && gUiPresentW > 0 && gUiPresentH > 0;
     bool watched = sReady && Port_NetWatchers() > 0 && !sOpen;  // a player's: who watches the match
     bool mods = sReady && Mods_HudActive();                      // the script mods drew over the picture (gs/mods.c)
-    bool creator = sReady && PortCreator_Active();               // the Custom Character screen (gs/creator_ui.cpp)
+    bool creator = sReady && screen_owned();                     // the Custom Character screen (gs/creator_ui.cpp), the Story Creator's
+    bool story = sReady && Story_OverlayOn();                    // a saga's battle (gs/story_ui.cpp)
     { // (its opening and closing: the game's input is not the game's while it is up)
         static bool was;
         if (creator != was) {
@@ -3083,7 +3090,7 @@ static bool frame_build(void) {
     sBuilt = false;
     bool upd = updLine[0] != '\0';
     UiA11y_Frame(sReady && sOpen && !sQuit, !sQuit); // (the screen reader in the windows: ui_a11y.cpp)
-    if (!sReady || (!sOpen && !sQuit && !notice && !overlay && !meter && !names && !bars && !chat && !banner && !saving && !watched && !upd && !mods && !creator)) {
+    if (!sReady || (!sOpen && !sQuit && !notice && !overlay && !meter && !names && !bars && !chat && !banner && !saving && !watched && !upd && !mods && !creator && !story)) {
         return false;
     }
     if (sPadHold && sCapKind != 2) { // a binding was taken: the controller works the window again once nothing is held
@@ -3131,8 +3138,12 @@ static bool frame_build(void) {
         bars_draw();
     }
     ModsUi_Draw(); // (the script mods' shapes over the picture: gs/mods_ui.cpp)
+    if (story) {
+        Story_Overlay();
+    }
     if (creator) {
         Creator_Frame(!sOpen && !sQuit); // (under the settings window, which has the input while it is open)
+        Story_Frame(!sOpen && !sQuit);
     }
     if (sOpen) {
         if (sNet) {

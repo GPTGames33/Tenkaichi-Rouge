@@ -198,6 +198,13 @@ int __wrap_Progress_Main(int arg) {
                     } else if (strcmp(getenv("BT3_TEST_MODMGR"), "creator") == 0) {
                         gPortDuelRole = 3; /* (=creator: the Custom Character screen, main menu item 13) */
                         gProgress->mode = 38;
+                    } else if (strcmp(getenv("BT3_TEST_MODMGR"), "story") == 0) {
+                        gPortDuelRole = 4; /* (=story: the Story Creator, main menu item 14; BT3_TEST_STORY=play:<saga>:<n> plays an
+                                              episode of a saga at once: gs/story_ui.cpp) */
+                        gProgress->mode = 38;
+                    } else if (strcmp(getenv("BT3_TEST_MODMGR"), "menustory") == 0) {
+                        gProgress->mode = 4;
+                        gProgress->mainMenuItem = 14;
                     } else {
                         gPortDuelRole = 2;
                         gProgress->mode = 38;
