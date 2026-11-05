@@ -180,6 +180,125 @@ def portrait_module():
     return portrait
 
 
+# ------------------------------------------------------------------------------------------------- colours
+# A model's textures (entry 0xC) are 4- or 8-bit with palettes (CLUTs); a colour change rewrites the palette
+# entries near one colour of one texture, keeping each entry's shading (its brightness relative to the colour).
+def hex_rgb(s):
+    s = s.strip().lstrip("#")
+    if not re.fullmatch(r"[0-9a-fA-F]{6}", s):
+        raise ValueError(s)
+    return tuple(int(s[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _hsv(rgb):
+    import colorsys
+    return colorsys.rgb_to_hsv(*(v / 255 for v in rgb))
+
+
+def colour_near(rgb, ref, rng=1.0):
+    """Whether palette colour rgb is a shade of colour ref: grey shades by brightness, colours by hue and saturation."""
+    h, s, v = _hsv(rgb)
+    H, S, V = _hsv(ref)
+    if S < 0.15 or s < 0.15:
+        return s < 0.22 * rng + 0.05 and S < 0.22 * rng + 0.05 and abs(v - V) < 0.28 * rng
+    dh = min(abs(h - H), 1 - abs(h - H))
+    return dh < 0.055 * rng and abs(s - S) < 0.4 * rng and abs(v - V) < 0.55 * rng
+
+
+def colour_shift(rgb, ref, to):
+    import colorsys
+    h, s, v = _hsv(rgb)
+    H, S, V = _hsv(ref)
+    h2, s2, v2 = _hsv(to)
+    s_new = min(1.0, s2 * (s / S if S > 0.05 else 1.0))
+    v_new = min(1.0, v2 * (v / V if V > 0.02 else 1.0))
+    r, g, b = colorsys.hsv_to_rgb(h2, s_new, v_new)
+    return bytes((round(r * 255), round(g * 255), round(b * 255)))
+
+
+def texture_cluts(t):
+    """(texture index, data offset, entries) of every texture's palette upload in a texture file."""
+    count, eo = struct.unpack_from("<II", t, 0)
+    out = []
+    for i in range(min(count, 255)):
+        o = eo * 4 + i * 0x40
+        if o + 0x40 > len(t):
+            break
+        clut = struct.unpack_from("<I", t, o + 4)[0]
+        if not clut:
+            continue
+        p, end, w = clut * 4, min(len(t), clut * 4 + 0x100), None
+        while p + 16 <= end:  # the upload packet: A+D registers (TRXREG: width, height), then the IMAGE data
+            lo, hi = struct.unpack_from("<QQ", t, p)
+            nloop, flg, nreg = lo & 0x7FFF, (lo >> 58) & 3, (lo >> 60) & 15
+            if lo == 0 and hi == 0:
+                p += 16
+                continue
+            if flg == 0 and hi == 0xE and nreg == 1:
+                for k in range(nloop):
+                    val, reg = struct.unpack_from("<QQ", t, p + 16 + k * 16)
+                    if reg & 0xFF == 0x52:
+                        w, h = val & 0xFFF, (val >> 32) & 0xFFF
+                p += 16 + nloop * 16
+                continue
+            if flg == 2 and w:
+                out.append((i, p + 16, min(w * h, nloop * 4)))
+                break
+            p += 16
+    return out
+
+
+def recolour(texfile, changes):
+    t = bytearray(texfile)
+    for index, off, n in texture_cluts(t):
+        for tex, ref, to, rng in changes:
+            if tex != index:
+                continue
+            for k in range(n):
+                a = off + k * 4
+                if colour_near(bytes(t[a:a + 3]), ref, rng):
+                    t[a:a + 3] = colour_shift(bytes(t[a:a + 3]), ref, to)
+    return bytes(t)
+
+
+def texture_colours(model_pack, limit=8):
+    """For the creator: [(texture index, [(#rrggbb, share of the texture's pixels)])] of a model: the main colours
+    of each texture (shades grouped, most used first), as they look in the picture."""
+    here = pathlib.Path(__file__).resolve().parent / "creator"
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
+    import model as mdl
+    out = []
+    for tex in mdl.decode_texfile(model_pack[0xC]):
+        px = tex.get("rgba")
+        if not px:
+            continue
+        groups = []  # [reference rgb, count, sum r, sum g, sum b]
+        n = len(px) // 4
+        step = max(1, n // 4096)
+        for k in range(0, n, step):
+            e = px[k * 4:k * 4 + 4]
+            if e[3] < 128:
+                continue
+            rgb = bytes(e[:3])
+            for g in groups:
+                if colour_near(rgb, g[0]):
+                    g[1] += 1
+                    g[2] += e[0]; g[3] += e[1]; g[4] += e[2]
+                    break
+            else:
+                groups.append([rgb, 1, e[0], e[1], e[2]])
+        groups.sort(key=lambda g: -g[1])
+        total = sum(g[1] for g in groups) or 1
+        cols = []
+        for g in groups[:limit]:
+            if g[1] / total < 0.02:
+                continue
+            cols.append(("#%02x%02x%02x" % (g[2] // g[1], g[3] // g[1], g[4] // g[1]), round(g[1] / total, 3)))
+        out.append((tex["index"], cols))
+    return out
+
+
 def mix_module():
     here = pathlib.Path(__file__).resolve().parent / "creator"
     if str(here) not in sys.path:
@@ -556,7 +675,16 @@ class Fighter:
         for k in parts:
             if k not in order:
                 raise Fail(f"unknown piece {k!r}: one of {', '.join(order)}")
-        self.parts = [(k, ref(parts[k])) for k in order if parts.get(k)]
+        # a piece may be one donor or a list of them, layered in order (two hairs: both sets of locks)
+        # ({"chara": ..., "add": true}: that donor's hair locks / capes are added on top, the model's own kept)
+        self.parts = [(k + ("+" if isinstance(v, dict) and v.get("add") else ""), ref(v)) for k in order if parts.get(k)
+                      for v in (parts[k] if isinstance(parts[k], list) else [parts[k]]) if v]
+        self.colours = []
+        for c in spec.get("colours", []):
+            try:
+                self.colours.append((int(c["texture"]), hex_rgb(c["from"]), hex_rgb(c["to"]), float(c.get("range", 1.0))))
+            except (KeyError, ValueError, TypeError):
+                raise Fail(f"a colour change needs texture, from and to (#rrggbb): {c!r}")
         self.moves = {}
         for key, v in spec.get("moves", {}).items():
             if key not in SLOTS:
@@ -585,6 +713,8 @@ class Fighter:
                 m = Pack(mix.mix(m.bytes(), sel), 252)
             except mix.MixError as e:
                 raise Fail(f"the pieces do not fit together: {e}")
+        if self.colours:
+            m[0xC] = recolour(m[0xC], self.colours)
         ms = d.model(*self.moveset, damaged)
         for e in MOVESET_ENTRIES + tuple(TEXT_ENTRIES):
             m[e] = ms[e]

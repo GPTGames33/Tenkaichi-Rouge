@@ -70,6 +70,9 @@
   #view3d.on ~ #viewhint { display: block; }
   #shotbtn { display: none; position: absolute; left: 160px; top: 40px; z-index: 3; cursor: pointer; font-size: 12px; padding: 3px 12px; }
   #view3d.on ~ #shotbtn { display: inline-block; }
+  #focusbtns { display: none; position: absolute; left: 10px; top: 40px; z-index: 3; }
+  #focusbtns .tab { padding: 3px 10px; font-size: 12px; margin-right: 4px; cursor: pointer; }
+  #view3d.on ~ #focusbtns { display: block; }
   #viewhint { display: none; position: absolute; left: 0; width: 520px; top: 470px; text-align: center; font-size: 12px; color: #3a1660; font-weight: 700; }
   #heroname { position: absolute; left: 30px; right: 30px; top: 445px; text-align: center; }
   #heroname .n { font-family: Impact, "Arial Black", sans-serif; font-size: 34px; color: #fff; -webkit-text-stroke: 1.5px #3a1660;
@@ -119,8 +122,9 @@
     <div id="saved">NOT SAVED</div><div id="savedsub"></div>
     <div id="hero"><img id="heroimg" alt=""></div>
     <canvas id="view3d" width="520" height="470" title="Drag to turn, wheel to zoom"></canvas>
-    <div id="viewhint">drag to turn · wheel to zoom</div>
+    <div id="viewhint">drag to turn · wheel to zoom · right-drag to move up / down</div>
     <span id="shotbtn" class="tab">📷 Use this view as portrait</span>
+    <span id="focusbtns"><span class="tab" data-f="full">Full</span><span class="tab" data-f="head">Head</span></span>
     <div id="heroname"><div class="n" id="hn"></div><div class="t" id="ht"></div></div>
     <div id="movecard"></div>
   </div>
@@ -181,7 +185,7 @@ function moveOf(key) {
 }
 
 // -------------------------------------------------------------------------------------------- 3D preview
-const V = {gl: null, yaw: 0.5, pitch: 0.08, zoom: 1, model: null, key: "", loading: false};
+const V = {gl: null, yaw: 0.5, pitch: 0.08, zoom: 1, pan: 0, model: null, key: "", loading: false};
 function initView() {
   const cv = $("view3d"); const gl = cv.getContext("webgl2", {antialias: true, premultipliedAlpha: false, preserveDrawingBuffer: true});
   if (!gl) return;
@@ -200,8 +204,11 @@ function initView() {
   if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) return;
   V.gl = gl; V.pr = pr;
   let drag = null;
-  cv.onpointerdown = e => { drag = [e.clientX, e.clientY, V.yaw, V.pitch]; cv.setPointerCapture(e.pointerId); cv.style.cursor = "grabbing"; };
-  cv.onpointermove = e => { if (!drag) return; V.yaw = drag[2] + (e.clientX - drag[0]) * 0.01;
+  cv.oncontextmenu = e => e.preventDefault();
+  cv.onpointerdown = e => { drag = [e.clientX, e.clientY, V.yaw, V.pitch, V.pan, e.button === 2 || e.shiftKey]; cv.setPointerCapture(e.pointerId); cv.style.cursor = "grabbing"; };
+  cv.onpointermove = e => { if (!drag) return;
+    if (drag[5]) { V.pan = Math.max(-0.6, Math.min(0.6, drag[4] + (e.clientY - drag[1]) * 0.003 / V.zoom)); return; }
+    V.yaw = drag[2] + (e.clientX - drag[0]) * 0.01;
     V.pitch = Math.max(-0.8, Math.min(0.8, drag[3] + (e.clientY - drag[1]) * 0.006)); };
   cv.onpointerup = () => { drag = null; cv.style.cursor = "grab"; };
   cv.onwheel = e => { e.preventDefault(); V.zoom = Math.max(0.5, Math.min(4, V.zoom * (e.deltaY > 0 ? 0.9 : 1.1))); };
@@ -209,7 +216,7 @@ function initView() {
 }
 async function loadModel() {
   if (!V.gl || !spec) return;
-  const key = JSON.stringify([look(), spec.parts || null]);
+  const key = JSON.stringify([look(), spec.parts || null, spec.colours || null]);
   if (key === V.key || V.loading) return;
   V.loading = true; V.key = key;
   try {
@@ -234,7 +241,7 @@ async function loadModel() {
     $("view3d").classList.add("on"); $("hero").style.display = "none";
   } catch (e) { V.key = ""; $("view3d").classList.remove("on"); $("hero").style.display = ""; toast(e.message, true); }
   V.loading = false;
-  if (JSON.stringify([look(), spec.parts || null]) !== V.key) loadModel();
+  if (JSON.stringify([look(), spec.parts || null, spec.colours || null]) !== V.key) loadModel();
 }
 function mat4mul(a, b) { const o = new Array(16).fill(0);
   for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) for (let k = 0; k < 4; k++) o[j * 4 + i] += a[k * 4 + i] * b[j * 4 + k]; return o; }
@@ -244,7 +251,8 @@ function frame() {
   const cv = $("view3d"); gl.viewport(0, 0, cv.width, cv.height);
   gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST);
   gl.useProgram(V.pr); gl.bindVertexArray(M.vao);
-  const lo = M.bbox.min, hi = M.bbox.max, cx = (lo[0] + hi[0]) / 2, cy = (lo[1] + hi[1]) / 2, cz = (lo[2] + hi[2]) / 2;
+  const lo = M.bbox.min, hi = M.bbox.max, cx = (lo[0] + hi[0]) / 2, cz = (lo[2] + hi[2]) / 2;
+  const cy = (lo[1] + hi[1]) / 2 + V.pan * (hi[1] - lo[1]);
   const h = Math.max(hi[1] - lo[1], hi[0] - lo[0]) * 0.62 / V.zoom, asp = cv.width / cv.height;
   const cyw = Math.cos(V.yaw), syw = Math.sin(V.yaw), cp = Math.cos(V.pitch), sp = Math.sin(V.pitch);
   const T = [1,0,0,0, 0,1,0,0, 0,0,1,0, -cx,-cy,-cz,1];
@@ -473,23 +481,59 @@ function drawParts() {
     ["torso", "Torso", "Chest, belt and shoulders, and capes or sashes hanging on them."],
     ["arms", "Arms", "Upper arms and forearms."], ["hands", "Hands", "Hands and gloves."],
     ["legs", "Legs", "Thighs and shins."], ["feet", "Feet", "Feet and boots."], ["tail", "Tail", "A tail (only some characters have one)."]];
+  const layers = k => { const v = (spec.parts || {})[k]; return !v ? [] : Array.isArray(v) ? v : [v]; };
+  const setLayers = (k, list) => { spec.parts = spec.parts || {}; if (list.length) spec.parts[k] = list.length === 1 ? list[0] : list;
+    else delete spec.parts[k]; if (!Object.keys(spec.parts).length) delete spec.parts; touch(); draw(); };
   for (const [k, label, about] of PIECES) {
-    const r = (spec.parts || {})[k];
-    rows.push({label, value: r ? nm(r) : "The body's own", sub: r ? "" : "", tip: about + " Pick whose to wear.",
-      onclick: () => openPick(`${label.toUpperCase()}: WHOSE?`, p => {
-        spec.parts = spec.parts || {};
-        if (p) spec.parts[k] = p; else delete spec.parts[k];
-        if (!Object.keys(spec.parts).length) delete spec.parts;
-        touch(); draw();
-      }, {costume: true, none: "The body's own"}), extra: `<span class="btn">✕</span>`});
+    const ls = layers(k);
+    rows.push({label, value: ls.length ? (ls[0].add ? "The body's own  +  " : "") + ls.map(r => nm(r)).join("  +  ") : "The body's own",
+      tip: about + " Click to pick whose; ＋ layers another one on top.",
+      onclick: (ev) => {
+        if (ev.target.classList.contains("addlayer")) {
+          return openPick(`${label.toUpperCase()}: LAYER ANOTHER ON TOP`, p => { if (p) setLayers(k, layers(k).concat([Object.assign({add: true}, p)])); }, {costume: true});
+        }
+        openPick(`${label.toUpperCase()}: WHOSE?`, p => setLayers(k, p ? [p] : []), {costume: true, none: "The body's own"});
+      }, extra: `<span class="btn addlayer" title="Layer another on top">＋</span>`});
   }
   rows.push({sec: "COLOURS"});
-  rows.push({label: "Recolour", value: "Original", sub: "coming: palette editing", locked: true, tip: "Recolouring through the texture palettes is planned."});
+  const nc = (spec.colours || []).length;
+  rows.push({label: "Recolour", value: nc ? `${nc} colour change${nc > 1 ? "s" : ""}` : "Original colours",
+    tip: "Pick a texture of your warrior, then the colour to change on it.", onclick: openColours, extra: `<span class="btn">✕</span>`});
+  if (nc) rows.push({label: "All original", value: "Undo every colour change", onclick: () => { delete spec.colours; touch(); draw(); },
+    extra: `<span class="btn">✕</span>`});
   render(rows);
   tip("Whose look? Pick the body, hair and clothes of any character.");
   help([["✕", "Change"], ["Esc", "Back"]]);
 }
 
+async function openColours() {
+  $("picktitle").textContent = "COLOURS"; $("pick").style.display = "block"; $("grid").style.display = "none";
+  $("picknone").style.display = "none"; $("pickgames").innerHTML = "";
+  const L = $("picklist"); L.style.display = "block";
+  L.innerHTML = `<div class="sec">READING YOUR WARRIOR'S TEXTURES...</div>`;
+  let tex;
+  try { tex = await api("/api/colours", {spec}); } catch (e) { L.innerHTML = `<div class="sec">${esc(e.message)}</div>`; return; }
+  const changes = spec.colours || [];
+  L.innerHTML = `<div class="sec">PICK A COLOUR OF A TEXTURE, THEN ITS NEW COLOUR</div>` + tex.map(t => `
+    <div class="row" style="grid-template-columns: 76px 1fr auto; cursor: default">
+      <img src="data:image/png;base64,${t.png}" style="width:64px;height:64px;border-radius:4px;background:#0006;image-rendering:pixelated">
+      <span>${t.colours.map(([c, share]) => `<label title="${c} (${Math.round(share * 100)}%)" style="display:inline-block;margin:3px;cursor:pointer">
+        <span style="display:inline-block;width:34px;height:34px;border-radius:50%;border:3px solid #fff;background:${c};vertical-align:middle"></span>
+        <input type="color" value="${c}" data-t="${t.texture}" data-from="${c}" style="width:0;height:0;opacity:0;position:absolute"></label>`).join("")}
+        ${changes.filter(ch => ch.texture === t.texture).length ? `<span class="sub">changed: ${changes.filter(ch => ch.texture === t.texture).map(ch => ch.from + " → " + ch.to).join(", ")}</span>` : ""}</span>
+      <span class="btn orig" data-t="${t.texture}" title="Original colours of this texture">↺</span>
+    </div>`).join("");
+  for (const inp of L.querySelectorAll("input[type=color]")) inp.onchange = () => {
+    spec.colours = (spec.colours || []).concat([{texture: +inp.dataset.t, from: inp.dataset.from, to: inp.value}]);
+    touch(); openColours();
+  };
+  for (const b of L.querySelectorAll(".orig")) b.onclick = () => {
+    spec.colours = (spec.colours || []).filter(ch => ch.texture !== +b.dataset.t);
+    if (!spec.colours.length) delete spec.colours;
+    touch(); openColours();
+  };
+  tip("Pick a texture of your warrior, then the colour to change on it! ↺ puts a texture back.");
+}
 function donorRow(label, key, tipText) {
   return {label, value: nm(spec[key], "the moveset's"), tip: tipText,
     onclick: () => openPick(`${label.toUpperCase()}: FROM WHOM?`, r => { if (r) spec[key] = {chara: r.chara}; else delete spec[key]; touch(); draw(); },
@@ -680,7 +724,8 @@ async function del() {
 }
 
 (async function () {
-  fit(); initView(); $("shotbtn").onclick = portraitShot; tip("Reading the roster from your disc...");
+  fit(); initView(); $("shotbtn").onclick = portraitShot;
+  for (const b of $("focusbtns").children) b.onclick = () => { if (b.dataset.f === "head") { V.zoom = 3.2; V.pan = 0.4; V.pitch = 0.05; } else { V.zoom = 1; V.pan = 0; } }; tip("Reading the roster from your disc...");
   try { roster = await api("/api/roster"); fighters = await api("/api/fighters"); await refreshRoster(); draw(); }
   catch (e) { toast(e.message, true); }
 })();

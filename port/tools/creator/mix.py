@@ -476,12 +476,18 @@ def mix(base_pack, selections, report=None):
     donors = {}
     core_src = {}          # core node -> Source
     extra_src = {}         # region of extras -> Source
+    extra_add = []         # (region, Source): a donor's extras added on top, the model's own kept ("hair+")
     for k, (pack, piece) in enumerate(selections):
+        add = piece.endswith("+")
+        piece = piece.rstrip("+")
         if piece not in PIECES:
             raise MixError(f"unknown piece {piece!r} (one of {', '.join(PIECES)})")
         d = donors.get(id(pack))
         if d is None:
             d = donors[id(pack)] = Source(pack, f"donor {len(donors) + 1}")
+        if add:
+            extra_add.append(("hair" if piece == "head" else piece, d))
+            continue
         if piece == "hair":
             extra_src["hair"] = d
         else:
@@ -526,7 +532,7 @@ def mix(base_pack, selections, report=None):
                 need(src, dr.chain)
     # donor extras to add
     additions = []         # (donor Source, donor root Rec, base attach Rec)
-    for reg, src in extra_src.items():
+    for reg, src in list(extra_src.items()) + extra_add:
         if src is base:
             continue
         dm = src.model

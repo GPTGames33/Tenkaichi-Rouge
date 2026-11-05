@@ -11,6 +11,9 @@ Standard library only.
 import argparse, http.server, json, pathlib, re, struct, sys, threading, traceback, urllib.parse, webbrowser, zlib
 
 HERE = pathlib.Path(__file__).resolve().parent
+# this creator's version: its files' times (a creator that is already open answers it; an older one is replaced)
+VERSION = "-".join(str(int((HERE / n).stat().st_mtime)) for n in ("creator.py", "model.py", "mix.py", "portrait.py",
+                                                                   "../custom_fighter.py") if (HERE / n).exists())
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 import custom_fighter as cf  # noqa: E402
@@ -226,12 +229,28 @@ class App:
         spec = dict(spec, name=spec.get("name") or "preview")
         f = cf.Fighter(self.disc, spec, "preview")
         look = f.costumes[min(costume, len(f.costumes) - 1)]
-        key = json.dumps([look, spec.get("parts")], sort_keys=True)
+        key = json.dumps([look, spec.get("parts"), spec.get("colours")], sort_keys=True)
         if getattr(self, "_model_key", None) != key:
-            self._model = mdl.extract(f.model(look, False).bytes(), pose="relaxed", hide_optional=True)
+            pack = f.model(look, False)
+            self._model = mdl.extract(pack.bytes(), pose="relaxed", hide_optional=True)
+            self._model_pack = pack
             self._model_key = key
         m = self._model
         return {k: m[k] for k in ("positions", "normals", "uvs", "indices", "groups", "textures", "bbox")}
+
+    def colours(self, spec):
+        """The textures the warrior's look draws with (costume 1, pieces and colour changes applied): their picture
+        and main colours, for the Colours screen."""
+        m = self.model(spec)
+        used = {g["texture"] for g in m["groups"]}
+        pics = {t["index"]: t["png"] for t in m["textures"]}
+        out = []
+        for index, cols in cf.texture_colours(self._model_pack):
+            if index in used and cols:
+                out.append({"texture": index, "png": pics.get(index, ""), "colours": cols,
+                            "share": sum(g["count"] for g in m["groups"] if g["texture"] == index)})
+        out.sort(key=lambda t: -t["share"])
+        return out
 
     def install(self, name):
         spec = json.loads(self.path_of(name).read_text(encoding="utf-8-sig"))
@@ -445,6 +464,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.send(200, (HERE / "index.html").read_bytes(), "text/html; charset=utf-8")
             if u.path == "/api/roster":
                 return self.send(200, self.app.roster())
+            if u.path == "/api/version":
+                return self.send(200, {"version": VERSION})
             if u.path == "/api/rosterinfo":
                 return self.send(200, {"roster": self.app.roster_list(), "forms": self.app.roster_forms()})
             if u.path == "/api/bt4status":
@@ -484,6 +505,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.send(200, {"text": a.uninstall(body["file"])})
                 if act == "/api/package":
                     return self.send(200, {"text": a.package(body["file"])})
+                if act == "/api/colours":
+                    return self.send(200, a.colours(body["spec"]))
+                if act == "/api/quit":
+                    threading.Thread(target=self.server.shutdown, daemon=True).start()
+                    return self.send(200, {"text": "bye"})
                 if act == "/api/portraitshot":
                     return self.send(200, a.portrait_shot(body["file"], body["png"]))
                 if act == "/api/unpackage":
@@ -523,14 +549,37 @@ def main():
                     app.portrait(c["id"])
     threading.Thread(target=warm, daemon=True).start()
     http.server.ThreadingHTTPServer.allow_reuse_address = False  # (Windows lets a second server take a used port)
-    try:
-        srv = http.server.ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    except OSError:
-        url = f"http://127.0.0.1:{args.port}/"
-        print(f"The creator is already open: {url}", flush=True)
-        if not args.no_browser:
-            webbrowser.open(url)
-        return
+    srv = None
+    for attempt in range(20):
+        try:
+            srv = http.server.ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+            break
+        except OSError:
+            # a creator is open there already: the same version is used as it is; an older one is asked to close
+            import urllib.request
+            base = f"http://127.0.0.1:{args.port}"
+            try:
+                with urllib.request.urlopen(base + "/api/version", timeout=3) as r:
+                    theirs = json.load(r).get("version")
+            except Exception:
+                theirs = None
+            if theirs == VERSION:
+                print(f"The creator is already open: {base}/", flush=True)
+                if not args.no_browser:
+                    webbrowser.open(base + "/")
+                return
+            if attempt == 0:
+                print("An older creator is open: closing it...", flush=True)
+            try:
+                req = urllib.request.Request(base + "/api/quit", data=b"{}", method="POST",
+                                             headers={"Content-Type": "application/json", "Origin": base})
+                urllib.request.urlopen(req, timeout=3).read()
+            except Exception:
+                pass
+            import time
+            time.sleep(0.5)
+    if srv is None:
+        sys.exit(f"port {args.port} is in use by another program: close it, or start with --port <another number>")
     url = f"http://127.0.0.1:{args.port}/"
     print(f"Custom Character creator: {url}  (Ctrl+C to stop)", flush=True)
     if not args.no_browser:
