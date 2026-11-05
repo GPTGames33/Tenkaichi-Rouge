@@ -625,8 +625,11 @@ class Mesh:
         self.offs, self.strip = [], []
         nb = [0]
 
+        self.hpos = []
+
         def tex(pos):
             nb[0] += 1
+            self.hpos.append(pos)
 
         def vert(q, w):
             self.offs.append(q)
@@ -635,8 +638,16 @@ class Mesh:
         self.P = [list(struct.unpack_from("<3f", self.buf, q)) for q in self.offs]
         self.N = [list(struct.unpack_from("<3f", self.buf, q + 16)) for q in self.offs]
         self.W = [struct.unpack_from("<f", self.buf, q + 12)[0] for q in self.offs]
+        self.ST = [struct.unpack_from("<2f", self.buf, q + 32) for q in self.offs]
         self.dirty = False
         self.log = []
+
+    def header_of(self, ic):
+        """The 5 header quadwords of the batch vertex ic belongs to."""
+        b = self.strip[ic] - 1 if ic < len(self.strip) else -1
+        if not 0 <= b < len(self.hpos):
+            return None
+        return bytes(self.buf[self.hpos[b] + 4:self.hpos[b] + 84])
 
     def replay(self, log):
         for name, args in log:
@@ -664,7 +675,7 @@ class Mesh:
             self.P[i] = [p[0] + u[0] * d, p[1] + u[1] * d, p[2] + u[2] * d]
         self.dirty = True
 
-    def welded(self):
+    def welded(self, edges_too=False):
         """Groups of vertices at the same place (the strips repeat them) and the groups on open edges."""
         key, groups = {}, []
         gid = []
@@ -686,11 +697,14 @@ class Mesh:
             for e in ((a, b), (b, c), (a, c)):
                 e = (min(e), max(e))
                 edges[e] = edges.get(e, 0) + 1
-        border = set()
+        border, bedges = set(), []
         for (a, b), n in edges.items():
             if n == 1:
                 border.add(a)
                 border.add(b)
+                bedges.append((a, b))
+        if edges_too:
+            return groups, border, bedges
         return groups, border
 
     def shift(self, dA, dB):
@@ -1047,6 +1061,20 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
             for n in REGIONS[L.piece]:
                 core_layer[n] = L
         extra_layer[L.region] = L
+    # nodes 4..7 are a tail only in some models (others use them for big body parts): a donor "tail" larger
+    # than three quarters of its own body is not taken
+    for L in layers:
+        if L.piece != "tail" or L.add:
+            continue
+        pts = [p for n in TAIL for p in L.src.model.node_points(n)]
+        hd = _height(L.src.model) or 1.0
+        if pts and max(_extent(pts, k) for k in range(3)) > 0.75 * hd:
+            for n in TAIL:
+                if core_layer.get(n) is L:
+                    del core_layer[n]
+            if extra_layer.get("tail") is L:
+                del extra_layer["tail"]
+            notes.append(f"layer {L.k}: the donor's nodes 4..7 are not a tail (too big); the base's tail is kept")
     head_layer = core_layer.get(0x30)
     head_src = head_layer.src if head_layer else None
     bm = base.model
@@ -1160,6 +1188,37 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
         if c:
             need(face_src, c)
     uses.setdefault(face_src, set()).add(face_src.faceTex)
+    # the seam patch (CPU-skinned triangles that close the crotch / hips of some models): the base's while
+    # nothing it joins is swapped; else the seam of the donor that supplies most of its nodes (moved like that
+    # donor's meshes); else the base's (kept: leaving it out opened holes)
+    def seam_nodes_of(model_):
+        sm = model_.seams()
+        if not sm:
+            return set()
+        vc_, tc_, vo_, to_ = sm
+        return {struct.unpack_from("<i", model_.raw, vo_ + i * 0x70 + 0x1C)[0] for i in range(vc_)}
+    supplied = {}
+    for n_, L_ in core_layer.items():
+        supplied.setdefault(L_, set()).add(n_)
+    seam_layer = None
+    if fit and seam_nodes_of(bm) & set(core_layer) or fit and not bm.seamOfs:
+        best_ = 0
+        for L_, ns_ in supplied.items():
+            sn = seam_nodes_of(L_.src.model)
+            score = len(sn & ns_)
+            if sn and score > best_ and all(x in bm.by_node for x in sn):
+                seam_layer, best_ = L_, score
+        if seam_layer is not None and not bm.seamOfs and best_ < 2:
+            seam_layer = None
+    if seam_layer is not None:
+        dsm = seam_layer.src.model.seams()
+        tb, ts = struct.unpack("<QQ", seam_layer.src.model.raw[dsm[3] + 0x10:dsm[3] + 0x20])
+        t = seam_layer.src.tex_by_ofs(tb & 0x3FFF, (tb >> 37) & 0x3FFF)
+        if t is not None:
+            uses.setdefault(seam_layer.src, set()).add(t.old)
+        rt = seam_layer.src.ramp_by_ofs((ts >> 37) & 0x3FFF)
+        if rt is not None:
+            ramp_uses.setdefault(seam_layer.src, set()).add(rt.old)
     seam = bm.seams()
     if seam:
         vc, tc, vo, to = seam
@@ -1408,6 +1467,20 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
     hidden = set()
     extra_dups = []  # (base main rec, layer, [more donor mesh records of the node])
     adopted = {}     # node -> new origin of a node that took the donor's bone
+    hb_ = _height(bm)
+    scale_cache = {}
+
+    def body_scale(L, node):
+        """The donor's size against the base's (head-joint to foot-joint height): its pieces are scaled by it
+        before the joint offsets, so a piece of a bigger or smaller character does not fold at its joints. Not
+        for the head (fitted to the face) and not without fit."""
+        if not fit or node in (0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33):
+            return 1.0
+        if L not in scale_cache:
+            hd = _height(L.src.model)
+            s_ = max(0.4, min(2.5, hb_ / hd)) if hb_ and hd else 1.0
+            scale_cache[L] = 1.0 if abs(s_ - 1) < 0.05 else s_
+        return scale_cache[L]
     clone = {}
     meshes = {}      # clone -> Mesh (vertex edits), created on demand
     kind = {}        # clone -> "base" / "core" (donor core mesh) / "adopt" / "extra" (donor extra)
@@ -1435,14 +1508,17 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
             if r.node in ADOPT and dr is not None and adopt_ok(bm, src.model, r.node):
                 # the donor's bone (rest) from the base parent's place: origin = parent origin + rest, so the
                 # skeleton adds up even where the donor's own origins do not (BT4 models)
+                ps = body_scale(L, r.node)
                 pnew = adopted.get(r.parent.node, r.parent.ofsA) if r.parent is not None else (0.0, 0.0, 0.0)
-                onew = v_add(pnew, dr.vec(0x30))
+                onew = v_add(pnew, tuple(ps * x for x in dr.vec(0x30)))
                 adopted[r.node] = onew
-                d, dB_ = v_sub(onew, dr.ofsA), v_sub(pnew, dr.ofsB)
+                d = v_sub(onew, tuple(ps * x for x in dr.ofsA))
+                dB_ = v_sub(pnew, tuple(ps * x for x in dr.ofsB))
                 hdr = bytearray(dr.hdr[:0x40]) + (bytearray(dr.hdr[0x40:0x60]) if dr.mesh else bytearray(0x20))
                 hdr[0:8] = r.hdr[0:8]
                 struct.pack_into("<3f", hdr, 0x10, *onew)
                 struct.pack_into("<3f", hdr, 0x20, *pnew)
+                struct.pack_into("<3f", hdr, 0x30, *v_sub(onew, pnew))
                 if len(r.hdr) >= 0x60:
                     hdr[0x5C:0x60] = r.hdr[0x5C:0x60]
                 struct.pack_into("<H", hdr, 0xC, struct.unpack_from("<H", dr.hdr, 0xC)[0] & fade_mask)
@@ -1452,6 +1528,8 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
                 if dr.mesh:
                     n.chain = remap(src, dr.chain)
                     meshes[n] = Mesh(n.chain)
+                    if ps != 1.0:
+                        meshes[n].apply(((ps, 0, 0), (0, ps, 0), (0, 0, ps)), IDENT3, (0, 0, 0), (0, 0, 0))
                     meshes[n].shift(d, dB_)
                     kind[n], donor_rec[n] = "adopt", dr
                 else:
@@ -1462,7 +1540,9 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
                 if r.node == 0x31:
                     notes.append("head: nodes 0x31..0x33 take the donor's bone offsets")
             elif dr is not None and dr.mesh:
-                dA, dB = v_sub(r.ofsA, dr.ofsA), v_sub(r.ofsB, dr.ofsB)
+                ps = body_scale(L, r.node)
+                dA = v_sub(r.ofsA, tuple(ps * x for x in dr.ofsA))
+                dB = v_sub(r.ofsB, tuple(ps * x for x in dr.ofsB))
                 hdr = bytearray(r.hdr[:0x40]) + bytearray(dr.hdr[0x40:0x60])
                 if len(r.hdr) >= 0x60:
                     hdr[0x5C:0x60] = r.hdr[0x5C:0x60]
@@ -1472,6 +1552,8 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
                 n.enabled = dr.enabled
                 n.chain = remap(src, dr.chain)
                 meshes[n] = Mesh(n.chain)
+                if ps != 1.0:   # the donor scaled to the base's size first: the joint offsets that remain are small
+                    meshes[n].apply(((ps, 0, 0), (0, ps, 0), (0, 0, ps)), IDENT3, (0, 0, 0), (0, 0, 0))
                 meshes[n].shift(dA, dB)
                 kind[n], donor_rec[n] = "core", dr
             else:
@@ -1500,7 +1582,10 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
             n.src, n.node, n.enabled = base, r.node, x.enabled
             n.chain = remap(L.src, x.chain)
             meshes[n] = Mesh(n.chain)
-            meshes[n].shift(v_sub(r.ofsA, x.ofsA), v_sub(r.ofsB, x.ofsB))
+            ps = body_scale(L, r.node)
+            if ps != 1.0:
+                meshes[n].apply(((ps, 0, 0), (0, ps, 0), (0, 0, ps)), IDENT3, (0, 0, 0), (0, 0, 0))
+            meshes[n].shift(v_sub(r.ofsA, tuple(ps * c for c in x.ofsA)), v_sub(r.ofsB, tuple(ps * c for c in x.ofsB)))
             kind[n], layer_of[n], donor_rec[n] = "core", L, x
             n.parent = par
             if par is not None:
@@ -1596,10 +1681,10 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
         hidden.add(n.node)
 
     stats = {"fit_nodes": 0, "pushed": 0, "hair_scaled": 0, "build": 0, "length": 0, "head": 0, "feet": 0,
-             "extras": 0, "snapped": 0}
+             "extras": 0, "snapped": 0, "bridged": 0, "capped": 0}
     if fit:
         _fit(bm, plan, clone, by_node, kind, layer_of, donor_rec, meshes, all_of, origin, layers, move_subtree,
-             mesh_of, stats, extra_layer)
+             mesh_of, stats, extra_layer, scale_cache)
 
     # ---- (b) swapped core pieces: cross-section matched to the base's at the seams
     if declip:
@@ -1676,8 +1761,8 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
             pts = [p for h in head_nodes if mesh_of(h) for p in mesh_of(h).P]
             if not pts:
                 continue
-            c = tuple((min(p[k] for p in pts) + max(p[k] for p in pts)) / 2 for k in range(3))
-            S = ((f, 0, 0), (0, f, 0), (0, 0, f))
+            c = origin(by_node[0x2F]) if 0x2F in by_node else                 tuple((min(p[k] for p in pts) + max(p[k] for p in pts)) / 2 for k in range(3))
+            S = ((f, 0, 0), (0, f, 0), (0, 0, f))   # about the head joint: the head stays on the neck
             for h in head_nodes:
                 if mesh_of(h):
                     mesh_of(h).apply(S, IDENT3, (0, 0, 0), c)
@@ -1791,6 +1876,15 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
     if stats["pushed"]:
         notes.append(f"declip: {stats['pushed']} hair vertices pushed out of the head")
 
+    bridges = _bridge(by_node, kind, layer_of, meshes, all_of, origin, mesh_of, stats, notes) if fit else {}
+    if fit:
+        for n_, bs_ in _cap_exposed(bm, clone, kind, meshes, mesh_of, stats).items():
+            bridges.setdefault(n_, []).extend(bs_)
+    if stats.get("bridged"):
+        notes.append(f"fit: {stats['bridged']} gap(s) between pieces of different characters bridged with a strip")
+    if stats.get("capped"):
+        notes.append(f"fit: {stats['capped']} opening(s) left by hidden or swapped parts closed with a cap")
+
     # ---- write meshes, joints, bounds back into the records
     for n, m in meshes.items():
         if not n.enabled or not m.dirty:
@@ -1804,6 +1898,13 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
             struct.pack_into("<f", n.hdr, 0x4C, 1.0)
             struct.pack_into("<3f", n.hdr, 0x50, *((hi[k] - lo[k]) / 2 for k in range(3)))
             n.hdr[0x5C:0x60] = w5c
+
+    for n, bs in bridges.items():
+        base_chain = meshes[n].bytes() if n in meshes else n.chain
+        n.chain = _append_batches(base_chain, bs)
+        add = sum((len(b) - 96) // 48 for b in bs)
+        n.enabled = min(0xFFFF, n.enabled + max(0, add))
+        struct.pack_into("<H", n.hdr, 8, n.enabled)
 
     def fix_joints(n):
         for c in n.children:
@@ -1877,16 +1978,18 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
     new_end = len(head) + len(body)
     tail = bytearray(bm.tail)
     seam_on = bool(bm.seamOfs)
-    if seam_on and fit:
-        # the base's seam patch (CPU-skinned triangles between two bones) belongs to the base's own meshes: when
-        # a piece it joins is swapped it would float over the donor's mesh, so the mix leaves it out
-        vc, tc, vo, to = struct.unpack_from("<4i", bm.raw, bm.seamOfs)
-        seam_nodes = {struct.unpack_from("<i", bm.raw, vo + i * 0x70 + 0x1C)[0] for i in range(vc)}
-        swapped_nodes = {n.node for n in kind if kind[n] in ("core", "adopt")} |                         {r.node for r, L in plan if L is not None and r.node in CORE}
-        if seam_nodes & swapped_nodes:
-            seam_on = False
-            struct.pack_into("<i", head, 0x70, 0)
-            notes.append("fit: the base's seam patch at the joints of the swapped piece is left out")
+    if seam_layer is not None:
+        seam_on = False
+        sec = _seam_from(seam_layer, bm, by_node, kind, layer_of, meshes, maps)
+        if bm.seamOfs:   # the base's own seam section is replaced
+            tail = bytearray(tail[:bm.seamOfs - bm.end])
+        tail += b"\0" * (-(new_end + len(tail)) % 16)
+        so = new_end + len(tail)
+        vc_, tc_ = struct.unpack_from("<2i", sec, 0)
+        struct.pack_into("<4i", sec, 0, vc_, tc_, so + 16, so + 16 + vc_ * 0x70)
+        tail += sec + b"\0" * 32
+        struct.pack_into("<i", head, 0x70, so)
+        notes.append(f"fit: the seam patch of layer {seam_layer.k}'s donor closes the joints of its piece")
     if seam_on:
         delta = new_end - bm.end
         so = bm.seamOfs - bm.end
@@ -1974,9 +2077,10 @@ def _extent(points, k):
 
 
 def _fit(bm, plan, clone, by_node, kind, layer_of, donor_rec, meshes, all_of, origin, layers, move_subtree,
-         mesh_of, stats, extra_layer):
+         mesh_of, stats, extra_layer, layer_scale=None):
     """Automatic alignment of donor pieces to the base's proportions (before the thickness match)."""
     HEAD = (0x2F, 0x30, 0x31, 0x32, 0x33)
+    layer_scale = layer_scale or {}
     swapped = {}
     for n in kind:
         if kind[n] == "core" and n.enabled:
@@ -2000,7 +2104,8 @@ def _fit(bm, plan, clone, by_node, kind, layer_of, donor_rec, meshes, all_of, or
             continue
         eb = origin(best)
         u = tuple(x / bl for x in v_sub(eb, jb))
-        ed = v_add(dC.ofsA, v_sub(jb, dN.ofsA))
+        sc = layer_scale.get(L, 1.0)
+        ed = v_add(jb, tuple(sc * x for x in v_sub(dC.ofsA, dN.ofsA)))
         ld = v_dot(v_sub(ed, jb), u)
         if ld < 0.05 * bl:
             continue
@@ -2009,7 +2114,7 @@ def _fit(bm, plan, clone, by_node, kind, layer_of, donor_rec, meshes, all_of, or
         def ratio(bn, bc, dn_, dc_):
             if bn is None or bc is None or dn_ is None or dc_ is None:
                 return k
-            l1, l2 = v_len(v_sub(origin(bc), origin(bn))), v_len(v_sub(dc_.ofsA, dn_.ofsA))
+            l1, l2 = v_len(v_sub(origin(bc), origin(bn))), sc * v_len(v_sub(dc_.ofsA, dn_.ofsA))
             return max(0.4, min(2.5, l1 / l2)) if l1 > 0.05 and l2 > 0.05 else k
         # behind the joint: the parent bone's ratio; past the far joint: the next bone's
         bp = b.parent if b.parent is not None and b.parent.node in CORE else None
@@ -2151,6 +2256,287 @@ def _snap(bm, by_node, kind, layer_of, meshes, all_of, origin, mesh_of, stats):
                         mesh.P[i] = list(best)
                     mesh.dirty = True
                     stats["snapped"] += 1
+
+
+def _loops(mesh):
+    """Open-edge loops of a mesh: lists of welded-group ids in order (vertices that sit at one place are one)."""
+    groups, border, edges = mesh.welded(edges_too=True)
+    adj = {}
+    for a, b in edges:
+        adj.setdefault(a, []).append(b)
+        adj.setdefault(b, []).append(a)
+    seen, loops = set(), []
+    for start in adj:
+        if start in seen:
+            continue
+        loop, prev, cur = [start], None, start
+        seen.add(start)
+        while True:
+            nxt = [x for x in adj[cur] if x != prev and x not in seen]
+            if not nxt:
+                break
+            prev, cur = cur, nxt[0]
+            seen.add(cur)
+            loop.append(cur)
+        if len(loop) >= 4:
+            loops.append(loop)
+    return groups, loops
+
+
+def _ring(mesh, j, u, max_dist, loose=False):
+    """The open-edge loop of `mesh` that goes round the bone axis (j, u) closest to j: (vertex indices, radius)."""
+    groups, loops = _loops(mesh)
+    best = None
+    for loop in loops:
+        idx = [groups[g][0] for g in loop]
+        pts = [mesh.P[i] for i in idx]
+        c = tuple(sum(p[k] for p in pts) / len(pts) for k in range(3))
+        a = v_dot(v_sub(c, j), u)                       # along the bone
+        off = v_sub(v_sub(c, j), tuple(u[k] * a for k in range(3)))
+        rad = sum(v_len(v_sub(p, c)) for p in pts) / len(pts)
+        if rad < 1e-3 or v_len(off) > (1.5 * rad + 0.3 if loose else 0.6 * rad + 0.05) or abs(a) > max_dist:
+            continue                                    # not round the axis, or too far from the joint
+        score = abs(a) + v_len(off)
+        if best is None or score < best[0]:
+            best = (score, idx, rad, c)
+    return (best[1], best[2], best[3]) if best else None
+
+
+def _bridge(by_node, kind, layer_of, meshes, all_of, origin, mesh_of, stats, notes):
+    """Closes the gap where a node's mesh and its parent's mesh come from different sources: a strip of triangles
+    from the node's open ring at the joint to the parent's open ring, added to the node's own chain as one more
+    batch (the node side keeps its skin weights, the parent side is weighted fully to the parent, which is the
+    node's second matrix: the bridge bends with the joint). Returns {clone: [batch bytes, ...]}."""
+    out = {}
+    src_of = lambda n: layer_of.get(n) if kind.get(n) != "base" else None
+    for node, c in by_node.items():
+        if node not in CORE or node in FIXED or node in (0x30, 0x31, 0x32, 0x33) or c.parent is None:
+            continue
+        p = c.parent
+        if p.node not in CORE:
+            continue
+        cm = [x for x in all_of(node) if x.enabled and mesh_of(x) is not None]
+        pm = [x for x in all_of(p.node) if x.enabled and mesh_of(x) is not None]
+        if not cm or not pm or src_of(cm[0]) is src_of(pm[0]):
+            continue
+        j = origin(c)
+        ax = axis_of(by_node, node, lambda k: origin(by_node[k]))
+        if ax is None:
+            continue
+        u = v_sub(ax[1], ax[0])
+        L_ = v_len(u)
+        if L_ < 1e-3:
+            continue
+        u = tuple(x / L_ for x in u)
+        reach = 0.5 * L_ + 0.3
+        rc = next((r for r in (_ring(mesh_of(x), j, u, reach) for x in cm) if r), None)
+        if rc is None:
+            continue
+        x_c = next(x for x in cm if _ring(mesh_of(x), j, u, reach) == rc)
+        rp, mp = None, None
+        # the parent's opening: round the parent's own bone, anywhere along its far half (a short sleeve or a
+        # trouser leg that ends above the knee still gets bridged to the piece below)
+        pax = axis_of(by_node, p.node, lambda k: origin(by_node[k]))
+        if pax is not None and v_len(v_sub(pax[1], pax[0])) > 1e-3:
+            lp = v_len(v_sub(pax[1], pax[0]))
+            up = tuple(x / lp for x in v_sub(pax[1], pax[0]))
+            preach = 0.95 * lp + 0.3
+        else:
+            up, preach, lp = u, reach, L_
+        for x in pm:
+            r = _ring(mesh_of(x), j, up, preach) or _ring(mesh_of(x), j, u, reach) or                 _ring(mesh_of(x), j, up, preach, loose=True)
+            if r and (rp is None or v_len(v_sub(r[2], rc[2])) < v_len(v_sub(rp[2], rc[2]))):
+                rp, mp = r, mesh_of(x)
+        mc = mesh_of(x_c)
+        gap = v_len(v_sub(rp[2], rc[2])) + abs(rp[1] - rc[1]) if rp is not None else 1e9
+        if rp is None or gap > max(1.5 * max(rc[1], rp[1]) + 0.5, 0.7 * lp):
+            # no ring of the neighbour to meet: close the node's own opening with a cap (hidden inside the
+            # neighbour where it overlaps; a see-through hole where it does not)
+            bs = _cap_batches(mc, rc[0], rc[2], tuple(-x for x in u))
+            if bs:
+                out.setdefault(x_c, []).extend(bs)
+                stats["capped"] += 1
+            continue
+        if gap < 0.02:
+            continue                                    # closed already
+        # both rings sampled at K angles round the axis
+        e1 = (1.0, 0.0, 0.0) if abs(u[0]) < 0.9 else (0.0, 1.0, 0.0)
+        e1 = v_sub(e1, tuple(u[k] * v_dot(e1, u) for k in range(3)))
+        e1 = tuple(x / v_len(e1) for x in e1)
+        e2 = (u[1] * e1[2] - u[2] * e1[1], u[2] * e1[0] - u[0] * e1[2], u[0] * e1[1] - u[1] * e1[0])
+
+        def ang(pt, cen):
+            d = v_sub(pt, cen)
+            return math.atan2(v_dot(d, e2), v_dot(d, e1))
+        K = 12
+        pick_c, pick_p = [], []
+        for k in range(K):
+            a = -math.pi + (k + 0.5) * 2 * math.pi / K
+            pick_c.append(min(rc[0], key=lambda i: abs((ang(mc.P[i], rc[2]) - a + math.pi) % (2 * math.pi) - math.pi)))
+            pick_p.append(min(rp[0], key=lambda i: abs((ang(mp.P[i], rp[2]) - a + math.pi) % (2 * math.pi) - math.pi)))
+        verts = []
+        for k in list(range(K)) + [0]:
+            ic, ip = pick_c[k], pick_p[k]
+            verts.append((mc.P[ic], mc.W[ic], mc.N[ic], mc.ST[ic]))
+            verts.append((mp.P[ip], 0.0, mp.N[ip], mc.ST[ic]))   # parent side: the parent's matrix only
+        hdr = mc.header_of(ic=pick_c[0])
+        if hdr is None:
+            continue
+        out.setdefault(x_c, []).append(_batch_bytes(hdr, verts))
+        stats["bridged"] += 1
+    return out
+
+
+def _cap_batches(mesh, loop, centre, normal):
+    """A fan from the loop's vertices to its centre, as strips of at most 37 vertices (the output buffer of program
+    0 holds 38): r0 c r1 c r2 ... (every other triangle is degenerate)."""
+    if len(loop) < 3:
+        return []
+    w = sum(mesh.W[i] for i in loop) / len(loop)
+    ring = list(loop) + [loop[0]]
+    out, k = [], 0
+    while k < len(ring) - 1:
+        seg = ring[k:k + 18]
+        verts = []
+        for j, i in enumerate(seg):
+            verts.append((mesh.P[i], mesh.W[i], mesh.N[i], mesh.ST[i]))
+            if j + 1 < len(seg):
+                verts.append((centre, w, normal, mesh.ST[i]))
+        hdr = mesh.header_of(seg[0])
+        if hdr is None or len(verts) < 3:
+            break
+        out.append(_batch_bytes(hdr, verts))
+        k += len(seg) - 1
+    return out
+
+
+def _cap_exposed(bm, clone, kind, meshes, mesh_of, stats):
+    """Openings of the base's meshes that the base's own extras (hair locks, capes...) covered: when the mix hides
+    those extras, each open loop of the parent's mesh that lies under one of them gets a cap."""
+    out = {}
+    for r in bm.recs:
+        n = clone.get(r)
+        if n is None or not r.mesh or n.enabled or r.node in CORE:
+            continue
+        par = r.parent
+        while par is not None and par.node not in CORE:
+            par = par.parent
+        if par is None:
+            continue
+        pc = clone[par]
+        pm = mesh_of(pc) if pc.enabled else None
+        if pm is None:
+            continue
+        hp = Mesh(r.chain).P
+        if not hp:
+            continue
+        lo = [min(p[k] for p in hp) for k in range(3)]
+        hi = [max(p[k] for p in hp) for k in range(3)]
+        pad = 0.15 * max(hi[k] - lo[k] for k in range(3)) + 0.05
+        groups, loops = _loops(pm)
+        for loop in loops:
+            idx = [groups[g][0] for g in loop]
+            c = tuple(sum(pm.P[i][k] for i in idx) / len(idx) for k in range(3))
+            if not all(lo[k] - pad <= c[k] <= hi[k] + pad for k in range(3)):
+                continue
+            key = (id(pc), tuple(sorted(idx))[:4])
+            if key in stats.setdefault("_capped_loops", set()):
+                continue
+            stats["_capped_loops"].add(key)
+            nrm = tuple(sum(pm.N[i][k] for i in idx) for k in range(3))
+            ln = v_len(nrm) or 1.0
+            bs = _cap_batches(pm, idx, c, tuple(x / ln for x in nrm))
+            if bs:
+                out.setdefault(pc, []).extend(bs)
+                stats["capped"] += 1
+    return out
+
+
+def _batch_bytes(hdr, verts):
+    """VIF words of one program-0 batch: UNPACK 5 header quadwords at TOP, UNPACK 3n vertex quadwords at TOP + 5,
+    MSCNT; NOPs in front so that it is whole quadwords."""
+    n = len(verts)
+    h = bytearray(hdr)
+    for q in (3, 4):   # the strip tags: NLOOP = vertex count
+        w0 = struct.unpack_from("<I", h, q * 16)[0]
+        struct.pack_into("<I", h, q * 16, (w0 & ~0x7FFF) | n)
+    words = [VIF_TEX] + list(struct.unpack("<20I", bytes(h))) + [0x6C008005 | ((3 * n) << 16)]
+    body = bytearray()
+    for p, w, nr, st in verts:
+        body += struct.pack("<4f", p[0], p[1], p[2], w)
+        body += struct.pack("<4f", nr[0], nr[1], nr[2], 0.0)
+        body += struct.pack("<4f", st[0], st[1], 1.0, 0.0)
+    tail = [0x17000000]
+    total = len(words) + len(body) // 4 + len(tail)
+    pad = (-total) % 4
+    return struct.pack(f"<{pad}I", *([0] * pad)) + struct.pack(f"<{len(words)}I", *words) + bytes(body) + \
+        struct.pack("<I", tail[0])
+
+
+def _append_batches(chain, batches):
+    """The chain with more batches in front of its end: the DMA tag's quadword count grows."""
+    t0 = struct.unpack_from("<I", chain, 0)[0]
+    qwc = t0 & 0xFFFF
+    data_end = 16 + qwc * 16
+    extra = b"".join(batches)
+    if len(extra) % 16:
+        return chain
+    nq = qwc + len(extra) // 16
+    if nq > 0xFFFF:
+        return chain
+    head = bytearray(chain[:16])
+    struct.pack_into("<I", head, 0, (t0 & ~0xFFFF) | nq)
+    return bytes(head) + chain[16:data_end] + extra + chain[data_end:]
+
+
+def _seam_from(L, bm, by_node, kind, layer_of, meshes, maps):
+    """The donor's seam section (header, vertices, triangles) with its vertices moved like the donor's meshes of
+    the same nodes (their edit log replayed) and its TEX0 repointed."""
+    dm = L.src.model
+    vc, tc, vo, to = dm.seams()
+    raw = dm.raw
+    sec = bytearray(16) + bytearray(raw[vo:vo + vc * 0x70]) + bytearray(raw[to:to + tc * 0x20])
+    struct.pack_into("<2i", sec, 0, vc, tc)
+    bynode = {}
+    for i in range(vc):
+        bynode.setdefault(struct.unpack_from("<i", raw, vo + i * 0x70 + 0x1C)[0], []).append(i)
+    for node, ids in bynode.items():
+        m = Mesh.__new__(Mesh)
+        m.P = [list(struct.unpack_from("<3f", raw, vo + i * 0x70)) for i in ids]
+        m.W = [struct.unpack_from("<f", raw, vo + i * 0x70 + 12)[0] for i in ids]
+        m.N = [list(struct.unpack_from("<3f", raw, vo + i * 0x70 + 0x10)) for i in ids]
+        m.log, m.dirty = [], False
+        src_mesh = next((meshes[x] for x in kind if x.node == node and kind[x] in ("core", "adopt") and
+                         layer_of.get(x) is L and x in meshes), None)
+        if src_mesh is not None:
+            m.replay(src_mesh.log)
+        elif node in bm.by_node and node in dm.by_node:
+            b_, d_ = bm.by_node[node], dm.by_node[node]
+            m.shift(v_sub(b_.ofsA, d_.ofsA), v_sub(b_.ofsB, d_.ofsB))
+        for k, i in enumerate(ids):
+            o = 16 + i * 0x70
+            struct.pack_into("<3f", sec, o, *m.P[k])
+            struct.pack_into("<3f", sec, o + 0x10, *m.N[k])
+    tm, rm = maps(L.src)
+    for i in range(tc):
+        o = 16 + vc * 0x70 + i * 0x20 + 0x10
+        t0, t1 = struct.unpack_from("<QQ", sec, o)
+        key = (t0 & 0x3FFF, (t0 >> 37) & 0x3FFF)
+        if key not in tm:
+            same = [k for k in tm if k[1] == key[1]] or sorted(tm, key=lambda k: abs(k[0] - key[0]))[:1]
+            key = same[0] if same else key
+        if key in tm:
+            a, c, bits = tm[key][:3]
+            if bits is not None:
+                t0 = (t0 & ~(0xFFFFF << 14)) | (bits & (0xFFFFF << 14))
+            t0 = (t0 & ~0x3FFF & 0xFFF8001FFFFFFFFF) | a | (c << 37)
+        r = (t1 >> 37) & 0x3FFF
+        if r not in rm and rm:
+            r = min(rm)
+        if r in rm:
+            t1 = (t1 & 0xFFF8001FFFFFFFFF) | (rm[r] << 37)
+        struct.pack_into("<QQ", sec, o, t0, t1)
+    return sec
 
 
 def _ancestors(n):
