@@ -20,6 +20,15 @@
 #define PORT_CHARA_MEMBER_INDEX 93000 /* two per added character: the fight's member block, a side each */
 #define PORT_CHARA_FACE_INDEX 92000  /* one per added character: the large picture of the menus */
 #define PORT_CHARA_LINE_INDEX 74000  /* two hundred per added character: its spoken lines, a hundred in each language */
+/* Costumes 5 and on (include/port_chara.h): up to PORT_COSTUME_MAX a character, a disc character's from a package
+   that replaces it, an added one's from its folder; their model files from the second archive's file 94000, 24 a
+   character (two a costume: the model, the damaged one), the disc's 161 characters first, then the added ones. */
+#define PORT_COSTUME_MAX 16
+#define PORT_CHARA_XCOST_INDEX 94000
+#define PORT_XCOST_PER ((PORT_COSTUME_MAX - 4) * 2)
+#define PORT_XCOST_SLOTS (161 + PORT_CHARA_MAX)
+int Port_CharaCostumeCount(int chara, int disc); /* how many a character has (`disc`: the disc table's number) */
+int Port_CharaModelFile(int chara, int costume, int damaged); /* the file id of a costume's model */
 
 void PortCharas_Init(void); /* reads the folder; once */
 int PortCharas_Reload(void); /* reads it again (from the menus only; not in a session); 0 if not done */
@@ -103,7 +112,7 @@ typedef struct PortCharaDesc {
     int labelSet;
     int replaces;      /* the disc character it replaces; -1 it adds one */
     int base;          /* the disc character it stands on (a replacement: the one it replaces) */
-    int costumes;      /* model files in a row from the first */
+    int costumes;      /* model files in a row from the first (up to PORT_COSTUME_MAX) */
     int files;         /* bit k: file k of the twelve (0..3 costumes, 4..7 damaged, 8 animations, 9 effects, 10 / 11 the
                           voice banks), and PORT_DESC_PORTRAIT, _CHIP, _MEMBER, _LINES */
     int large;         /* a model larger than the original's buffer */

@@ -1093,6 +1093,11 @@ void EftPropShotMgr_Init(EftJTask *task, EftJSrc *src) {
     memset(m, 0, 0x328);
     if (src->def->id == 0x19A) {
         u8 costume = BtlCharApi_GetCostume(src->objId20);
+#ifdef PORT
+        if (costume >= 4) { /* a package's fifth costume and on: the pack has the disc's four */
+            costume = 0;
+        }
+#endif
 
         m->model = BtlScene_GetPackEntry(BtlScene_GetPackEntry(src->pack, 1), costume + 1);
     } else {

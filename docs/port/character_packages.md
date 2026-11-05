@@ -57,6 +57,7 @@ all "the model of costume 1". If a folder has two files of one kind, the first b
 | `*_1p.pak` | model of costume 1 (with the character's own tables: moves, forms, the face on the fight's display) | `0x590 + id*10 + 0` | 1,572,864 bytes |
 | `*_2p.pak`, `*_3p.pak`, `*_4p.pak` | models of costumes 2 to 4 | `+ 1`, `+ 2`, `+ 3` | 1,572,864 |
 | `*_1p_dmg.pak` .. `*_4p_dmg.pak` | the damaged (torn clothes) model of each costume | `+ 4` .. `+ 7` | 1,572,864 |
+| `*_5p.pak` .. `*_16p.pak`, `*_5p_dmg.pak` .. `*_16p_dmg.pak` | costumes 5 to 16 and their damaged models (the disc has room for four: the port gives these numbers of their own, `PORT_CHARA_XCOST0` in `include/port_chara.h`) | none | 1,572,864 |
 | `*_anm.pak` | animations | `+ 8` | 1,443,840 |
 | `*_eff.pak` | effects | `+ 9` | 845,824 |
 | `*_voice_us.pak` | voice bank, **English** | `0xC7B + id` | 591,872 |
@@ -142,8 +143,8 @@ A package **without** `replaces=` that has a `*_1p.pak` adds a character.
   most **57** added characters, forms included; a 58th is not loaded and F1 > Mods says so.
 - **It gets a cell on the roster** after the game's own characters. A character that another added character
   transforms into shares that character's cell, as forms do in the original game.
-- **It has as many costumes as it has model files in a row**: `_1p` alone is one costume, `_1p` and `_2p` two;
-  `_1p` and `_3p` without `_2p` is one.
+- **It has as many costumes as it has model files in a row**, up to **16**: `_1p` alone is one costume, `_1p` and
+  `_2p` two; `_1p` and `_3p` without `_2p` is one; `_1p` .. `_9p` nine (as Team BT4's Sorbet).
 - **What the folder does not have comes from its base character**, the disc character named by `base=`:
 
 | The folder has no ... | ... so the game uses |
@@ -185,9 +186,13 @@ character by its id).
   one won.
 - It needs `replaces=` and at least one thing to put in place (a file, a name, a label, a number, a link). The
   `*_1p.pak` that adding requires is not required here.
-- **The number of costumes stays the disc character's.** A fourth costume cannot be added to a character that has
-  three; a costume the folder does not replace is still on the select screen (see the next point for which model
-  it shows).
+- **It can add costumes after the disc character's own**, up to 16 in all: the model files that follow the disc's
+  last costume in a row (`_4p.pak` for a character with three, then `_5p.pak` and on). A costume the folder does
+  not replace is still on the select screen (see the next point for which model it shows). A package with nothing
+  but such files is an **extra costumes** package (`port/tools/bt4/import_bt4_roster.py --extras` makes one for each
+  character BT4 has more costumes of): the disc character stays as it is and gets more costumes. They are worn
+  with the disc character's animations and effects, which they must fit (models of the same character do). As
+  every replacement, it is the one package for that character (the first by load order).
 - The forms of a replaced character are other disc characters with ids of their own. Replace each with a package
   of its own; it may sit beside the first or in a folder inside it (section 6).
 
@@ -300,6 +305,13 @@ These keys make a character stronger or weaker than the original. That is the pl
 | Customising (Evolution Z) | not there | there as the disc character, original chip and name |
 | Story modes | cannot be cast | fights use the package's files; names and pictures of the story screens are the original's |
 
+**More than four costumes on the select screens.** The movies have four costume plates. For a character with
+more, they show four at a time: left / right go on from the fourth to a page with the fifth and on (their numbers
+printed over the plates, `<` and `>` where there is a page before or after) and round to the first. **Square** on
+the costume plates (every select screen above, not online) opens the **costume preview**: the character in 3D in
+the costume under the cursor, left / right (or L1 / R1) to the next, cross takes it, triangle goes back. The Mod
+Fighters grid (square on the roster) and the Mod Manager's Library show and change every costume too.
+
 ## 9. Limits
 
 | What | Limit |
@@ -310,14 +322,14 @@ These keys make a character stronger or weaker than the original. That is the pl
 | Folders read inside one character's folder | 64 |
 | Folder name | under 64 bytes, not starting with a dot |
 | Path of a file (folder path + file name) | under 400 bytes; a longer one is not seen |
-| Costumes | 4; for a replacement, the disc character's own number |
+| Costumes | 16; for a replacement, the disc character's own number and those after it the folder has |
 | File sizes | the table in section 2 |
 | `name` on screen | 62 characters; the menus' font has the Latin letters and kana of the original game |
 
 ## 10. Not possible yet
 
 - **Changing DP cost, AI behaviour, or anything else in the shared tables.** Only health, ki and blast stocks.
-- **More costumes for a replaced character** than the disc character has.
+- **Two packages for one disc character** (a skin of costume 1 and an extra costumes package): one of them wins.
 - **A new character in the story modes**, or new story fights. A replaced character plays its disc character's
   part.
 - **Text of the character reference**, and an entry there for an added character.

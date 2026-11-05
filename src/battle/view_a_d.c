@@ -86,6 +86,9 @@ ChrView *gChrView = NULL;
 
 /* File id of a character's model: costume n, or its damaged version. */
 s32 ChrView_GetModelFile(s32 chara, s32 costume, s32 damaged) {
+#ifdef PORT
+    return CHARA_MODEL_FILE(chara, costume, damaged); /* (a fifth costume and on: port_chara.h) */
+#endif
     if (damaged != 0) {
         return CHARA_FILE10(chara) + costume + (CHRVIEW_FILE_FIRST + 4);
     }

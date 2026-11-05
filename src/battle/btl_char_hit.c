@@ -375,6 +375,11 @@ s32 BtlHit_CheckGrab(HitChr *a, HitChr *b) {
     BtlChar_ClearFlag(a, 0x4C);
     BtlChar_ClearFlag(a, 0x4D);
     n = BtlMember_GetActive(b)->costume;
+#ifdef PORT
+    if ((u32)n >= 4) { /* a package's fifth costume and on: the table's bits are for four (a shift past 31 otherwise) */
+        n = 0;
+    }
+#endif
     n = BtlHit_FormIndex(n, BtlMember_GetActiveGauge(b));
     if (BtlParam_GetFlags(b) & (0x1000000 << n)) {
         return 0;

@@ -12,11 +12,12 @@ roster. It needs a build with character packages (the char-packages branch); the
 `replace` puts the fighter in the place of an existing character's costume ("slot" in the file), which any build
 loads (gamedata/mods/). Forms are only made by `build`.
 
-A fighter file (JSON). Every part is optional except "name"; a character is {"chara": name or id, "costume": 1..4}:
+A fighter file (JSON). Every part is optional except "name"; a character is {"chara": name or id, "costume": 1..16}
+(a BT3 character has up to 4, a BT4 one up to 9):
     {
       "name": "Goku Black Rose", "title": "Super Saiyan Rose",
       "base": "Goku (End)",                      AI, roster tables, and whatever is not given (default: look)
-      "look": {"chara": "Goku (End)"},           body and hair; or "costumes": [ {...}, {...} ] for several
+      "look": {"chara": "Goku (End)"},           body and hair; or "costumes": [ {...}, {...} ] for several (up to 16)
       "moveset": {"chara": "Vegeta"},            everything the moves below do not change: melee, ki blasts, stats,
                                                  animations, effects, camera, move names (default: look)
       "melee": {"chara": "Broly"},               melee, rush and finishers
@@ -53,6 +54,7 @@ Standard library only.
 import argparse, json, pathlib, re, struct, sys
 
 ALIGN = 64
+COSTUME_MAX = 16  # the costumes a package may have (the game: PORT_COSTUME_MAX, include/port_chara.h); the disc has 4
 FIRST_CHARA_FILE = 0x590
 PT2_FIRST_ID = 0xD48
 VOICE_BANK_US, VOICE_BANK_JP = 0xC7B, 0xBDA
@@ -141,7 +143,11 @@ _bt4 = {"disc": None, "names": None, "iso": None}
 
 def bt4_iso():
     if _bt4["iso"] is None:
-        _bt4["iso"] = str(pathlib.Path(__file__).resolve().parents[3] / "SLUS_219.78.DBZBT4B14REV2ENG.iso")
+        # next to the repository (the folder above it; from a git worktree inside it, further up)
+        name_ = "SLUS_219.78.DBZBT4B14REV2ENG.iso"
+        here = pathlib.Path(__file__).resolve()
+        found = [p / name_ for p in here.parents[3:] if (p / name_).is_file()]
+        _bt4["iso"] = str(found[0] if found else here.parents[3] / name_)
     return _bt4["iso"]
 
 
@@ -489,14 +495,14 @@ def chara_id(name):
 
 
 def ref(obj, default=None):
-    """{"chara": ..., "costume": 1..4} -> (id, costume index)."""
+    """{"chara": ..., "costume": 1..16} -> (id, costume index). (Whether the character has it: Disc.has_costume.)"""
     if obj is None:
         return default
     if isinstance(obj, (str, int)):
         obj = {"chara": obj}
     costume = int(obj.get("costume", 1))
-    if not 1 <= costume <= 4:
-        raise Fail(f"costume {costume} out of range (1..4)")
+    if not 1 <= costume <= COSTUME_MAX:
+        raise Fail(f"costume {costume} out of range (1..{COSTUME_MAX})")
     return chara_id(obj["chara"]), costume - 1
 
 
@@ -527,7 +533,16 @@ class Disc:
     def has_costume(self, c, costume):
         if is_bt4(c):
             return 0 <= costume < bt4().ch.costumes[c - BT4_BASE]
-        return split_pack(self.raw(chara_file(c, costume)), 252) is not None
+        return 0 <= costume < 4 and split_pack(self.raw(chara_file(c, costume)), 252) is not None
+
+    def costume_count(self, c):
+        """How many costumes character c has (BT3: the disc's model slots that hold one, up to 4; BT4: its table's)."""
+        if is_bt4(c):
+            return bt4().ch.costumes[c - BT4_BASE]
+        n = 0
+        while n < 4 and self.has_costume(c, n):
+            n += 1
+        return n
 
     def model(self, c, costume, damaged=False):
         if not self.has_costume(c, costume):
@@ -685,8 +700,8 @@ class Fighter:
             self.costumes = [ref(c) for c in spec["costumes"]]
         else:
             self.costumes = [ref(spec.get("look"), ref(spec.get("base"), (0, 0)))]
-        if not 1 <= len(self.costumes) <= 4:
-            raise Fail("1 to 4 costumes")
+        if not 1 <= len(self.costumes) <= COSTUME_MAX:
+            raise Fail(f"1 to {COSTUME_MAX} costumes")
         self.look = self.costumes[0]
         self.base = ref(spec.get("base"), self.look if not is_bt4(self.look[0]) else (3, 0))
         if is_bt4(self.base[0]):
@@ -749,6 +764,9 @@ class Fighter:
         ms = d.model(*self.moveset, damaged)
         for e in MOVESET_ENTRIES + tuple(TEXT_ENTRIES):
             m[e] = ms[e]
+        for e in (2, 0x17):  # (a model without entry 2 or 0x17, as Team BT4's joke costumes: every fight reads
+            if not m[e] and ms[e]:  # them, BtlMove_ClampToStage, BtlChar_UpdateLook: the moveset's own)
+                m[e] = ms[e]
         if self.melee:
             m[E_MELEE] = d.model(*self.melee, damaged)[E_MELEE]
         if self.kiblasts:
@@ -973,6 +991,37 @@ def write_package(disc, spec_path, chars_dir, done):
     return folder
 
 
+def write_extra_costumes(disc, chara, looks, chars_dir, folder, first=None, author="Custom Character"):
+    """A package that gives disc character `chara` (a BT3 id) more costumes than the disc has room for: a folder
+    with `replaces=<chara>` and only the model files of costumes first + 1 .. (`first`: default the costumes the disc
+    has, so the new ones come after them). `looks`: [(id, costume index)] of the models to wear, each with the disc
+    character's own moves, names and voice (its animations and effects are the disc's, which they must fit). The
+    game: a package that replaces a disc character adds the costumes it has after the disc's (plat_charas.c)."""
+    if is_bt4(chara) or not 0 <= chara < len(NAMES):
+        raise Fail("extra costumes are for a character of the BT3 disc")
+    have = disc.costume_count(chara) if first is None else first
+    if not looks or have + len(looks) > COSTUME_MAX:
+        raise Fail(f"{NAMES[chara]}: 1 to {COSTUME_MAX - have} extra costumes")
+    spec = {"name": NAMES[chara], "costumes": [{"chara": c, "costume": k + 1} for c, k in looks],
+            "moveset": {"chara": chara}, "base": {"chara": chara}, "voice": {"chara": chara}}
+    f = Fighter(disc, spec, "extra costumes")
+    out = chars_dir / folder
+    out.mkdir(parents=True, exist_ok=True)
+    for old in out.glob("*.pak"):
+        old.unlink()
+    stem = re.sub(r"[^A-Za-z0-9]+", "_", NAMES[chara]).strip("_")[:24] or "fighter"
+    for i, costume in enumerate(f.costumes):
+        n = have + i + 1
+        (out / f"{stem}_{n}p.pak").write_bytes(f.model(costume, False).bytes())
+        (out / f"{stem}_{n}p_dmg.pak").write_bytes(f.model(costume, True).bytes())
+    manifest = [f"# made by port/tools/custom_fighter.py: costumes {have + 1}..{have + len(looks)} of {NAMES[chara]}",
+                "format=1", f"replaces={chara}", f"author={author}",
+                "about=" + (f"More costumes for {NAMES[chara]}: " + ", ".join(
+                    f"{name(c)} {k + 1}" for c, k in looks))[:199]]
+    (out / "character.txt").write_text("\n".join(manifest) + "\n", encoding="utf-8")
+    return folder
+
+
 def game_dir(game):
     if not game:
         raise Fail("--game <the game's folder> is needed")
@@ -994,6 +1043,8 @@ def replace_files(disc, spec):
     slot = ref(spec["slot"])
     if is_bt4(slot[0]):
         raise Fail("the place a fighter takes in this game is a BT3 character (for BT4, use the BT4 install)")
+    if slot[1] >= 4:
+        raise Fail("the place a fighter takes is one of the disc's four costumes (more: `build` a package)")
     out = {}
     for damaged in (False, True):
         out[("pzs3us1", chara_file(*slot) + (4 if damaged else 0) - 1)] = f.model(f.look, damaged).bytes()

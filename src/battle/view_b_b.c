@@ -22,9 +22,10 @@ s32 ChrTbl_WrapCostume(s32 chara, s32 *costume) {
     ChrTblEntry *table = (ChrTblEntry *)CHRTBL_SECTION(file, charaOffset);
 
 #ifdef PORT
-    if (PORT_CHARA_ADDED(chara)) { /* PC build: as many costumes as the character's folder has */
-        extern int Port_CharaCostumes(int chara);
-        s32 n = Port_CharaCostumes(chara);
+    {
+        /* PC build: an added character has as many costumes as its folder has; a disc character the disc's number,
+           or more where a package that replaces it brings further ones (up to PORT_COSTUME_MAX) */
+        s32 n = Port_CharaCostumeCount(chara, PORT_CHARA_ADDED(chara) ? 0 : table[CHARA_T(chara)].costumes);
         if (costume != NULL && !(*costume < n)) {
             *costume = 0;
         }

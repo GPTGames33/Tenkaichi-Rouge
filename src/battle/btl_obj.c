@@ -525,11 +525,15 @@ BtlResWork *BtlRes_GetWork(void) {
 s32 BtlObj_RequestCharaModel(s32 side, s32 chara, s32 costume, s32 variant) {
     s32 model;
 
+#ifdef PORT
+    model = CHARA_MODEL_FILE(chara, costume, variant); /* (a fifth costume and on: port_chara.h) */
+#else
     if (variant != 0) {
         model = CHARA_FILE10(chara) + costume + 0x594;
     } else {
         model = CHARA_FILE10(chara) + costume + 0x590;
     }
+#endif
     return BtlRes_Request(1, model, CHARA_FILE10(chara) + 0x598, CHARA_FILE10(chara) + 0x599);
 }
 
