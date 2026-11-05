@@ -31,7 +31,8 @@
 #define PC_TEST_COSTUME 8
 #define PC_PLACE_X 9      /* where the model stands, tenths of the mockup's pixels (1376 x 768: port_mmkit.c): its feet */
 #define PC_PLACE_FEET 10
-#define PC_PLACE_H 11     /* ... and its height */
+#define PC_PLACE_H 11     /* ... and its height (the screen's camera zooms and moves the model: these change) */
+#define PC_PLATFORM 12    /* 1: the platform under it (not in a close shot) */
 
 extern void PortCreator_Open(void);
 extern void PortCreator_Close(void);
@@ -92,7 +93,9 @@ s32 PortCreator_Run(void) {
         }
         Mx_Begin();
         Mx_Background(0);
-        Mx_Platform(x, feet + Mx_LenY(4.0f), h * 0.82f);
+        if (PortCreator_Get(PC_PLATFORM)) {
+            Mx_Platform(x, feet + Mx_LenY(4.0f), h * 0.82f);
+        }
         Mm_ViewDraw(x, feet, h);
         ColorFade_Draw();
         File_Stub264D90();

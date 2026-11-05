@@ -225,7 +225,7 @@ function initView() {
 }
 async function loadModel() {
   if (!V.gl || !spec) return;
-  const key = JSON.stringify([look(), spec.parts || null, spec.colours || null, spec.body || null]);
+  const key = JSON.stringify([look(), spec.parts || null, spec.colours || null, spec.body || null, spec.paint || null]);
   if (key === V.key || V.loading) return;
   V.loading = true; V.key = key;
   try {
@@ -251,7 +251,7 @@ async function loadModel() {
     $("view3d").classList.add("on"); $("hero").style.display = "none";
   } catch (e) { V.key = ""; $("view3d").classList.remove("on"); $("hero").style.display = ""; toast(e.message, true); }
   V.loading = false;
-  if (JSON.stringify([look(), spec.parts || null, spec.colours || null, spec.body || null]) !== V.key) loadModel();
+  if (JSON.stringify([look(), spec.parts || null, spec.colours || null, spec.body || null, spec.paint || null]) !== V.key) loadModel();
 }
 function mat4mul(a, b) { const o = new Array(16).fill(0);
   for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) for (let k = 0; k < 4; k++) o[j * 4 + i] += a[k * 4 + i] * b[j * 4 + k]; return o; }
@@ -524,6 +524,16 @@ function drawParts() {
     tip: "Pick a texture of your warrior, then the colour to change on it.", onclick: openColours, extra: `<span class="btn">✕</span>`});
   if (nc) rows.push({label: "All original", value: "Undo every colour change", onclick: () => { delete spec.colours; touch(); draw(); },
     extra: `<span class="btn">✕</span>`});
+  // "paint": the in-game texture painter's (Custom Character screen: PARTS, Paint texture...); kept as it is, shown here
+  const painted = Object.keys(spec.paint || {});
+  if (painted.length) {
+    rows.push({label: "Painted", value: `${painted.length} texture${painted.length > 1 ? "s" : ""} painted in the game`,
+      sub: painted.map(k => `costume ${k.split(":")[0]}, texture ${k.split(":")[1]}`).join("; "),
+      tip: "Painted with the game's texture painter (Custom Character, PARTS: Paint texture...). Click to see the paint.",
+      onclick: showPaint, extra: `<span class="btn">✕</span>`});
+    rows.push({label: "Remove paint", value: "Take all the painting off", onclick: () => { if (confirm("Remove all the paint?")) { delete spec.paint; touch(); draw(); } },
+      extra: `<span class="btn">✕</span>`});
+  }
   render(rows);
   tip("Whose look? Pick the body, hair and clothes of any character.");
   help([["✕", "Change"], ["Esc", "Back"]]);
@@ -577,7 +587,8 @@ function drawWorkshop() {
     nodes.map(n => `<span class="tab${WS.node === String(n.node) ? " on" : ""}" data-node="${n.node}" style="margin:4px;display:inline-block">${esc(n.name)}</span>`).join("") + `</div>`;
   if (WS.piece === null && WS.node === null) {
     const b = (t.build = t.build || {});
-    h += `<div class="sec">BUILD</div>` + [["torso", "Torso build"], ["arms", "Arm build"], ["legs", "Leg build"], ["head", "Head size"]].map(([k, lab]) =>
+    h += `<div class="sec">BUILD</div>` + [["torso", "Torso build"], ["arms", "Arm build"], ["legs", "Leg build"], ["head", "Head size"],
+      ["hands", "Hand size"], ["feet", "Foot size"]].map(([k, lab]) =>
       slider(lab, [b, k], 50, 160, 1, 100, "pct100")).join("");
   } else {
     if (WS.node !== null) h += `<div class="row" style="grid-template-columns: 150px 1fr auto"><span>Shown</span><span class="val">${tgt.shown === false ? "Off" : "On"}</span><span class="btn wsshow">✕</span></div>`;
@@ -667,6 +678,24 @@ async function openColours() {
     touch(); openColours();
   };
   tip("Pick a texture of your warrior, then the colour to change on it! ↺ puts a texture back.");
+}
+// the paint of the game's texture painter: each painted texture's paint (alpha: where), to look at or take off
+function showPaint() {
+  pickSeq++;
+  $("pick").classList.add("side");
+  $("picktitle").textContent = "PAINT"; $("pick").style.display = "block"; $("grid").style.display = "none";
+  $("picknone").style.display = "none"; $("pickgames").innerHTML = "";
+  const L = $("picklist"); L.style.display = "block";
+  const keys = Object.keys(spec.paint || {});
+  L.innerHTML = `<div class="sec">PAINTED IN THE GAME (PARTS: PAINT TEXTURE...)</div>` + keys.map(k => { const p = spec.paint[k];
+    return `<div class="row" style="grid-template-columns: 140px 1fr auto; cursor: default">
+      <img src="data:image/png;base64,${p.png}" style="width:128px;height:128px;border-radius:4px;background:repeating-conic-gradient(#8c80aa 0 25%, #5a4e80 0 50%) 0 0/16px 16px;image-rendering:pixelated">
+      <span>Costume ${esc(k.split(":")[0])}, texture ${esc(k.split(":")[1])}<br><span class="sub">${p.w} x ${p.h}: the painted pixels</span></span>
+      <span class="btn rmpaint" data-k="${esc(k)}" title="Take this paint off">↺</span></div>`; }).join("") +
+    (keys.length ? "" : `<div class="sec">NOTHING PAINTED</div>`);
+  for (const b of L.querySelectorAll(".rmpaint")) b.onclick = () => {
+    delete spec.paint[b.dataset.k]; if (!Object.keys(spec.paint).length) delete spec.paint; touch(); showPaint(); };
+  tip("The game's texture painter painted these. ↺ takes one off; paint more in the game (PARTS: Paint texture...).");
 }
 function donorRow(label, key, tipText) {
   return {label, value: nm(spec[key], "the moveset's"), tip: tipText,

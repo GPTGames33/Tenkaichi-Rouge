@@ -37,6 +37,9 @@ A fighter file (JSON). Every part is optional except "name"; a character is {"ch
                                                  named leads nowhere; a form not naming down goes back to its owner)
       "form_costs": {"up": 2},                   blast stocks a transformation costs
       "slot": {"chara": "Goku (End)", "costume": 1}   `replace` only: whose place it takes
+      "paint": {"1:5": {"w": 128, "h": 128, "sig": "1a2b3c4d", "png": "<base64>"}}   painted pixels of a texture:
+                                                 "<costume>:<texture>" of the built model, an RGBA PNG of its size
+                                                 (alpha 255: painted that colour), after the colour changes
     }
 
 What lives where (decompilation: CUSTOM_CHARACTER_RESEARCH.md; numbers are game entries, BObjFile_GetEntry: entry
@@ -364,6 +367,249 @@ def texture_colours(model_pack, limit=8):
                 continue
             cols.append(("#%02x%02x%02x" % (g[2] // g[1], g[3] // g[1], g[4] // g[1]), round(g[1] / total, 3)))
         out.append((tex["index"], cols))
+    return out
+
+
+# ------------------------------------------------------------------------------------------------- paint
+# The texture painter (the game's Custom Character screen, port/src/gs/creator_ui.cpp): "paint" in the spec is, per
+# texture of a costume of the built model, the pixels painted over it (an RGBA PNG: alpha 255 = painted). Applied
+# after the colour changes, into the texture's own palette (4 bits: 16 colours, 8 bits: 256): a new colour takes a
+# palette entry no pixel uses any more, or - when there is none - the two closest colours are merged (the painted
+# ones kept as they are where they can be). A painted pixel keeps its alpha. The same pixels are painted on every
+# texture that is the same picture where it is (the face's eye frames and mouth textures, entries 0xD..0x11, which
+# the game puts in its place while it blinks and talks, and the damaged costume's copy of the texture).
+PAINT_ENTRIES = (0xC, 0xD, 0xE, 0xF, 0x10, 0x11)
+PAINT_SHARE = 0.5  # another texture is "the same picture" when this much of its opaque pixels are the painted one's
+
+
+def model_module():
+    here = pathlib.Path(__file__).resolve().parent / "creator"
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
+    import model as mdl
+    return mdl
+
+
+def tex_layout(t, i):
+    """Texture i of texture file t as the painter writes it: {w, h, bits, cells, pal, clut, sig}: cells[p] = (byte
+    offset, nibble shift or -1 for a byte) of pixel p's palette index in t (None: not uploaded), pal[k] = the file
+    offset of palette entry k (None: none); sig = the crc of its pixels' upload (the same whatever its colours).
+    None when it is not a palettised texture."""
+    import zlib
+    mdl = model_module()
+    count, ent = struct.unpack_from("<II", t, 0)
+    if i < 0 or i >= count or ent * 4 + (i + 1) * 0x40 > len(t):
+        return None
+    o = ent * 4 + i * 0x40
+    pix, clut, _, _, _, _, pblt, _, _, _ = struct.unpack_from("<IIiiiiIIii", t, o)
+    tex0 = struct.unpack_from("<Q", t, o + 0x30)[0]
+    psm, tbw = (tex0 >> 20) & 0x3F, (tex0 >> 14) & 0x3F
+    tw, th, csa = 1 << ((tex0 >> 26) & 15), 1 << ((tex0 >> 30) & 15), (tex0 >> 56) & 0x1F
+    if psm not in (0x13, 0x14) or not clut or (pblt >> 8) & 0x3F:
+        return None
+    try:
+        uw, uh, dofs, _ = mdl.parse_gs_upload(t, pix * 4)
+        cw, ch, cofs, _ = mdl.parse_gs_upload(t, clut * 4)
+    except mdl.ModelError:
+        return None
+    if not uw or dofs + uw * uh * 4 > len(t):
+        return None
+    dbw = pblt & 0x3F
+    where = {}
+    for y in range(uh):
+        for x in range(uw):
+            where[mdl.addr32(dbw, x, y)] = dofs + (y * uw + x) * 4
+    cells = []
+    for y in range(th):
+        for x in range(tw):
+            if psm == 0x14:
+                a = mdl.addr4(tbw, x, y)
+                b = a >> 1
+                w = where.get(b >> 2)
+                cells.append(None if w is None else (w + (b & 3), 4 if a & 1 else 0))
+            else:
+                a = mdl.addr8(tbw, x, y)
+                w = where.get(a >> 2)
+                cells.append(None if w is None else (w + (a & 3), -1))
+    n = cw * ch
+    if psm == 0x13:
+        pal = [cofs + mdl.csm1(k) * 4 if mdl.csm1(k) < n else None for k in range(256)]
+    else:
+        pal = [cofs + (k + csa * 16) * 4 if k + csa * 16 < n else None for k in range(16)]
+    return {"w": tw, "h": th, "bits": 4 if psm == 0x14 else 8, "cells": cells, "pal": pal, "clut": clut,
+            "sig": "%08x" % (zlib.crc32(bytes(t[dofs:dofs + uw * uh * 4])) & 0xFFFFFFFF)}
+
+
+def tex_indices(t, lay):
+    out = []
+    for c in lay["cells"]:
+        if c is None:
+            out.append(0)
+        elif c[1] < 0:
+            out.append(t[c[0]])
+        else:
+            out.append((t[c[0]] >> c[1]) & 15)
+    return out
+
+
+def tex_rgba(t, lay, idx=None):
+    """A texture's pixels as RGBA (alpha 0..255), from its layout."""
+    idx = tex_indices(t, lay) if idx is None else idx
+    pal = [bytes(t[o:o + 3]) + bytes((min(255, t[o + 3] * 2),)) if o is not None else b"\0\0\0\xff" for o in lay["pal"]]
+    return b"".join(pal[k] for k in idx)
+
+
+def tex_sigs(t):
+    """{texture index: sig} of a texture file's palettised textures (cheap: no pixel layout)."""
+    import zlib
+    mdl = model_module()
+    out = {}
+    count, ent = struct.unpack_from("<II", t, 0)
+    for i in range(min(count, 256)):
+        o = ent * 4 + i * 0x40
+        if o + 0x40 > len(t):
+            break
+        pix, clut = struct.unpack_from("<II", t, o)
+        tex0 = struct.unpack_from("<Q", t, o + 0x30)[0]
+        if (tex0 >> 20) & 0x3F not in (0x13, 0x14) or not clut:
+            continue
+        try:
+            uw, uh, dofs, _ = mdl.parse_gs_upload(t, pix * 4)
+        except mdl.ModelError:
+            continue
+        out[i] = "%08x" % (zlib.crc32(bytes(t[dofs:dofs + uw * uh * 4])) & 0xFFFFFFFF)
+    return out
+
+
+def _cdist(a, b):
+    da = (a[3] - b[3]) * 4
+    return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2 + da * da
+
+
+def paint_texture(t, lay, painted, locked=()):
+    """Paints pixels {p: (r, g, b)} of the texture `lay` of texture file t (a bytearray, changed in place), into its
+    palette. `locked`: palette entries (file offsets) other textures use too (never changed). -> the palette entries
+    merged to make room (0: the colours fitted)."""
+    idx = tex_indices(t, lay)
+    pal_offs = lay["pal"]
+    n = len(pal_offs)
+    raw = [tuple(t[o:o + 4]) if o is not None else None for o in pal_offs]
+    cells = lay["cells"]
+    want = {}  # pixel -> raw rgba it is to be
+    for p, rgb in painted.items():
+        if 0 <= p < len(cells) and cells[p] is not None and raw[idx[p]] is not None:
+            want[p] = (rgb[0], rgb[1], rgb[2], raw[idx[p]][3])
+    if not want:
+        return 0
+    used = [0] * n
+    for p in range(len(idx)):
+        if p not in want and cells[p] is not None:
+            used[idx[p]] += 1
+    # clusters of colours: [colour, weight, original entries, painted colours, locked]
+    clusters = []
+    for k in range(n):
+        if raw[k] is None:
+            continue
+        lk = pal_offs[k] in locked
+        if used[k] or lk:
+            clusters.append([raw[k], used[k], {k}, set(), lk])
+    counts = {}
+    for c in want.values():
+        counts[c] = counts.get(c, 0) + 1
+    for c, w in counts.items():
+        for cl in clusters:
+            if cl[0] == c:
+                cl[1] += w * 4
+                cl[3].add(c)
+                break
+        else:
+            clusters.append([c, w * 4, set(), {c}, False])
+    slots = sum(1 for o in pal_offs if o is not None)
+    merged = 0
+    while len(clusters) > slots:
+        best = None
+        for i in range(len(clusters)):
+            a = clusters[i]
+            for j in range(i + 1, len(clusters)):
+                b = clusters[j]
+                if a[4] and b[4]:
+                    continue
+                if a[0][3] != b[0][3] and (a[0][3] == 0 or b[0][3] == 0):  # (clear and seen stay apart)
+                    cost = 1e18
+                else:
+                    wa, wb = max(a[1], 1), max(b[1], 1)
+                    cost = wa * wb / (wa + wb) * _cdist(a[0], b[0])
+                if best is None or cost < best[0]:
+                    best = (cost, i, j)
+        if best is None:
+            break
+        _, i, j = best
+        a, b = clusters[i], clusters[j]
+        if a[4] or b[4]:
+            col = a[0] if a[4] else b[0]
+        else:
+            wa, wb = max(a[1], 1), max(b[1], 1)
+            col = tuple(round((a[0][k] * wa + b[0][k] * wb) / (wa + wb)) for k in range(4))
+        clusters[i] = [col, a[1] + b[1], a[2] | b[2], a[3] | b[3], a[4] or b[4]]
+        del clusters[j]
+        merged += 1
+    # a palette entry per cluster: the entry it had where it can, else a free one
+    taken, slot_of = set(), [None] * len(clusters)
+    for ci, cl in enumerate(clusters):
+        own = sorted(k for k in cl[2] if ((pal_offs[k] in locked) if cl[4] else raw[k] == cl[0]))
+        for k in own:
+            if k not in taken:
+                slot_of[ci] = k
+                taken.add(k)
+                break
+    for ci, cl in enumerate(clusters):
+        if slot_of[ci] is None:
+            for k in sorted(cl[2]) + list(range(n)):
+                if k not in taken and pal_offs[k] is not None and pal_offs[k] not in locked:
+                    slot_of[ci] = k
+                    taken.add(k)
+                    break
+    old_to, col_to = {}, {}
+    for ci, cl in enumerate(clusters):
+        k = slot_of[ci]
+        if k is None:
+            continue
+        if not cl[4] and raw[k] != cl[0]:
+            t[pal_offs[k]:pal_offs[k] + 4] = bytes(cl[0])
+        for o in cl[2]:
+            old_to[o] = k
+        for c in cl[3]:
+            col_to[c] = k
+    for p in range(len(idx)):
+        c = cells[p]
+        if c is None:
+            continue
+        k = col_to.get(want[p]) if p in want else old_to.get(idx[p], idx[p])
+        if k is None or k == idx[p]:
+            continue
+        if c[1] < 0:
+            t[c[0]] = k
+        else:
+            t[c[0]] = (t[c[0]] & ~(15 << c[1]) & 0xFF) | (k << c[1])
+    return merged
+
+
+def paint_entries(spec):
+    """The spec's "paint" as [(costume index, texture index, w, h, sig, {pixel: (r, g, b)})]."""
+    import base64
+    out = []
+    for key, v in (spec.get("paint") or {}).items():
+        m = re.fullmatch(r"(\d+):(\d+)", str(key))
+        if not m or not isinstance(v, dict) or not v.get("png"):
+            raise Fail(f"paint: {key!r} should be \"<costume>:<texture>\": {{w, h, png}}")
+        P = portrait_module()
+        try:
+            w, h, px = P.png_read(base64.b64decode(v["png"].split(",", 1)[-1]))
+        except Exception as e:
+            raise Fail(f"paint {key}: not a PNG ({e})")
+        painted = {p: (px[p * 4], px[p * 4 + 1], px[p * 4 + 2]) for p in range(w * h) if px[p * 4 + 3] >= 128}
+        if painted:
+            out.append((int(m.group(1)) - 1, int(m.group(2)), w, h, v.get("sig"), painted))
     return out
 
 
@@ -820,6 +1066,8 @@ class Fighter:
                 self.colours.append((int(c["texture"]), hex_rgb(c["from"]), hex_rgb(c["to"]), float(c.get("range", 1.0))))
             except (KeyError, ValueError, TypeError):
                 raise Fail(f"a colour change needs texture, from and to (#rrggbb): {c!r}")
+        self.paint = paint_entries(spec)
+        self._paint_ref = {}  # look -> the texture file the paint was made on (undamaged, before the colours)
         self.moves = {}
         for key, v in spec.get("moves", {}).items():
             if key not in SLOTS:
@@ -843,6 +1091,7 @@ class Fighter:
         m = d.model(*costume, damaged)
         if self.parts or self.body:  # pieces of other characters' models, workshop (port/tools/creator/mix.py)
             m = self.mixed(m, damaged)
+        pre = self.pre_colours = {e: m[e] for e in PAINT_ENTRIES}  # (the textures before the colour changes)
         if self.colours:
             # (the colour changes name the textures of the costume's model, as the creator shows it; the damaged
             # model gets them on its own textures that are the same)
@@ -862,6 +1111,8 @@ class Fighter:
                 tmap = texture_map(tex, m[0xC], face, face_texture(m))
                 changes = [(tmap[t], ref, to, rng) for t, ref, to, rng in changes if t in tmap]
             m = recolour_model(m, changes)
+        if self.paint:
+            self.painted(m, costume, damaged, pre)
         ms = d.model(*self.moveset, damaged)
         for e in MOVESET_ENTRIES + tuple(TEXT_ENTRIES):
             m[e] = ms[e]
@@ -932,6 +1183,75 @@ class Fighter:
                     return m
                 dropped = sel.pop()
                 self.note(f"one {dropped[1].rstrip('+')} layer left out: {e}")
+
+    def painted(self, m, costume, damaged, pre):
+        """The paint of the costumes with this look, on the model m (after its colour changes; pre: its texture
+        files before them). Painted on the texture it was made on - found by its pixels' sig, wherever the build
+        put it - and, where they are the same picture, on the face's eye frames and mouth textures and the damaged
+        model's textures."""
+        todo = [pe for pe in self.paint if pe[0] < len(self.costumes) and self.costumes[pe[0]] == costume]
+        if not todo:
+            return
+        if damaged:
+            ref = self._paint_ref.get(costume)
+            if ref is None:
+                u = self.disc.model(*costume, False)
+                if self.parts or self.body:
+                    u = self.mixed(u, False)
+                ref = self._paint_ref[costume] = u[0xC]
+        else:
+            ref = self._paint_ref[costume] = pre[0xC]
+        data = {e: bytearray(m[e]) for e in PAINT_ENTRIES if m[e] and pre.get(e)}
+        lays, pics = {}, {}
+
+        def layout(e, j):
+            if (e, j) not in lays:
+                lays[(e, j)] = tex_layout(pre[e], j)
+            return lays[(e, j)]
+
+        def dims(t, j):
+            count, ent = struct.unpack_from("<II", t, 0)
+            if j >= count or ent * 4 + (j + 1) * 0x40 > len(t):
+                return None
+            tex0 = struct.unpack_from("<Q", t, ent * 4 + j * 0x40 + 0x30)[0]
+            return 1 << ((tex0 >> 26) & 15), 1 << ((tex0 >> 30) & 15)
+        sigs = tex_sigs(ref)
+        for ci, ti, w, h, sig, painted in todo:
+            target = ti if sig is None or sigs.get(ti) == sig else next((k for k, s in sorted(sigs.items()) if s == sig), None)
+            rl = tex_layout(ref, target) if target is not None else None
+            if rl is None or (rl["w"], rl["h"]) != (w, h):
+                self.note(f"the paint of texture {ti} left out: the build's textures changed since it was painted")
+                continue
+            ref_px = tex_rgba(ref, rl)
+            opaque = [ref_px[p * 4 + 3] >= 128 for p in range(w * h)]
+            n_opaque = max(1, sum(opaque))
+            for e in data:
+                count = struct.unpack_from("<I", pre[e], 0)[0]
+                for j in range(min(count, 256)):
+                    if dims(pre[e], j) != (w, h):
+                        continue
+                    lay = layout(e, j)
+                    if lay is None:
+                        continue
+                    mask = None
+                    if damaged or e != 0xC or j != target:
+                        if (e, j) not in pics:
+                            pics[(e, j)] = tex_rgba(pre[e], lay)
+                        px = pics[(e, j)]
+                        mask = [px[p * 4:p * 4 + 4] == ref_px[p * 4:p * 4 + 4] for p in range(w * h)]
+                        if sum(1 for p in range(w * h) if mask[p] and opaque[p]) / n_opaque < PAINT_SHARE:
+                            continue
+                    sub = painted if mask is None else {p: c for p, c in painted.items() if mask[p]}
+                    locked = set()
+                    ent = struct.unpack_from("<I", pre[e], 4)[0]
+                    for j2 in range(min(count, 256)):  # (a palette other textures use too: its entries stay)
+                        if j2 != j and struct.unpack_from("<I", pre[e], ent * 4 + j2 * 0x40 + 4)[0] == lay["clut"]:
+                            l2 = layout(e, j2)
+                            if l2 is not None:
+                                locked |= {l2["pal"][k] for k in set(tex_indices(data[e], l2))}
+                    paint_texture(data[e], lay, sub, locked)
+        for e, t in data.items():
+            m[e] = bytes(t)
 
     def note(self, text):
         if text not in self.notes:

@@ -4809,6 +4809,23 @@ the repository's own license). Its six files are `port/src/bt3_{zcounter2,bombar
 - **Add to roster** = `/api/package`, then `PortCharas_Reload` on the game's thread: the cell is on the character
   select at once. **Test fight** (SAVE & PLAY) leaves for a training fight with the added character
   (`gPortModTest 2`: its pause menu says "Return to Custom Character" and comes back to the same warrior).
+- **Workshop, camera, texture painter** (PARTS). The Workshop (a row per piece with layers, and Body) writes what the
+  web page's does: a layer's `adjust` (`scale` / `size` / `move` / `turn`, per part under `nodes`) and `body`
+  (`build`: torso, arms, legs, head, hands, feet; `nodes`): sliders (d-pad, left / right, held a while: 8 times the
+  step; triangle resets a slider, square the part; the mouse drags them), the model built again once they rest. The
+  camera: right stick up / down, + / -, the wheel over the model zoom; R3 + right stick or the right mouse button move
+  it; L3 / V or the FULL / HEAD chips go to the whole warrior or its face (`PortCreator_Get` 9..12: the place
+  `Mm_ViewDraw` is given, a point of the model kept where it is; no platform in a close shot). "Paint texture..."
+  (also triangle on a texture of Recolour) lists the shown costume's textures (`/api/textures`: as built without the
+  paint, PNG, size, palette, sig) and paints on one: a crosshair (left stick, the d-pad a texel at a time, the mouse),
+  brush / fill (tolerance) / picker / eraser, sizes (L2 / R2), zoom (right stick, wheel), undo / redo (L1 / R1,
+  Ctrl+Z / Y), the colour wheel (triangle: hue ring, saturation / brightness square, the code typed, recent colours;
+  also triangle on the recolour palette). The paint is the spec's `paint` {"<costume>:<texture>": {w, h, sig, png:
+  an RGBA PNG, alpha 255 painted}}; custom_fighter.py paints it into the texture's palette after the colour changes
+  (`Fighter.painted`: a free entry per new colour, else the closest colours merged; alpha kept), on the texture found
+  by its pixels' sig, and on every texture that is the same picture where it is (the eye frames and mouth textures,
+  entries 0xD..0x11, and the damaged model's textures: half their opaque pixels or more as the painted one's were
+  before the colours), so blinking and talking keep it. index.html keeps the field and shows it (PARTS: Painted).
 - Testing: `BT3_TEST_MODMGR=creator` opens the screen at once (`=menucreator`: the main menu on its item),
   `BT3_CREATOR_SCRIPT=<frame>:<button>,...` presses buttons (up down left right ok back sq tri l1 r1 l2 r2 start,
   `type=<text>`), `BT3_CREATOR_PORT` another port. Checked from the window's picture (`BT3_UI_SHOT`, Vulkan): the
