@@ -4790,7 +4790,8 @@ the repository's own license). Its six files are `port/src/bt3_{zcounter2,bombar
   thread (`Creator_Frame`, from `ui.cpp`): title, tabs WARRIOR / PARTS / MOVES / FORMS / SAVE & PLAY (L1 / R1), the
   list (d-pad, cross, circle, square, triangle; left / right on numbers), the character grid with BT3 / BT4 / ALL and
   typed search (the model shows whom the cursor rests on), the on-screen keyboard (and the physical one), the
-  textures' swatches and a palette for colours, the forms list, the tip box with a host, the button prompts (the
+  textures' swatches and a palette for colours, attack colours (square on a technique, and the Ki blasts / Ki charge
+  rows: `/api/fxcolours`'s swatches and picture, `attack_colours` written as the web page writes it), the forms list, the tip box with a host, the button prompts (the
   keyboard's keys once it was used last: Enter, Esc, F, R, Q / E, Z / C, Ctrl+S; A / D or the right stick or a mouse
   drag turn the model; L2 / R2 show the other costumes). While it is open the game gets no input (`gPortOverlayOpen`)
   and Esc is its "back".

@@ -1039,7 +1039,7 @@ struct Row {
 };
 
 // ---- the screens over the list (the grid, the keyboard, lists, the colours): a stack
-enum { OV_GRID, OV_LIST, OV_KEYS, OV_COLOURS, OV_PALETTE, OV_TEXT };
+enum { OV_GRID, OV_LIST, OV_KEYS, OV_COLOURS, OV_PALETTE, OV_TEXT, OV_FX };
 struct Overlay {
     int kind = OV_LIST;
     int id = 0;                          // (which one: a choice may close it and open another in its place)
@@ -1068,6 +1068,7 @@ struct Overlay {
     bool loading = false;
     int texture = 0;
     std::string from;
+    std::string fx;                      // an attack's colours (OV_FX, and its palette): "blast1_1".."ultimate", "ki_blasts", "charge"
     int cur = 0, top = 0;
 };
 static std::vector<Overlay> sOv;
@@ -1438,6 +1439,54 @@ static unsigned palette(int i) { // 0xRRGGBB: five rows of twelve hues (light to
 static unsigned hex_rgb(const std::string &h) { return h.size() >= 7 && h[0] == '#' ? (unsigned)strtoul(h.c_str() + 1, NULL, 16) : 0; }
 static ImU32 col32(unsigned rgb, int a = 255) { return IM_COL32((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255, a); }
 
+// ---- an attack's colours (the web page's 🎨: /api/fxcolours, the spec's attack_colours, as index.html writes them)
+static const char *fx_label(const std::string &what) {
+    for (int i = 0; i < 5; i++) { if (what == kSlots[i]) { return kSlotLabel[i]; } }
+    return what == "ki_blasts" ? "Ki blasts" : "Ki charge";
+}
+static int fx_changes(const char *what) { return (int)sSpec["attack_colours"][what].size(); }
+static void fx_load(Overlay *o) {
+    o->loading = true;
+    J body = J::obj();
+    body.set("spec", sSpec);
+    body.set("what", J::str(o->fx));
+    int id = o->id;
+    api("/api/fxcolours", &body, [id](int st, const J &r) {
+        Overlay *ov = NULL;
+        for (Overlay &x : sOv) { if (x.id == id) { ov = &x; } }
+        if (ov == NULL) { return; } // (closed meanwhile)
+        ov->loading = false;
+        if (st != 200) { toast(error_of(st, r), true); return; }
+        for (SDL_GPUTexture *t : ov->pics) { Ui_TextureFree(t); }
+        ov->pics.clear();
+        ov->picW.clear();
+        ov->picH.clear();
+        ov->tex = r["colours"];
+        int w = 0, h = 0;
+        SDL_GPUTexture *t = r["png"].text().empty() ? NULL : png64_tex(r["png"].text(), &w, &h);
+        ov->pics.push_back(t);
+        ov->picW.push_back(w);
+        ov->picH.push_back(h);
+        if (ov->cur >= (int)ov->tex.size()) { ov->cur = 0; }
+    }, 300000);
+}
+static void open_fx(const std::string &what, const std::string &name = "") {
+    Overlay o;
+    o.kind = OV_FX;
+    o.fx = what;
+    o.title = std::string(fx_label(what)) + (name.empty() ? "" : " - " + name) + ": COLOURS";
+    for (char &c : o.title) { c = (char)SDL_toupper((unsigned char)c); }
+    ov_push(o);
+    fx_load(&sOv.back());
+    sound(1);
+}
+static void fx_original(const std::string &what) {
+    J *ac = sSpec.find("attack_colours");
+    if (ac != NULL) { ac->erase(what.c_str()); }
+    clean_empty("attack_colours");
+    touch();
+}
+
 static void open_palette(int texture, const std::string &from) {
     Overlay o;
     o.kind = OV_PALETTE;
@@ -1807,6 +1856,12 @@ static void rows_moves(std::vector<Row> &rows) {
                 touch();
             }, false, "Moveset's own", false, 0, kinds);
         };
+        int nfx = fx_changes(kSlots[k]);
+        if (nfx) { s.sub = std::to_string(nfx) + (nfx > 1 ? " colours changed - " : " colour changed - ") + s.sub; }
+        s.sqLabel = "Colours";
+        std::string shown = m.shown;
+        s.sq = [k, shown] { open_fx(kSlots[k], shown); };
+        s.tip = "Whose technique should your warrior learn? Triangle renames it, square recolours it.";
         s.triLabel = "Rename";
         std::string own = m.name;
         s.tri = [k, own] {
@@ -1817,6 +1872,32 @@ static void rows_moves(std::vector<Row> &rows) {
             });
         };
         rows.push_back(s);
+    }
+    rows.push_back(sec("ATTACK COLOURS"));
+    Row sum;
+    sum.label = "Recoloured";
+    for (int k = 0; k < 7; k++) {
+        const char *what = k < 5 ? kSlots[k] : k == 5 ? "ki_blasts" : "charge";
+        if (fx_changes(what)) { sum.value += (sum.value.empty() ? "" : ", ") + (k < 5 ? move_of(k).shown : std::string(fx_label(what))); }
+    }
+    if (sum.value.empty()) { sum.value = "nothing yet: square on a technique recolours it"; }
+    sum.locked = true;
+    rows.push_back(sum);
+    static const char *const kFx[2][3] = {{"ki_blasts", "Ki blasts", "The ki blasts and their charge glow."},
+                                          {"charge", "Ki charge", "The glow and sparks when charging ki (the aura flames are the game's own)."}};
+    for (int i = 0; i < 2; i++) {
+        Row r;
+        r.label = kFx[i][1];
+        int nfx = fx_changes(kFx[i][0]);
+        r.value = nfx ? std::to_string(nfx) + (nfx > 1 ? " colour changes" : " colour change") : "Original colours";
+        r.tip = kFx[i][2];
+        std::string what = kFx[i][0];
+        r.ok = [what] { open_fx(what); };
+        if (nfx) {
+            r.sqLabel = "Original colours";
+            r.sq = [what] { fx_original(what); sound(2); };
+        }
+        rows.push_back(r);
     }
 }
 
@@ -2529,6 +2610,82 @@ static void colours_frame(Overlay &o, std::vector<Prompt> &ps) {
     }
 }
 
+static void fx_frame(Overlay &o, std::vector<Prompt> &ps) {
+    float y = sBoxA.y + S(56), x0 = sBoxA.x + S(20), x1 = sBoxB.x - S(20);
+    int n = (int)o.tex.size();
+    if (o.loading && n == 0) {
+        sDl->AddText(sFont, S(18), ImVec2(x0, y + S(6)), kInk, "Reading the attack's effects...");
+    }
+    // its picture: the textures and colours of its effect
+    if (!o.pics.empty() && o.pics[0] != NULL && o.picW[0] > 0) {
+        float w = x1 - x0, h = w * o.picH[0] / o.picW[0];
+        if (h > S(190)) { h = S(190); w = h * o.picW[0] / o.picH[0]; }
+        sDl->AddRectFilled(ImVec2(x0, y), ImVec2(x0 + w, y + h), IM_COL32(0, 0, 0, 90), S(6));
+        sDl->AddImage(ImTextureRef((ImTextureID)(intptr_t)o.pics[0]), ImVec2(x0, y), ImVec2(x0 + w, y + h));
+        y += h + S(14);
+    }
+    if (!o.loading && n == 0) {
+        sDl->AddText(sFont, S(16), ImVec2(x0, y), kDim, "This attack has no colours of its own (its effect is the game's shared one).", NULL, x1 - x0);
+        y += S(40);
+    }
+    // the swatches, in rows
+    float sw = S(42), gap = S(12);
+    int cols = (int)((x1 - x0 + gap) / (sw + gap));
+    if (cols < 1) { cols = 1; }
+    int was = o.cur;
+    if (n > 0) {
+        if (sIn.left && o.cur > 0) { o.cur--; }
+        if (sIn.right && o.cur < n - 1) { o.cur++; }
+        if (sIn.up && o.cur >= cols) { o.cur -= cols; }
+        if (sIn.down && o.cur + cols < n) { o.cur += cols; }
+    }
+    if (o.cur != was) { sound(0); }
+    int clicked = -1;
+    for (int i = 0; i < n; i++) {
+        ImVec2 a(x0 + (i % cols) * (sw + gap), y + (i / cols) * (sw + gap)), b(a.x + sw, a.y + sw);
+        ImVec2 c((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+        sDl->AddCircleFilled(c, sw * 0.5f, col32(hex_rgb(o.tex[(size_t)i]["rgb"].text())));
+        bool sel = i == o.cur;
+        sDl->AddCircle(c, sw * 0.5f + S(2), sel ? IM_COL32(255, 226, 122, 255) : IM_COL32(255, 255, 255, 200), 0, sel ? S(4) : S(2));
+        if (click_in(a, b)) { clicked = i; }
+    }
+    y += ((n + cols - 1) / cols) * (sw + gap) + S(6);
+    if (n > 0 && o.cur < n) {
+        std::string about = o.tex[(size_t)o.cur]["rgb"].text() + "  (" + o.tex[(size_t)o.cur]["where"].text() + ")";
+        sDl->AddText(sFont, S(14), ImVec2(x0, y), kDim, about.c_str());
+        y += S(26);
+    }
+    // what was changed
+    const J &ch = sSpec["attack_colours"][o.fx.c_str()];
+    if (ch.size()) {
+        std::string line = "Changed: ";
+        for (size_t i = 0; i < ch.size(); i++) { line += (i ? ", " : "") + ch[i]["from"].text() + " -> " + ch[i]["to"].text(); }
+        sDl->AddText(sFont, S(14), ImVec2(x0, y), IM_COL32(255, 236, 160, 255), line.c_str(), NULL, x1 - x0);
+        for (size_t i = 0; i < ch.size() && i < 12; i++) { // (and as little swatches)
+            float k = S(16);
+            ImVec2 a(x0 + i * (k * 2 + S(16)), y + S(40));
+            sDl->AddRectFilled(a, ImVec2(a.x + k, a.y + k), col32(hex_rgb(ch[i]["from"].text())), S(3));
+            sDl->AddRectFilled(ImVec2(a.x + k + S(2), a.y), ImVec2(a.x + k * 2 + S(2), a.y + k), col32(hex_rgb(ch[i]["to"].text())), S(3));
+        }
+    }
+    if (clicked >= 0) { o.cur = clicked; sIn.ok = true; }
+    if (n > 0) { ps.push_back({B_CROSS, "Change this colour"}); }
+    if (ch.size()) { ps.push_back({B_SQUARE, "Original colours"}); }
+    ps.push_back({B_CIRCLE, "Back"});
+    if (sIn.back) { ov_close(); sound(2); return; }
+    if (sIn.sq && ch.size()) {
+        fx_original(o.fx);
+        sound(2);
+        fx_load(&o);
+        return;
+    }
+    if (sIn.ok && n > 0 && o.cur < n) {
+        std::string what = o.fx, from = o.tex[(size_t)o.cur]["rgb"].text();
+        open_palette(0, from);
+        sOv.back().fx = what;
+    }
+}
+
 static void palette_frame(Overlay &o, std::vector<Prompt> &ps) {
     float top0 = sBoxA.y + S(60);
     unsigned from = hex_rgb(o.from);
@@ -2562,6 +2719,21 @@ static void palette_frame(Overlay &o, std::vector<Prompt> &ps) {
     ps.push_back({B_CROSS, "Use this colour"});
     ps.push_back({B_CIRCLE, "Back"});
     if (sIn.back) { ov_close(); sound(2); return; }
+    if (sIn.ok && !o.fx.empty()) { // an attack's: {from, to, range 1.5} appended, as the web page does
+        J ch = J::obj();
+        ch.set("from", J::str(o.from));
+        ch.set("to", J::str(hex));
+        ch.set("range", J::num(1.5));
+        J &ac = sSpec.at("attack_colours");
+        J list = ac[o.fx.c_str()].isArr() ? ac[o.fx.c_str()] : J::arr();
+        list.push(ch);
+        ac.set(o.fx.c_str(), list);
+        touch();
+        ov_close();
+        sound(1);
+        if (!sOv.empty() && sOv.back().kind == OV_FX) { fx_load(&sOv.back()); }
+        return;
+    }
     if (sIn.ok) {
         J ch = J::obj();
         ch.set("texture", J::num(o.texture));
@@ -2922,6 +3094,7 @@ bool Creator_Frame(bool input) {
         else if (kind == OV_KEYS) { tipLine = "Type with the keys (or your keyboard). START or Enter when it is right."; }
         else if (kind == OV_COLOURS) { tipLine = "Pick a colour of one of your warrior's textures, then its new colour."; }
         else if (kind == OV_PALETTE) { tipLine = "Pick the new colour."; }
+        else if (kind == OV_FX) { tipLine = "Pick a colour of the attack, then its new colour. The picture shows its textures and colours."; }
         else if (kind == OV_LIST && o.cur < (int)o.rows.size() && !o.rows[o.cur].tip.empty()) { tipLine = o.rows[o.cur].tip; }
         switch (kind) {
         case OV_GRID: grid_frame(o, ops); break;
@@ -2929,6 +3102,7 @@ bool Creator_Frame(bool input) {
         case OV_KEYS: keys_frame(o, ops); break;
         case OV_COLOURS: colours_frame(o, ops); break;
         case OV_PALETTE: palette_frame(o, ops); break;
+        case OV_FX: fx_frame(o, ops); break;
         default: text_frame(o, ops); break;
         }
         sBoxA = keepA;
