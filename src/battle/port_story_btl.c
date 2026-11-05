@@ -325,11 +325,11 @@ static void PortStory_Shot(s32 kind, s32 s, s32 variant, Vec4 *eye, Vec4 *at) {
         *at = V(S.x, S.y - hs * 0.78f, S.z);
         break;
     case PS_CAM_TWO: /* both, from the side */
-        *eye = V(M.x + px * (d * 0.95f + hm * 1.2f), M.y - hm * 0.62f, M.z + pz * (d * 0.95f + hm * 1.2f));
+        *eye = V(M.x + px * (d * 0.62f + hm * 0.7f), M.y - hm * 0.6f, M.z + pz * (d * 0.62f + hm * 0.7f));
         *at = V(M.x, M.y - hm * 0.55f, M.z);
         break;
     case PS_CAM_WIDE: /* the stage with both in it, from high up and far */
-        *eye = V(M.x + px * (d * 1.6f + hm * 3.5f) - dx * d * 0.3f, M.y - hm * 2.6f, M.z + pz * (d * 1.6f + hm * 3.5f) - dz * d * 0.3f);
+        *eye = V(M.x + px * (d * 1.05f + hm * 2.0f) - dx * d * 0.3f, M.y - hm * 1.6f, M.z + pz * (d * 1.05f + hm * 2.0f) - dz * d * 0.3f);
         *at = V(M.x, M.y - hm * 0.45f, M.z);
         break;
     case PS_CAM_LOW: /* from the ground up at the speaker */
@@ -426,11 +426,11 @@ static void PortStory_LineCamera(s32 *li) {
     }
     switch (li[PL_MOVE]) {
     case PS_MOVE_PUSH: /* from further back, closing in */
-        e0 = V(eye.x + (eye.x - at.x) * 0.6f, eye.y + (eye.y - at.y) * 0.6f, eye.z + (eye.z - at.z) * 0.6f);
+        e0 = V(eye.x + (eye.x - at.x) * 0.6f, eye.y, eye.z + (eye.z - at.z) * 0.6f); /* (at its height: from a low shot, further back is not under the ground) */
         PortStory_Camera(&eye, &at, &e0, &at, t);
         break;
     case PS_MOVE_PULL: /* from close, moving back */
-        e0 = V(at.x + (eye.x - at.x) * 0.55f, at.y + (eye.y - at.y) * 0.55f, at.z + (eye.z - at.z) * 0.55f);
+        e0 = V(at.x + (eye.x - at.x) * 0.55f, eye.y, at.z + (eye.z - at.z) * 0.55f);
         PortStory_Camera(&eye, &at, &e0, &at, t);
         break;
     case PS_MOVE_ORBIT: /* round the one looked at, a quarter of the way */
