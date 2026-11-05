@@ -172,6 +172,14 @@ def bt4_names():
     return _bt4["names"]
 
 
+def portrait_module():
+    here = pathlib.Path(__file__).resolve().parent / "creator"
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
+    import portrait
+    return portrait
+
+
 def mix_module():
     here = pathlib.Path(__file__).resolve().parent / "creator"
     if str(here) not in sys.path:
@@ -427,6 +435,22 @@ class Disc:
             bt4()
             return self._bt4(("bt4p", c), lambda: _bt4["cv"].bt3_portrait(bt4(), c - BT4_BASE))
         return self.raw(PORTRAIT_FILE + c)
+
+    def chip(self, c):
+        """The character select's chip of a BT3 character (menu archive 0x1C1, screen 2, section 45, entry id + 1)."""
+        if is_bt4(c):
+            return None
+        try:
+            here = pathlib.Path(__file__).resolve().parent
+            if str(here) not in sys.path:
+                sys.path.insert(0, str(here))
+            import import_chara as ic
+            arc = self.raw(0x1C1)
+            res = ic.bpe(ic.section(arc, ic.table(arc), 2))
+            chips = ic.section(res, ic.table(res), 45)
+            return ic.section(chips, ic.table(chips), c + 1)
+        except Exception:
+            return None
 
     def member(self, c, side):
         """The fight's team picture; a BT4 character's has another size: None (the base's is used)."""
@@ -687,10 +711,28 @@ def write_package(disc, spec_path, chars_dir, done):
             if len(data) >= 16:
                 (out / lang / f"{line:03d}.adx").write_bytes(data)
     p = f.portrait[0]
-    (out / "portrait.bin").write_bytes(disc.portrait(p))
-    for side in (0, 1):
-        m = disc.member(p, side) or disc.member(f.base[0], side)
-        (out / f"member_{side + 1}p.bin").write_bytes(m)
+    shot = spec.get("portrait_image")
+    for old in ("chip.bin",):
+        if (out / old).exists():
+            (out / old).unlink()
+    if shot and (spec_path.parent / shot).is_file():
+        # a picture of the creator's 3D view: the portrait, the roster chip and the team pictures made from it
+        P = portrait_module()
+        png = (spec_path.parent / shot).read_bytes()
+        stored = P.portrait_rgba(png)
+        b = f.base[0]
+        (out / "portrait.bin").write_bytes(P.portrait_bin(None, disc.portrait(b), stored=stored))
+        chip = disc.chip(b)
+        if chip:
+            (out / "chip.bin").write_bytes(P.chip_bin(None, chip, stored=stored))
+        m1, m2 = P.member_bins(None, disc.member(b, 0), disc.member(b, 1), stored=stored)
+        (out / "member_1p.bin").write_bytes(m1)
+        (out / "member_2p.bin").write_bytes(m2)
+    else:
+        (out / "portrait.bin").write_bytes(disc.portrait(p))
+        for side in (0, 1):
+            m = disc.member(p, side) or disc.member(f.base[0], side)
+            (out / f"member_{side + 1}p.bin").write_bytes(m)
     manifest = ["# made by port/tools/custom_fighter.py from " + spec_path.name, "format=1",
                 f"name={spec['name'][:63]}", f"form={spec.get('title', '')[:95]}", f"base={f.base[0]}",
                 "author=Custom Character", "about=" + " / ".join(

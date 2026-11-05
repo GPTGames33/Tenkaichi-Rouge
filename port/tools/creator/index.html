@@ -68,6 +68,8 @@
   #view3d { position: absolute; left: 0; top: 20px; width: 520px; height: 470px; cursor: grab; display: none; }
   #view3d.on { display: block; }
   #view3d.on ~ #viewhint { display: block; }
+  #shotbtn { display: none; position: absolute; left: 160px; top: 40px; z-index: 3; cursor: pointer; font-size: 12px; padding: 3px 12px; }
+  #view3d.on ~ #shotbtn { display: inline-block; }
   #viewhint { display: none; position: absolute; left: 0; width: 520px; top: 470px; text-align: center; font-size: 12px; color: #3a1660; font-weight: 700; }
   #heroname { position: absolute; left: 30px; right: 30px; top: 445px; text-align: center; }
   #heroname .n { font-family: Impact, "Arial Black", sans-serif; font-size: 34px; color: #fff; -webkit-text-stroke: 1.5px #3a1660;
@@ -118,6 +120,7 @@
     <div id="hero"><img id="heroimg" alt=""></div>
     <canvas id="view3d" width="520" height="470" title="Drag to turn, wheel to zoom"></canvas>
     <div id="viewhint">drag to turn · wheel to zoom</div>
+    <span id="shotbtn" class="tab">📷 Use this view as portrait</span>
     <div id="heroname"><div class="n" id="hn"></div><div class="t" id="ht"></div></div>
     <div id="movecard"></div>
   </div>
@@ -140,10 +143,9 @@ const SLOT_KIND = {blast1_1: ["blast1_1", "blast1_2"], blast1_2: ["blast1_1", "b
                    blast2_2: ["blast2_1", "blast2_2"], ultimate: ["ultimate"]};
 
 function fit() {
-  const s = Math.min(innerWidth / 1280, innerHeight / 720);
-  $("stage").style.transform = `scale(${s}) translate(-50%, -50%)`;
-  $("stage").style.left = "50%"; $("stage").style.top = "50%";
-  $("stage").style.transform = `translate(-50%, -50%) scale(${s})`; $("stage").style.transformOrigin = "50% 50%";
+  const s = Math.min(innerWidth / 1280, innerHeight / 720), st = $("stage");
+  st.style.transformOrigin = "0 0"; st.style.transform = `scale(${s})`;
+  st.style.left = Math.max(0, (innerWidth - 1280 * s) / 2) + "px"; st.style.top = Math.max(0, (innerHeight - 720 * s) / 2) + "px";
 }
 addEventListener("resize", fit);
 
@@ -181,7 +183,7 @@ function moveOf(key) {
 // -------------------------------------------------------------------------------------------- 3D preview
 const V = {gl: null, yaw: 0.5, pitch: 0.08, zoom: 1, model: null, key: "", loading: false};
 function initView() {
-  const cv = $("view3d"); const gl = cv.getContext("webgl2", {antialias: true, premultipliedAlpha: false});
+  const cv = $("view3d"); const gl = cv.getContext("webgl2", {antialias: true, premultipliedAlpha: false, preserveDrawingBuffer: true});
   if (!gl) return;
   const vs = `#version 300 es
     in vec3 p; in vec3 n; in vec2 uv; uniform mat4 mvp; uniform mat3 nm; out vec3 vn; out vec2 vuv;
@@ -441,8 +443,10 @@ function drawWarrior() {
     {sec: "VOICE & FACE"},
     {label: "Voice", value: nm(spec.voice, "the base's"), tip: "Shouts, callouts, intros and wins, with the mouth moving to match.",
       onclick: () => openPick("WHOSE VOICE?", r => { if (r) spec.voice = r; else delete spec.voice; touch(); draw(); }, {none: "Base's own"}), extra: `<span class="btn">✕</span>`},
-    {label: "Portrait", value: nm(spec.portrait, "the base's"), tip: "The big picture in the menus and the team picture in fights.",
-      onclick: () => openPick("WHOSE PORTRAIT?", r => { if (r) spec.portrait = r; else delete spec.portrait; touch(); draw(); }, {none: "Base's own"}), extra: `<span class="btn">✕</span>`},
+    {label: "Portrait", value: spec.portrait_image ? "Your screenshot 📷" : nm(spec.portrait, "the base's"),
+      sub: spec.portrait_image ? "click to use a character's instead" : "or pose the 3D view and press 📷",
+      tip: "The big picture in the menus, the roster chip and the team picture in fights. Turn the 3D view and press 📷 to make your own.",
+      onclick: () => openPick("WHOSE PORTRAIT?", r => { delete spec.portrait_image; if (r) spec.portrait = r; else delete spec.portrait; touch(); draw(); }, {none: "Base's own"}), extra: `<span class="btn">✕</span>`},
   ]);
   tip("Name your warrior, then pick a base, stats, voice and face.");
   help([["✕", "Change"], ["▢", "Double-click: default"], ["Ctrl+S", "Save"]]);
@@ -654,6 +658,21 @@ async function bt4Install(remove) {
     setTimeout(poll, 1500);
   } catch (e) { toast(e.message, true); }
 }
+async function portraitShot() {
+  if (!spec.name) { toast("Name your warrior first.", true); return; }
+  if (dirty || !file) await save();
+  if (dirty || !file) return;
+  toast("Making the portrait... (a few seconds)");
+  try {
+    const png = $("view3d").toDataURL("image/png");
+    const r = await api("/api/portraitshot", {file, png});
+    spec.portrait_image = r.file; delete spec.portrait; dirty = false;
+    fighters = await api("/api/fighters"); draw();
+    const t = $("toast"); t.innerHTML = `Portrait made from your view! ${onRoster() ? "Press Add to roster to update the game." : ""}<br>` +
+      (r.preview ? `<img src="data:image/png;base64,${r.preview}" style="width:128px;height:128px;margin-top:6px;background:#fff3;border-radius:6px">` : "");
+    t.className = ""; t.style.display = "block"; clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = "none", 6000);
+  } catch (e) { toast(e.message, true); }
+}
 async function summary() { try { const r = await api("/api/describe", {spec}); toast(r.text); } catch (e) { toast(e.message, true); } }
 async function del() {
   if (!file || !confirm("Delete this warrior?")) return;
@@ -661,7 +680,7 @@ async function del() {
 }
 
 (async function () {
-  fit(); initView(); tip("Reading the roster from your disc...");
+  fit(); initView(); $("shotbtn").onclick = portraitShot; tip("Reading the roster from your disc...");
   try { roster = await api("/api/roster"); fighters = await api("/api/fighters"); await refreshRoster(); draw(); }
   catch (e) { toast(e.message, true); }
 })();

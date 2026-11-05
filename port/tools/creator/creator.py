@@ -355,6 +355,23 @@ class App:
         self.package(name)
         return name
 
+    def portrait_shot(self, name, png_b64):
+        """A picture of the 3D view as the warrior's portrait: kept as <file>_portrait.png next to it, named in
+        the fighter's "portrait_image"; -> the portrait made of it (as the menus show its top), base64 PNG."""
+        import base64
+        import portrait as P
+        png = base64.b64decode(png_b64.split(",", 1)[-1])
+        path = self.path_of(name)
+        spec = json.loads(path.read_text(encoding="utf-8-sig"))
+        shot = path.stem + "_portrait.png"
+        (self.fighters / shot).write_bytes(png)
+        spec["portrait_image"] = shot
+        path.write_text(json.dumps(spec, indent=2, ensure_ascii=False), encoding="utf-8")
+        base = cf.ref(spec.get("base"), cf.ref(spec.get("look"), (3, 0)))
+        made = P.portrait_bin(png, self.disc.portrait(base[0] if not cf.is_bt4(base[0]) else 3))
+        prev = portrait_png(made)
+        return {"file": shot, "preview": base64.b64encode(prev).decode() if prev else "", "bytes": len(made)}
+
     def delete(self, name):
         self.unpackage(name)
         self.path_of(name).unlink()
@@ -467,6 +484,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.send(200, {"text": a.uninstall(body["file"])})
                 if act == "/api/package":
                     return self.send(200, {"text": a.package(body["file"])})
+                if act == "/api/portraitshot":
+                    return self.send(200, a.portrait_shot(body["file"], body["png"]))
                 if act == "/api/unpackage":
                     return self.send(200, {"text": a.unpackage(body["file"])})
                 if act == "/api/rosterform":
