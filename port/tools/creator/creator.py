@@ -152,7 +152,7 @@ class App:
 
     def roster(self):
         if self._roster is None:
-            cache = self.cache / "roster.json"
+            cache = self.cache / "roster2.json"
             if cache.exists():
                 self._roster = json.loads(cache.read_text(encoding="utf-8"))
             else:
@@ -163,7 +163,17 @@ class App:
                         moves = cf.move_names(self.disc.model(c, 0))[:5]
                     except Exception:
                         moves = []
-                    out.append({"id": c, "name": name, "costumes": costumes, "moves": moves})
+                    out.append({"id": c, "name": name, "costumes": costumes, "moves": moves, "game": "BT3"})
+                try:  # the BT4 mod's characters, when its disc image is next to the repository
+                    for c, label, n in cf.bt4_names():
+                        try:
+                            moves = cf.bt4_move_names(cf.BT4_BASE + c)[:5]
+                        except Exception:
+                            moves = []
+                        out.append({"id": cf.BT4_BASE + c, "name": label, "costumes": list(range(1, n + 1)),
+                                    "moves": moves, "game": "BT4"})
+                except cf.Fail:
+                    pass
                 self._roster = out
                 cache.write_text(json.dumps(out), encoding="utf-8")
         return self._roster
@@ -171,7 +181,7 @@ class App:
     def portrait(self, c):
         p = self.cache / f"face_{c:03d}.png"
         if not p.exists():
-            data = portrait_png(self.disc.raw(cf.PORTRAIT_FILE + c))
+            data = portrait_png(self.disc.portrait(c))
             if data is None:
                 return None
             p.write_bytes(data)
@@ -229,7 +239,7 @@ class App:
         for (part, index), data in sorted(files.items()):
             (mods / part).mkdir(parents=True, exist_ok=True)
             (mods / part / f"{index:05d}.bin").write_bytes(data)
-        return (f"Installed in place of {cf.NAMES[slot[0]]}, costume {slot[1] + 1}. Restart the game, then pick that "
+        return (f"Installed in place of {cf.name(slot[0])}, costume {slot[1] + 1}. Restart the game, then pick that "
                 f"character and costume.")
 
     def uninstall(self, name):
@@ -242,7 +252,7 @@ class App:
             if p.exists():
                 p.unlink()
                 n += 1
-        return f"{cf.NAMES[slot[0]]}, costume {slot[1] + 1} is back to the disc's ({n} files removed)."
+        return f"{cf.name(slot[0])}, costume {slot[1] + 1} is back to the disc's ({n} files removed)."
 
     def package(self, name):
         folder = cf.write_package(self.disc, self.path_of(name), self.game / "characters", {})
@@ -252,6 +262,47 @@ class App:
     def delete(self, name):
         self.path_of(name).unlink()
         return "deleted"
+
+    # ---- BT4: the fighters put into a copy of the BT4 disc (custom_fighters/bt4_installed.json: file -> place)
+    bt4_job = {"running": False, "log": [], "error": None}
+
+    def bt4_list(self):
+        p = self.fighters / "bt4_installed.json"
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+
+    def bt4_set(self, name, slot):
+        lst = self.bt4_list()
+        if slot is None:
+            lst.pop(name, None)
+        else:
+            cf.ref(slot)
+            lst[name] = slot
+        (self.fighters / "bt4_installed.json").write_text(json.dumps(lst, indent=2, ensure_ascii=False), encoding="utf-8")
+        return lst
+
+    def bt4_start(self, name, slot):
+        job = App.bt4_job
+        if job["running"]:
+            raise cf.Fail("the BT4 disc is being written already")
+        lst = self.bt4_set(name, slot)
+        items = []
+        for fname, sl in lst.items():
+            p = self.fighters / fname
+            if p.exists():
+                items.append((json.loads(p.read_text(encoding="utf-8-sig")), cf.ref(sl)))
+        if not items:
+            raise cf.Fail("no fighter left for BT4")
+        job.update(running=True, log=[], error=None)
+
+        def run():
+            try:
+                with self.lock:
+                    cf.bt4_install(self.disc, items, self.cache / "bt4", log=lambda s: job["log"].append(s))
+            except Exception as e:
+                job["error"] = str(e)
+            job["running"] = False
+        threading.Thread(target=run, daemon=True).start()
+        return f"Writing {len(items)} warrior(s) into the BT4 disc copy. This takes a few minutes."
 
 
 # ------------------------------------------------------------------------------------------------------ server
@@ -280,6 +331,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.send(200, (HERE / "index.html").read_bytes(), "text/html; charset=utf-8")
             if u.path == "/api/roster":
                 return self.send(200, self.app.roster())
+            if u.path == "/api/bt4status":
+                return self.send(200, dict(App.bt4_job, installed=self.app.bt4_list()))
             if u.path == "/api/fighters":
                 return self.send(200, self.app.list_fighters())
             m = re.fullmatch(r"/face/(\d+)\.png", u.path)
@@ -299,6 +352,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             a = self.app
+            if self.path == "/api/bt4install":
+                return self.send(200, {"text": a.bt4_start(body["file"], body.get("slot"))})
             with a.lock:
                 act = self.path
                 if act == "/api/save":

@@ -133,6 +133,58 @@ class Fail(Exception):
     pass
 
 
+# BT4 characters (the Team BT4 mod's disc, read through port/tools/bt4) have ids from BT4_BASE: BT4_BASE + the BT4
+# character id. They can be any donor (look, moves, voice, portrait); the base (AI, roster tables) is a BT3 one.
+BT4_BASE = 1000
+_bt4 = {"disc": None, "names": None, "iso": None}
+
+
+def bt4_iso():
+    if _bt4["iso"] is None:
+        _bt4["iso"] = str(pathlib.Path(__file__).resolve().parents[3] / "SLUS_219.78.DBZBT4B14REV2ENG.iso")
+    return _bt4["iso"]
+
+
+def bt4():
+    """The BT4 disc (BT4Chars of port/tools/bt4/bt4_to_bt3.py), opened when first needed."""
+    if _bt4["disc"] is None:
+        here = pathlib.Path(__file__).resolve().parent / "bt4"
+        if str(here) not in sys.path:
+            sys.path.insert(0, str(here))
+        if not pathlib.Path(bt4_iso()).is_file():
+            raise Fail(f"no BT4 disc image at {bt4_iso()}")
+        import bt4_disc, bt4_to_bt3
+        _bt4["disc"] = bt4_to_bt3.BT4Chars(bt4_disc.BT4Disc(bt4_iso()))
+        _bt4["cv"] = bt4_to_bt3
+    return _bt4["disc"]
+
+
+def bt4_names():
+    """[(BT4 id, "BT4: name (form)", costumes)] of the BT4 characters that have a model."""
+    if _bt4["names"] is None:
+        d = bt4()
+        out = []
+        for c, n in enumerate(d.ch.costumes):
+            label = d.ch.display_name(c).strip()
+            if n and label:
+                out.append((c, "BT4: " + label, n))
+        _bt4["names"] = out
+    return _bt4["names"]
+
+
+def is_bt4(c):
+    return c >= BT4_BASE
+
+
+def name(c):
+    if is_bt4(c):
+        for i, label, _ in bt4_names():
+            if i == c - BT4_BASE:
+                return label
+        return f"BT4: character {c - BT4_BASE}"
+    return NAMES[c]
+
+
 # --------------------------------------------------------------------------------------------- reading game files
 class IsoDisc:
     """The two archives of the disc image (ISO 9660), by file id."""
@@ -258,7 +310,18 @@ class Pack:
 
 # -------------------------------------------------------------------------------------------------- characters
 def chara_id(name):
+    if isinstance(name, str) and name.lower().startswith("bt4:"):
+        rest = name[4:].strip()
+        if re.fullmatch(r"(0x[0-9a-fA-F]+|\d+)", rest):
+            return BT4_BASE + int(rest, 0)
+        for i, label, _ in bt4_names():
+            if label.lower() == name.lower() or label[5:].lower() == rest.lower():
+                return BT4_BASE + i
+        close = [label for _, label, _ in bt4_names() if rest.lower() in label.lower()]
+        raise Fail(f"unknown BT4 character {name!r}" + (f"; did you mean: {', '.join(close[:6])}" if close else ""))
     if isinstance(name, int):
+        if name >= BT4_BASE:
+            return name
         c = name
     elif isinstance(name, str) and re.fullmatch(r"(0x[0-9a-fA-F]+|\d+)", name.strip()):
         c = int(name, 0)
@@ -301,22 +364,65 @@ class Disc:
             self.cache[fid] = self.src.read_id(fid)
         return self.cache[fid]
 
+    def _bt4(self, key, make):
+        if key not in self.cache:
+            try:
+                self.cache[key] = make()
+            except (ValueError, IndexError) as e:
+                raise Fail(str(e))
+        return self.cache[key]
+
     def has_costume(self, c, costume):
+        if is_bt4(c):
+            return 0 <= costume < bt4().ch.costumes[c - BT4_BASE]
         return split_pack(self.raw(chara_file(c, costume)), 252) is not None
 
     def model(self, c, costume, damaged=False):
         if not self.has_costume(c, costume):
-            raise Fail(f"{NAMES[c]} has no costume {costume + 1}")
+            raise Fail(f"{name(c)} has no costume {costume + 1}")
+        if is_bt4(c):
+            cv = _bt4["cv"]
+            try:
+                data = self._bt4(("bt4m", c, costume, damaged), lambda: cv.bt3_model_pack(bt4(), c - BT4_BASE, costume, damaged))
+            except Fail:
+                data = self._bt4(("bt4m", c, costume, False), lambda: cv.bt3_model_pack(bt4(), c - BT4_BASE, costume, False))
+            return Pack(data, 252)
         data = self.raw(chara_file(c, costume + (4 if damaged else 0)))
         if split_pack(data, 252) is None:  # no damaged model: the costume's own
             data = self.raw(chara_file(c, costume))
         return Pack(data, 252)
 
     def anims(self, c):
+        if is_bt4(c):
+            bt4()
+            return Pack(self._bt4(("bt4a", c), lambda: _bt4["cv"].bt3_anim_pack(bt4(), c - BT4_BASE)))
         return Pack(self.raw(chara_file(c, 8)))
 
     def effects(self, c):
+        if is_bt4(c):
+            bt4()
+            return Pack(self._bt4(("bt4e", c), lambda: _bt4["cv"].bt3_effect_pack(bt4(), c - BT4_BASE)))
         return Pack(self.raw(chara_file(c, 9)))
+
+    def voice_files(self, c):
+        """(bank_us, bank_jp, [line_us 0..99], [line_jp 0..99]) of character c; a missing line is b""."""
+        if is_bt4(c):
+            v = self._bt4(("bt4v", c), lambda: _bt4["cv"].bt3_voice_files(bt4(), c - BT4_BASE, 0))
+            return (v.get(VOICE_BANK_US, b""), v.get(VOICE_BANK_JP, b""),
+                    [v.get(VOICE_LINE_US + k, b"") for k in range(100)], [v.get(VOICE_LINE_JP + k, b"") for k in range(100)])
+        return (self.raw(VOICE_BANK_US + c), self.raw(VOICE_BANK_JP + c),
+                [self.raw(VOICE_LINE_US + c * 100 + k) for k in range(100)],
+                [self.raw(VOICE_LINE_JP + c * 100 + k) for k in range(100)])
+
+    def portrait(self, c):
+        if is_bt4(c):
+            bt4()
+            return self._bt4(("bt4p", c), lambda: _bt4["cv"].bt3_portrait(bt4(), c - BT4_BASE))
+        return self.raw(PORTRAIT_FILE + c)
+
+    def member(self, c, side):
+        """The fight's team picture; a BT4 character's has another size: None (the base's is used)."""
+        return None if is_bt4(c) else self.raw(MEMBER_FILE + c * 2 + side)
 
 
 # ------------------------------------------------------------------------------------------------ move list text
@@ -361,8 +467,19 @@ def rename_block(block, name):
 
 def move_names(pack):
     """The five move names in English (entry 0x2D)."""
-    _, blocks, _ = text_blocks(pack[0x2D])
+    return text_move_names(pack[0x2D])
+
+
+def text_move_names(raw):
+    _, blocks, _ = text_blocks(raw)
     return [re.sub(r"^..(?:&\d\d\d)?\*\d\d\d", "", b[0]) for b in blocks]
+
+
+def bt4_move_names(c):
+    """A BT4 character's move names, from its move list file (no model to convert)."""
+    d = bt4()
+    raw = d.raw(d.ch.file_id("movelist", c - BT4_BASE))
+    return text_move_names(raw.rstrip(b"\0") if len(raw.rstrip(b"\0")) % 2 == 0 else raw.rstrip(b"\0") + b"\0")
 
 
 # --------------------------------------------------------------------------------------------------- the builder
@@ -394,7 +511,9 @@ class Fighter:
         if not 1 <= len(self.costumes) <= 4:
             raise Fail("1 to 4 costumes")
         self.look = self.costumes[0]
-        self.base = ref(spec.get("base"), self.look)
+        self.base = ref(spec.get("base"), self.look if not is_bt4(self.look[0]) else (3, 0))
+        if is_bt4(self.base[0]):
+            raise Fail("the base (AI and roster tables) must be a BT3 character: pick the one that fights most alike")
         self.moveset = ref(spec.get("moveset"), self.look)
         self.voice = ref(spec.get("voice"), self.base)
         self.portrait = ref(spec.get("portrait"), self.base)
@@ -454,7 +573,7 @@ class Fighter:
                     if slot < len(blocks):
                         blocks[slot] = rename_block(blocks[slot], name)
                         m[e] = join_text(h, blocks, t)
-        if self.voice[0] != costume[0]:
+        if self.voice[0] != costume[0] or is_bt4(self.voice[0]) != is_bt4(costume[0]):
             v = d.model(self.voice[0], 0, damaged)
             m[E_TALK] = v[E_TALK]
             for e in LIP_ENTRIES:
@@ -485,7 +604,7 @@ class Fighter:
 
     def describe(self):
         def nm(r):
-            return NAMES[r[0]] + (f" (costume {r[1] + 1})" if r[1] else "")
+            return name(r[0]) + (f" (costume {r[1] + 1})" if r[1] else "")
         lines = [f"{self.spec['name']}" + (f" - {self.spec['title']}" if self.spec.get("title") else ""),
                  f"  look      {', '.join(nm(c) for c in self.costumes)}",
                  f"  base      {nm(self.base)} (AI and roster tables)",
@@ -501,7 +620,7 @@ class Fighter:
             except (Fail, IndexError):
                 own = "?"
             skey = [k for k, v in SLOTS.items() if v == s][0]
-            lines.append(f"  {key:9s} {self.names.get(slot, own)}  <- {NAMES[who[0]]}'s {own} ({skey})")
+            lines.append(f"  {key:9s} {self.names.get(slot, own)}  <- {name(who[0])}'s {own} ({skey})")
         lines.append(f"  voice     {nm(self.voice)}")
         return "\n".join(lines)
 
@@ -538,19 +657,19 @@ def write_package(disc, spec_path, chars_dir, done):
         (out / f"{stem}_{i + 1}p_dmg.pak").write_bytes(f.model(costume, True).bytes())
     (out / f"{stem}_anm.pak").write_bytes(f.anims().bytes())
     (out / f"{stem}_eff.pak").write_bytes(f.effects().bytes())
-    v = f.voice[0]
-    (out / f"{stem}_voice_us.pak").write_bytes(disc.raw(VOICE_BANK_US + v))
-    (out / f"{stem}_voice_jp.pak").write_bytes(disc.raw(VOICE_BANK_JP + v))
-    for lang, first in (("voice_us", VOICE_LINE_US), ("voice_jp", VOICE_LINE_JP)):
+    bank_us, bank_jp, lines_us, lines_jp = disc.voice_files(f.voice[0])
+    (out / f"{stem}_voice_us.pak").write_bytes(bank_us)
+    (out / f"{stem}_voice_jp.pak").write_bytes(bank_jp)
+    for lang, lines in (("voice_us", lines_us), ("voice_jp", lines_jp)):
         (out / lang).mkdir(exist_ok=True)
-        for line in range(100):
-            data = disc.raw(first + v * 100 + line)
+        for line, data in enumerate(lines):
             if len(data) >= 16:
                 (out / lang / f"{line:03d}.adx").write_bytes(data)
     p = f.portrait[0]
-    (out / "portrait.bin").write_bytes(disc.raw(PORTRAIT_FILE + p))
+    (out / "portrait.bin").write_bytes(disc.portrait(p))
     for side in (0, 1):
-        (out / f"member_{side + 1}p.bin").write_bytes(disc.raw(MEMBER_FILE + p * 2 + side))
+        m = disc.member(p, side) or disc.member(f.base[0], side)
+        (out / f"member_{side + 1}p.bin").write_bytes(m)
     manifest = ["# made by port/tools/custom_fighter.py from " + spec_path.name, "format=1",
                 f"name={spec['name'][:63]}", f"form={spec.get('title', '')[:95]}", f"base={f.base[0]}",
                 "author=Custom Character", "about=" + " / ".join(
@@ -597,6 +716,8 @@ def replace_files(disc, spec):
     if "slot" not in spec:
         raise Fail('replace needs "slot": {"chara": ..., "costume": ...} (whose place the fighter takes)')
     slot = ref(spec["slot"])
+    if is_bt4(slot[0]):
+        raise Fail("the place a fighter takes in this game is a BT3 character (for BT4, use the BT4 install)")
     out = {}
     for damaged in (False, True):
         out[("pzs3us1", chara_file(*slot) + (4 if damaged else 0) - 1)] = f.model(f.look, damaged).bytes()
@@ -605,17 +726,71 @@ def replace_files(disc, spec):
         out[("pzs3us1", chara_file(slot[0], 9) - 1)] = f.effects().bytes()
     p = f.portrait[0] if "portrait" in spec else f.look[0]
     if p != slot[0]:  # the menus' picture and the team picture of the fight
-        out[("pzs3us1", PORTRAIT_FILE + slot[0] - 1)] = disc.raw(PORTRAIT_FILE + p)
+        out[("pzs3us1", PORTRAIT_FILE + slot[0] - 1)] = disc.portrait(p)
         for side in (0, 1):
-            out[("pzs3us1", MEMBER_FILE + slot[0] * 2 + side - 1)] = disc.raw(MEMBER_FILE + p * 2 + side)
+            m = disc.member(p, side)
+            if m is not None:
+                out[("pzs3us1", MEMBER_FILE + slot[0] * 2 + side - 1)] = m
     if f.voice[0] != slot[0]:
-        v = f.voice[0]
-        for bank in (VOICE_BANK_US, VOICE_BANK_JP):
-            out[("pzs3us1", bank + slot[0] - 1)] = disc.raw(bank + v)
-        for first in (VOICE_LINE_US, VOICE_LINE_JP):
-            for line in range(100):
-                out[("pzs3us2", first + slot[0] * 100 + line - PT2_FIRST_ID)] = disc.raw(first + v * 100 + line)
+        bank_us, bank_jp, lines_us, lines_jp = disc.voice_files(f.voice[0])
+        out[("pzs3us1", VOICE_BANK_US + slot[0] - 1)] = bank_us
+        out[("pzs3us1", VOICE_BANK_JP + slot[0] - 1)] = bank_jp
+        for first, lines in ((VOICE_LINE_US, lines_us), (VOICE_LINE_JP, lines_jp)):
+            for line, data in enumerate(lines):
+                if len(data) >= 16:
+                    out[("pzs3us2", first + slot[0] * 100 + line - PT2_FIRST_ID)] = data
     return f, slot, out
+
+
+def bt4_stage(disc, spec, folder):
+    """The fighter's files in BT3 formats, as port/tools/bt4/bt4_patch.py takes them (--model, --damaged, --anim,
+    --effect, --portrait, --voice): -> the arguments for it."""
+    f = Fighter(disc, spec, "fighter")
+    folder = pathlib.Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "model.pak").write_bytes(f.model(f.look, False).bytes())
+    (folder / "damaged.pak").write_bytes(f.model(f.look, True).bytes())
+    (folder / "anim.pak").write_bytes(f.anims().bytes())
+    (folder / "effect.pak").write_bytes(f.effects().bytes())
+    (folder / "portrait.bin").write_bytes(disc.portrait(f.portrait[0] if "portrait" in spec else f.look[0]))
+    bank_us, bank_jp, lines_us, lines_jp = disc.voice_files(f.voice[0])
+    v = folder / "voice"
+    (v / "us").mkdir(parents=True, exist_ok=True)
+    (v / "jp").mkdir(parents=True, exist_ok=True)
+    (v / "bank_us.bin").write_bytes(bank_us)
+    (v / "bank_jp.bin").write_bytes(bank_jp)
+    for lang, lines in (("us", lines_us), ("jp", lines_jp)):
+        for line, data in enumerate(lines):
+            if len(data) >= 16:
+                (v / lang / f"{line:02d}.adx").write_bytes(data)
+    return ["--model", str(folder / "model.pak"), "--damaged", str(folder / "damaged.pak"),
+            "--anim", str(folder / "anim.pak"), "--effect", str(folder / "effect.pak"),
+            "--portrait", str(folder / "portrait.bin"), "--voice", str(v)]
+
+
+def bt4_install(disc, fighters, work, log=print):
+    """Puts fighters [(spec, (BT4 id, costume index))] into a fresh copy of the BT4 disc
+    (SLUS_219.78.DBZBT4B14REV2ENG.custom.iso next to the original): each one in place of that BT4 character's
+    costume. The copy is made again from the original each time, so it holds exactly these fighters."""
+    import subprocess
+    patch = pathlib.Path(__file__).resolve().parent / "bt4" / "bt4_patch.py"
+    if not fighters:
+        raise Fail("no fighter to put into BT4")
+    for n, (spec, (c, costume)) in enumerate(fighters):
+        if not is_bt4(c):
+            raise Fail(f"{spec.get('name')}: the BT4 place must be a BT4 character")
+        log(f"{spec.get('name')}: building its files")
+        args = bt4_stage(disc, spec, pathlib.Path(work) / f"bt4_{n}")
+        cmd = [sys.executable, str(patch), "--iso", bt4_iso(), "--chara", str(c - BT4_BASE),
+               "--costume", str(costume + 1)] + args + (["--fresh"] if n == 0 else [])
+        log(f"{spec.get('name')}: writing into the BT4 disc copy (in place of {name(c)}, costume {costume + 1})")
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise Fail(f"the BT4 patcher stopped:\n{(r.stdout + r.stderr)[-1500:]}")
+        log(r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "written")
+    out = pathlib.Path(bt4_iso()).with_name("SLUS_219.78.DBZBT4B14REV2ENG.custom.iso")
+    log(f"done: {out}")
+    return out
 
 
 def mods_names(slot):
@@ -640,9 +815,9 @@ def cmd_replace(args):
         (mods / part).mkdir(parents=True, exist_ok=True)
         (mods / part / f"{index:05d}.bin").write_bytes(data)
     print(f.describe())
-    print(f"  -> in place of {NAMES[slot[0]]}, costume {slot[1] + 1} ({len(files)} files in gamedata/mods/)")
+    print(f"  -> in place of {name(slot[0])}, costume {slot[1] + 1} ({len(files)} files in gamedata/mods/)")
     if f.changes_motions():
-        print(f"  note: {NAMES[slot[0]]}'s other costumes share these animations and effects while this is installed")
+        print(f"  note: {name(slot[0])}'s other costumes share these animations and effects while this is installed")
 
 
 def cmd_remove(args):
@@ -668,7 +843,7 @@ def cmd_moves(args):
     disc = Disc(open_source(args))
     c = chara_id(args.chara)
     names = move_names(disc.model(c, 0))
-    print(NAMES[c])
+    print(name(c))
     for key, slot in SLOTS.items():
         print(f"  {key:9s} {names[slot] if slot < len(names) else '-'}")
 
@@ -677,7 +852,7 @@ def cmd_inspect(args):
     disc = Disc(open_source(args))
     c = chara_id(args.chara)
     m = disc.model(c, args.costume - 1)
-    print(f"{NAMES[c]}, costume {args.costume}: file id {chara_file(c, args.costume - 1):#x}")
+    print(f"{name(c)}, costume {args.costume}: file id {chara_file(c, args.costume - 1):#x}")
     for e, p in enumerate(m.parts, 1):
         if p:
             tag = p[:4].decode("latin1") if p[:4].isascii() and p[:4].isalpha() else p[:8].hex()
