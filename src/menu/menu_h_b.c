@@ -395,6 +395,15 @@ void CharRef_Draw(void) {
         uv.x1 = 0x80;
         break;
     }
+#ifdef PORT
+    if (c >= 5 && c <= 9) { /* a package's fifth costume and on: the picture's digits go on four a row (4 is the
+                               second row's first, where the uv above is left) */
+        uv.x0 = (c % 4) * 0x20;
+        uv.x1 = uv.x0 + 0x20;
+        uv.y0 = (c / 4) * 0x20;
+        uv.y1 = uv.y0 + 0x20;
+    }
+#endif
     sprintf(name, "mc_menu_plate_%d", 5);
     Flash_FindLabel(flash, name, "mc_num", &ref);
     Flash_ClipSetUv(flash, &ref, &uv);

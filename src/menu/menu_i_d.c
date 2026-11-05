@@ -6,6 +6,8 @@
 #ifdef PORT
 extern void Port_MenuPage(int screen); /* port/src/gs_marker.c: widescreen menus */
 extern void Port_MenuFill(int on);
+#include "menu/port_costume.h" /* more than four costumes: the plates in pages, the costume preview */
+static s32 sPortCostumeCross; /* (a costume picked in the costume preview: cross on the next frame) */
 #endif
 
 ESel *gEntrySel = NULL; /* 0x3B5910 */
@@ -142,7 +144,11 @@ void EntrySel_ClipGoto(s32 movie, s32 kind, char *label) {
         sprintf(name, "mc_custom_plate_%d", ES_CUR.custom + 1);
         break;
     case 5:
+#ifdef PORT
+        sprintf(name, "mc_color_plate_%d", PORT_PLATE_NO(ES_CUR.costume)); /* (four plates a page) */
+#else
         sprintf(name, "mc_color_plate_%d", ES_CUR.costume + 1);
+#endif
         break;
     case 7:
         sprintf(name, "mc_entry_text_%d", gEntrySel->sel->cur);
@@ -493,9 +499,16 @@ void EntrySel_Draw(void) {
         uv.y1 = uv.y0 + 0x20;
         sprintf(name, "mc_color_plate_%d", i + 1);
         Flash_FindLabel(flash, NULL, name, &ref);
+#ifdef PORT
+        /* (more than four costumes: the plates show the page of four the cursor is on) */
+        if (i < PORT_PLATE_COUNT(ES_CUR.costume, gEntrySel->colorCount)) {
+            Flash_ClipSetFlags(flash, &ref, 2, 1);
+            switch (PORT_PLATE_COUNT(ES_CUR.costume, gEntrySel->colorCount)) {
+#else
         if (i < gEntrySel->colorCount) {
             Flash_ClipSetFlags(flash, &ref, 2, 1);
             switch (gEntrySel->colorCount) {
+#endif
             case 2:
                 Flash_ClipSetOffset(flash, &ref, 0x2D, 0);
                 break;
@@ -507,6 +520,9 @@ void EntrySel_Draw(void) {
             Flash_ClipSetUv(flash, &ref, &uv);
             Flash_FindLabel(flash, name, "mc_color_text_on", &ref);
             Flash_ClipSetUv(flash, &ref, &uv);
+#ifdef PORT
+            PortPlate_Text(flash, name, i, ES_CUR.costume, gEntrySel->colorCount);
+#endif
         } else {
             Flash_ClipSetFlags(flash, &ref, 2, 0);
         }
@@ -593,11 +609,23 @@ void EntrySel_Draw(void) {
         break;
     }
     Flash_Draw(&gEntrySel->flash[0]);
+#ifdef PORT
+    PortPlate_Draw(&gEntrySel->flash[0]); /* (a costume plate's number past the fourth, with its movie) */
+#endif
     Font_FlushAll();
     Flash_Draw(&gEntrySel->flash[1]);
+#ifdef PORT
+    PortPlate_Draw(&gEntrySel->flash[1]); /* (a costume plate's number past the fourth, with its movie) */
+#endif
     Flash_Draw(&gEntrySel->flash[2]);
+#ifdef PORT
+    PortPlate_Draw(&gEntrySel->flash[2]); /* (a costume plate's number past the fourth, with its movie) */
+#endif
     MsgWin_Draw(0, 0, gEntrySel->voiceLine);
     Flash_Draw(&gEntrySel->flash[3]);
+#ifdef PORT
+    PortPlate_Draw(&gEntrySel->flash[3]); /* (a costume plate's number past the fourth, with its movie) */
+#endif
     ItemPanel_Draw(0);
     ItemHelp_Draw(gEntrySel->helpItem);
 #ifdef PORT
@@ -843,6 +871,25 @@ void EntrySel_Input(s32 *result) {
         }
         break;
     case ESEL_STEP_COLOR:
+#ifdef PORT
+        /* square: the costume preview; a costume picked there is taken as its plate and cross (next frame) */
+        if (sPortCostumeCross) {
+            sPortCostumeCross = 0;
+            gPad[0].gamePressed |= PADG_CROSS;
+            gPad[0].gameRepeat = 0;
+        } else if ((gPad[0].gamePressed & PADG_SQUARE) && TOUR_PROG->t.tour != TOUR_YAMCHA &&
+                   PortCostume_CanPick(gEntrySel->sel->image, gEntrySel->colorCount)) {
+            s32 c = ES_CUR.costume;
+
+            if (PortCostume_Pick(0, gEntrySel->sel->image, gEntrySel->colorCount, &c)) {
+                EntrySel_ClipGoto(2, 5, "fl_off_start");
+                ES_CUR.costume = c;
+                EntrySel_ClipGoto(2, 5, "fl_on_start");
+                sPortCostumeCross = 1;
+            }
+            break;
+        }
+#endif
         if ((gPad[0].gameRepeat & 1) && TOUR_PROG->t.tour != TOUR_YAMCHA) {
             EntrySel_ClipGoto(2, 5, "fl_off_start");
             ES_CUR.costume--;

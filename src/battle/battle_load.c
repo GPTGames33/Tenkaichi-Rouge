@@ -339,11 +339,15 @@ s32 BtlLoad_StepObject(BtlJob *job) {
         Battle_GetWork()->flags |= BATTLE_FLAG_LOAD_OBJECT;
         id = job->chara + BTL_FILE_OBJECT;
         if (job->chara < 0x100) {
+#ifdef PORT
+            id = CHARA_MODEL_FILE(job->chara, job->animChara, job->unk1C); /* (its costume: port_chara.h) */
+#else
             if (job->unk1C != 0) {
                 id = CHARA_FILE10(job->chara) + job->animChara + (BTL_FILE_CHARA + 4);
             } else {
                 id = CHARA_FILE10(job->chara) + job->animChara + BTL_FILE_CHARA;
             }
+#endif
         }
         gBtlLoadHandle = BtlRes_Request(0, id, -1, -1);
         job->state++;
@@ -408,11 +412,15 @@ s32 BtlLoad_StepChara(BtlJob *job) {
 
     switch (job->state) {
     case 0:
+#ifdef PORT
+        model = CHARA_MODEL_FILE(job->chara, job->costume, job->variant); /* (a fifth costume and on: port_chara.h) */
+#else
         if (job->variant != 0) {
             model = CHARA_FILE10(job->chara) + job->costume + (BTL_FILE_CHARA + 4);
         } else {
             model = CHARA_FILE10(job->chara) + job->costume + BTL_FILE_CHARA;
         }
+#endif
         if (job->modelOnly == 0) {
             file8 = CHARA_FILE10(job->animChara) + (BTL_FILE_CHARA + 8);
             file9 = CHARA_FILE10(job->unk1C) + (BTL_FILE_CHARA + 9);

@@ -5,6 +5,8 @@
 #ifdef PORT
 extern void Port_MenuPage(int screen); /* port/src/gs_marker.c: widescreen menus */
 extern void Port_MenuFill(int on);
+#include "menu/port_costume.h" /* more than four costumes: the plates in pages, the costume preview */
+static s32 sPortCostumeCross; /* (a costume picked in the costume preview: cross on the next frame) */
 #endif
 
 /*
@@ -231,7 +233,11 @@ void UbTeamSel_ClipGoto(s32 movie, s32 kind, char *label) {
         sprintf(name, "mc_custom_plate_%d", UT_CUR.plate + 1);
         break;
     case UBTEAM_CLIP_COLOR:
+#ifdef PORT
+        sprintf(name, "mc_color_plate_%d", PORT_PLATE_NO(UT_CUR.color)); /* (four plates a page) */
+#else
         sprintf(name, "mc_color_plate_%d", UT_CUR.color + 1);
+#endif
         break;
     case UBTEAM_CLIP_TEAM:
         switch (gUbTeamSel->sel->cur) {
@@ -565,9 +571,16 @@ void UbTeamSel_Draw(void) {
         uv.y1 = uv.y0 + 0x20;
         sprintf(name, "mc_color_plate_%d", i + 1);
         Flash_FindLabel(flash, NULL, name, &ref);
+#ifdef PORT
+        /* (more than four costumes: the plates show the page of four the cursor is on) */
+        if (i < PORT_PLATE_COUNT(UT_CUR.color, gUbTeamSel->colorCount)) {
+            Flash_ClipSetFlags(flash, &ref, 2, 1);
+            switch (PORT_PLATE_COUNT(UT_CUR.color, gUbTeamSel->colorCount)) {
+#else
         if (i < gUbTeamSel->colorCount) {
             Flash_ClipSetFlags(flash, &ref, 2, 1);
             switch (gUbTeamSel->colorCount) {
+#endif
             case 2:
                 Flash_ClipSetOffset(flash, &ref, 0x2D, 0);
                 break;
@@ -579,6 +592,9 @@ void UbTeamSel_Draw(void) {
             Flash_ClipSetUv(flash, &ref, &uv);
             Flash_FindLabel(flash, name, "mc_color_text_on", &ref);
             Flash_ClipSetUv(flash, &ref, &uv);
+#ifdef PORT
+            PortPlate_Text(flash, name, i, UT_CUR.color, gUbTeamSel->colorCount);
+#endif
         } else {
             Flash_ClipSetFlags(flash, &ref, 2, 0);
         }
@@ -691,10 +707,22 @@ void UbTeamSel_Draw(void) {
         }
     }
     Flash_Draw(&gUbTeamSel->flash[0]);
+#ifdef PORT
+    PortPlate_Draw(&gUbTeamSel->flash[0]); /* (a costume plate's number past the fourth, with its movie) */
+#endif
     Flash_Draw(&gUbTeamSel->flash[1]);
+#ifdef PORT
+    PortPlate_Draw(&gUbTeamSel->flash[1]); /* (a costume plate's number past the fourth, with its movie) */
+#endif
     Flash_Draw(&gUbTeamSel->flash[2]);
+#ifdef PORT
+    PortPlate_Draw(&gUbTeamSel->flash[2]); /* (a costume plate's number past the fourth, with its movie) */
+#endif
     Font_FlushAll();
     Flash_Draw(&gUbTeamSel->flash[3]);
+#ifdef PORT
+    PortPlate_Draw(&gUbTeamSel->flash[3]); /* (a costume plate's number past the fourth, with its movie) */
+#endif
     MsgWin_Draw(0, 0, gUbTeamSel->voiceLine);
     ItemPanel_Draw(0);
     ItemHelp_Draw(gUbTeamSel->help);
@@ -941,6 +969,24 @@ void UbTeamSel_Input(s32 *result) {
         }
         break;
     case UBTEAM_STEP_COLOR:
+#ifdef PORT
+        /* square: the costume preview; a costume picked there is taken as its plate and cross (next frame) */
+        if (sPortCostumeCross) {
+            sPortCostumeCross = 0;
+            gPad[0].gamePressed |= PADG_CROSS;
+            gPad[0].gameRepeat = 0;
+        } else if ((gPad[0].gamePressed & PADG_SQUARE) && PortCostume_CanPick(gUbTeamSel->sel->chara, gUbTeamSel->colorCount)) {
+            s32 c = UT_CUR.color;
+
+            if (PortCostume_Pick(0, gUbTeamSel->sel->chara, gUbTeamSel->colorCount, &c)) {
+                UbTeamSel_ClipGoto(3, UBTEAM_CLIP_COLOR, "fl_off_start");
+                UT_CUR.color = c;
+                UbTeamSel_ClipGoto(3, UBTEAM_CLIP_COLOR, "fl_on_start");
+                sPortCostumeCross = 1;
+            }
+            break;
+        }
+#endif
         if (gPad[0].gameRepeat & 1) {
             UbTeamSel_ClipGoto(3, UBTEAM_CLIP_COLOR, "fl_off_start");
             UT_CUR.color--;

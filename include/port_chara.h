@@ -44,7 +44,11 @@ extern int Port_CharaBase(int chara); /* an added character's base character; an
 #define CHARA_FILE10(c) (PORT_CHARA_ADDED(c) ? PORT_CHARA_FILE0 - 0x590 + PORT_CHARA_IDX(c) * 10 : (s32)(c) * 10)
 /* the character a model file belongs to (the battle takes an object's character from its file id) */
 #define CHARA_FROM_FILE(id) \
-    ((id) >= PORT_CHARA_FILE0 && (id) < PORT_CHARA_FILE0 + PORT_CHARA_MAX * 10 ? PORT_CHARA_ID(((id) - PORT_CHARA_FILE0) / 10) : ((id) - 0x590) / 10)
+    ((id) >= PORT_CHARA_FILE0 && (id) < PORT_CHARA_FILE0 + PORT_CHARA_MAX * 10 ? PORT_CHARA_ID(((id) - PORT_CHARA_FILE0) / 10) : \
+     (id) >= PORT_CHARA_XCOST0 && (id) < PORT_CHARA_XCOST0 + PORT_XCOST_SLOTS * PORT_XCOST_PER ? \
+     ((id) - PORT_CHARA_XCOST0) / PORT_XCOST_PER < 161 ? ((id) - PORT_CHARA_XCOST0) / PORT_XCOST_PER \
+                                                    : PORT_CHARA_ID(((id) - PORT_CHARA_XCOST0) / PORT_XCOST_PER - 161) : \
+     ((id) - 0x590) / 10)
 /* the voice bank: `base` is one of the two languages' first file ids, `alt` says whether it is the second */
 #define CHARA_VOICE_FILE(c, base, alt) (PORT_CHARA_ADDED(c) ? PORT_CHARA_VOICE0 + PORT_CHARA_IDX(c) * 2 + ((alt) ? 1 : 0) : (s32)(c) + (base))
 /* the large picture of the menus: 0x2F9 + id on the disc; an added character's own file, answered from its folder
@@ -62,6 +66,19 @@ extern int Port_CharaBase(int chara); /* an added character's base character; an
 #define PORT_CHARA_LINE0 (0xD48 + 74000)
 #define CHARA_LINE_FILE(c, base, alt, line) \
     (PORT_CHARA_ADDED(c) ? PORT_CHARA_LINE0 + PORT_CHARA_IDX(c) * 200 + ((alt) ? 100 : 0) + (line) : (base) + ((s32)(c) * 100 + (line)))
+/* More than four costumes. The disc has room for four a character (its model files 0x590 + id * 10 + 0..3, the
+   damaged ones + 4); a package may have up to PORT_COSTUME_MAX (Team BT4's characters have up to 9): costume n >= 4
+   of a character is the file PORT_CHARA_XCOST0 + slot * PORT_XCOST_PER + (n - 4) * 2 (+ 1 damaged), slot the disc
+   id of a disc character (a package that replaces it brings them: `replaces=`) or 161 + n for the n-th added one.
+   The port answers them from the package's folder (`*_5p.pak` .. `*_16p.pak`, `*_5p_dmg.pak` ..). How many a
+   character has: ChrTbl_WrapCostume (the disc's table, or the package's own number: Port_CharaCostumeCount). */
+#define PORT_COSTUME_MAX 16
+#define PORT_CHARA_XCOST0 (0xD48 + 94000)
+#define PORT_XCOST_PER ((PORT_COSTUME_MAX - 4) * 2)
+#define PORT_XCOST_SLOTS (161 + PORT_CHARA_MAX)
+extern s32 Port_CharaModelFile(s32 chara, s32 costume, s32 damaged); /* the model file of a costume, any costume */
+extern int Port_CharaCostumeCount(int chara, int disc); /* the costumes of a character: `disc` its table's number */
+#define CHARA_MODEL_FILE(c, costume, dmg) Port_CharaModelFile((s32)(c), (s32)(costume), (dmg) != 0)
 /* For the screens with a roster (the same in each): an added character's own chip, name and number of item sets.
    PORT_CHIP: the texture list of a chip (`pack` = the screen's chip pack); the screen calls PortChips_Load(pack) after
    it has made the disc's chips ready and PortChips_Free() when it ends. PORT_NAME_LINE: the line of a name in the

@@ -6,6 +6,8 @@
  *
  *   *_1p.pak .. *_4p.pak            the model of costume 1..4       (the disc's file 0x590 + id * 10 + 0..3)
  *   *_1p_dmg.pak .. *_4p_dmg.pak    the damaged model of the same   (+ 4..7)
+ *   *_5p.pak .. *_16p.pak (_dmg)    costumes 5..16, past the disc's room for four (include/port_chara.h:
+ *                                   PORT_CHARA_XCOST0 + slot * 24 + (n - 5) * 2 + damaged)
  *   *_anm.pak, *_eff.pak            animations, effects             (+ 8, + 9)
  *   *_voice_jp.pak, *_voice_us.pak  the voice bank in each language (0xBDA + id, 0xC7B + id)
  *   voice_jp/NNN.adx, voice_us/NNN.adx   the spoken lines           (0x8D4E + id * 100 + line, 0xCC32 + ...)
@@ -45,6 +47,7 @@ extern int PortExtras_Dir(const char *kind, const char *env, char *out, unsigned
    "<Name>_Voice_US.pak"; until 2026-10-13 this file had them the other way round.) */
 enum { F_ANM = 8, F_EFF = 9, F_VOICE = 10, F_COUNT = 12 };
 enum { SLOTS = 19 };
+enum { XCOST = PORT_COSTUME_MAX - 4 }; /* the costumes past the disc's four */
 /* The parameter block of a model (its table entry 17; object + 0x91C in the fight): the bytes of its forms from
    0x98, as character.txt can set them (docs/port/character_packages.md, section 6). */
 enum { PAR_BASE = 0x98, PAR_COUNT = 0xC6 - 0x98, PAR_COST = 0x9C - 0x98, PAR_TYPE = 0xA0 - 0x98, PAR_EFFECT = 0xA4 - 0x98,
@@ -57,6 +60,7 @@ typedef struct {
     char owner[64];            /* "" or, for a folder inside a character's folder, that folder's name */
     int ownerId;               /* ... and its character id (an added one's, or the disc id it replaces); -1 */
     char file[F_COUNT][400];   /* "" where the folder has none */
+    char more[XCOST][2][400];  /* costumes 5 and on: [n - 5][0] the model, [1] the damaged one; "" none */
     int base;
     int costumes;
     int replaces;              /* -1: an added character; 0..160: the disc character whose place it takes */
@@ -187,6 +191,38 @@ static int kind_of(const char *name) {
         }
     }
     return -1;
+}
+
+/* costume 5 and on by its name's ending ("_5p.pak" .. "_16p.pak", "_5p_dmg.pak" ..): 1 with *n (0 = costume 5) and
+   *dmg set, 0 if it is not one */
+static int more_of(const char *name, int *n, int *dmg) {
+    size_t l = strlen(name);
+    const char *e;
+    int num = 0, digits = 0;
+    if (ends_nocase(name, "p_dmg.pak")) {
+        *dmg = 1;
+        e = name + l - 9;
+    } else if (ends_nocase(name, "p.pak")) {
+        *dmg = 0;
+        e = name + l - 5;
+    } else {
+        return 0;
+    }
+    while (e > name && isdigit((unsigned char)e[-1]) && digits < 3) {
+        e--;
+        digits++;
+    }
+    if (digits == 0 || e == name || e[-1] != '_' || e[0] == '0') {
+        return 0;
+    }
+    for (; isdigit((unsigned char)*e); e++) {
+        num = num * 10 + (*e - '0');
+    }
+    if (num < 5 || num > PORT_COSTUME_MAX) {
+        return 0;
+    }
+    *n = num - 5;
+    return 1;
 }
 
 static int name_cmp(const void *a, const void *b) {
@@ -573,6 +609,11 @@ static int chip_read(const char *path, unsigned char *out) {
     return chip_ok(out, got);
 }
 
+/* whether a package has the model of costume n (0-based) */
+static int has_costume(const Chara *c, int n) {
+    return n >= 0 && n < PORT_COSTUME_MAX && (n < 4 ? c->file[n][0] : c->more[n - 4][0][0]) != '\0';
+}
+
 /* Looks at the folder `name` of `root`. If it holds a package it is kept: among the added characters, or among the
    replacements when its manifest says `replaces`. `owner`: NULL, or the package whose folder `root` is (what the
    folder's own files do not say about base and name is the owner's). Returns the kept package, NULL if none. */
@@ -615,9 +656,12 @@ static Chara *scan(const char *root, const char *name, const Chara *owner) {
         /* (of two files of one kind the first by name is taken: the same on every machine) */
         char *slot = NULL;
         const char *n = de->d_name;
+        int xn, xd;
         k = kind_of(n);
         if (k >= 0) {
             slot = c->file[k];
+        } else if (more_of(n, &xn, &xd)) {
+            slot = c->more[xn][xd];
         } else if (same_nocase(n, "chip.bin")) {
             slot = c->chip;
         } else if (same_nocase(n, "portrait.bin") || ends_nocase(n, "_img.cdbt")) {
@@ -644,6 +688,9 @@ static Chara *scan(const char *root, const char *name, const Chara *owner) {
     closedir(d);
     for (k = 0; k < F_COUNT; k++) {
         files += c->file[k][0] != '\0';
+    }
+    for (k = 0; k < XCOST * 2; k++) {
+        files += c->more[k / 2][k % 2][0] != '\0';
     }
     files += (c->chip[0] != '\0') + (c->portrait[0] != '\0') + (c->member[0][0] != '\0') + (c->member[1][0] != '\0') + (c->lines[0][0] != '\0') +
              (c->lines[1][0] != '\0');
@@ -703,6 +750,9 @@ static Chara *scan(const char *root, const char *name, const Chara *owner) {
         }
         fits(c, c->file[k], limit_of(k), k < 8 ? "a model" : k == F_ANM ? "the animations" : k == F_EFF ? "the effects" : "a voice bank");
     }
+    for (k = 0; k < XCOST * 2; k++) {
+        fits(c, c->more[k / 2][k % 2], PORT_MODEL_MAX, "a model");
+    }
     fits(c, c->portrait, PORTRAIT_MAX, "the large picture");
     fits(c, c->member[0], MEMBER_MAX, "the member block");
     fits(c, c->member[1], MEMBER_MAX, "the member block");
@@ -722,6 +772,9 @@ static Chara *scan(const char *root, const char *name, const Chara *owner) {
                   c->lines[0][0] != '\0' || c->lines[1][0] != '\0';
         for (k = 0; k < F_COUNT; k++) {
             has |= c->file[k][0] != '\0';
+        }
+        for (k = 0; k < XCOST * 2; k++) {
+            has |= c->more[k / 2][k % 2][0] != '\0';
         }
         for (k = 0; k < PORT_STAT_COUNT; k++) {
             has |= c->stat[k] >= 0;
@@ -764,7 +817,7 @@ static Chara *scan(const char *root, const char *name, const Chara *owner) {
         note(c, "there are already %d added characters, the most the game takes", PORT_CHARA_MAX);
         return NULL;
     }
-    for (c->costumes = 1; c->costumes < 4 && c->file[c->costumes][0] != '\0'; c->costumes++) {
+    for (c->costumes = 1; c->costumes < PORT_COSTUME_MAX && has_costume(c, c->costumes); c->costumes++) {
     }
     kept = &sChara[sCount++];
     *kept = *c;
@@ -1180,7 +1233,7 @@ static int describe(const char *root, const char *folder, const Chara *owner, Po
             }
         }
     }
-    for (out->costumes = 0; out->costumes < 4 && c->file[out->costumes][0] != '\0'; out->costumes++) {
+    for (out->costumes = 0; out->costumes < PORT_COSTUME_MAX && has_costume(c, out->costumes); out->costumes++) {
     }
     out->files |= (c->portrait[0] != '\0') << PORT_DESC_PORTRAIT | (c->chip[0] != '\0') << PORT_DESC_CHIP |
                   (c->member[0][0] != '\0' || c->member[1][0] != '\0') << PORT_DESC_MEMBER |
@@ -1441,8 +1494,9 @@ int Port_ModelSize(void) {
         struct stat st;
         PortCharas_Init();
         for (i = 0; i < sCount + sReplCount; i++) {
-            for (k = 0; k < 8; k++) {
-                if (entry(i)->file[k][0] != '\0' && stat(entry(i)->file[k], &st) == 0 && st.st_size > most) {
+            for (k = 0; k < 8 + XCOST * 2; k++) {
+                const char *f = k < 8 ? entry(i)->file[k] : entry(i)->more[(k - 8) / 2][(k - 8) % 2];
+                if (f[0] != '\0' && stat(f, &st) == 0 && st.st_size > most) {
                     most = (long)st.st_size;
                 }
             }
@@ -1512,6 +1566,40 @@ int Port_CharaCostumes(int chara) {
     return PORT_CHARA_ADDED(chara) && PORT_CHARA_IDX(chara) < live() ? sChara[PORT_CHARA_IDX(chara)].costumes : 0;
 }
 
+/* How many costumes a character has: an added one, those of its folder (its first and every one after it there is);
+   a disc character, `disc` (the disc table's number), and more where the package that replaces it has costumes
+   after those (its `*_5p.pak` and on: costumes the disc has no room for). Never more than PORT_COSTUME_MAX; in a
+   session the disc's. */
+int Port_CharaCostumeCount(int chara, int disc) {
+    const Chara *c;
+    int n = disc;
+    PortCharas_Init();
+    if (PORT_CHARA_ADDED(chara)) {
+        return Port_CharaCostumes(chara);
+    }
+    if ((c = repl_of(chara)) != NULL) {
+        while (n < PORT_COSTUME_MAX && has_costume(c, n)) {
+            n++;
+        }
+    }
+    return n;
+}
+
+/* The file id of a costume's model (the damaged one with `damaged`): the disc's rule for the first four (an added
+   character's ids past the archive's end, include/port_chara.h), PORT_CHARA_XCOST0 + ... for the fifth and on. A
+   costume out of range is the first. */
+int Port_CharaModelFile(int chara, int costume, int damaged) {
+    int ten = PORT_CHARA_ADDED(chara) ? 0xD48 + PORT_CHARA_FILE_INDEX - 0x590 + PORT_CHARA_IDX(chara) * 10 : chara * 10;
+    int slot = PORT_CHARA_ADDED(chara) ? DISC_CHARAS + PORT_CHARA_IDX(chara) : chara;
+    if (costume < 0 || costume >= PORT_COSTUME_MAX || (costume >= 4 && (slot < 0 || slot >= PORT_XCOST_SLOTS || (!PORT_CHARA_ADDED(chara) && chara >= DISC_CHARAS)))) {
+        costume = 0;
+    }
+    if (costume < 4) {
+        return ten + 0x590 + costume + (damaged ? 4 : 0);
+    }
+    return 0xD48 + PORT_CHARA_XCOST_INDEX + slot * PORT_XCOST_PER + (costume - 4) * 2 + (damaged ? 1 : 0);
+}
+
 /* A number of a package's manifest (health, ki, blast) for character `chara`, an added one or a replaced one of
    the disc; `value`, the table's own, where the package says nothing, there is none, or in a session. */
 int Port_CharaStat(int chara, int which, int value) {
@@ -1519,6 +1607,20 @@ int Port_CharaStat(int chara, int which, int value) {
     PortCharas_Init();
     c = chara_of(chara);
     return c != NULL && which >= 0 && which < PORT_STAT_COUNT && c->stat[which] >= 0 ? c->stat[which] : value;
+}
+
+/* The name the menus show for a character a package is for (an added one, or a replacement that names itself), with
+   its form's label after it ("Goku (End) Super Saiyan God"); NULL for any other (the disc's name is its own). */
+const char *Port_CharaShownName(int chara) {
+    static char out[64 + 96 + 2];
+    const Chara *c;
+    PortCharas_Init();
+    c = chara_of(chara);
+    if (c == NULL || !(c->replaces < 0 || c->nameSet)) {
+        return NULL;
+    }
+    snprintf(out, sizeof(out), "%s%s%s", c->shown, c->labelSet && c->label[0] != '\0' ? " " : "", c->labelSet ? c->label : "");
+    return out;
 }
 
 const char *Port_CharaName(int index) {
@@ -1645,6 +1747,31 @@ static int alias_replaced(int arc, int index, char *out, unsigned n) {
     return 1;
 }
 
+/* Costume 5 and on (`more`: 0 is the fifth) of character slot `slot` (a disc id, or DISC_CHARAS + n for the n-th added
+   character): the package's file; its model without a damaged one of its own; where it has none of that costume
+   (a save or a replay of another set-up, a session) the character's first costume. Always answered: the id is past
+   every archive. */
+static int alias_more(int slot, int more, int dmg, char *out, unsigned n) {
+    const Chara *c = NULL;
+    int disc = slot < DISC_CHARAS ? slot : 0;
+    if (slot < DISC_CHARAS) {
+        c = served(slot);
+    } else if (slot - DISC_CHARAS < live()) {
+        c = &sChara[slot - DISC_CHARAS];
+        disc = c->base;
+    }
+    if (c != NULL && c->more[more][dmg][0] != '\0') {
+        snprintf(out, n, "%s", c->more[more][dmg]);
+    } else if (c != NULL && c->more[more][0][0] != '\0') {
+        snprintf(out, n, "%s", c->more[more][0]); /* no damaged model: the costume as it is */
+    } else if (slot >= DISC_CHARAS && c != NULL) { /* an added character: its first costume (its folder has one) */
+        snprintf(out, n, "%s", c->file[dmg && c->file[4][0] != '\0' ? 4 : 0]);
+    } else { /* the disc's first costume (a replacement's, if it has one: the disc's number is answered for it) */
+        snprintf(out, n, "pzs3us1/%05d.bin", 0x590 + disc * 10 + (dmg ? 4 : 0) - 1);
+    }
+    return 1;
+}
+
 static int alias(const char *rel, char *out, unsigned n) {
     int index = -1, who, k, arc;
     const Chara *c;
@@ -1655,6 +1782,11 @@ static int alias(const char *rel, char *out, unsigned n) {
     arc = rel[6] - '0';
     if (!isdigit((unsigned char)rel[8]) || sscanf(rel + 8, "%d", &index) != 1) {
         return 0;
+    }
+    if (arc == 2 && index >= PORT_CHARA_XCOST_INDEX && index < PORT_CHARA_XCOST_INDEX + PORT_XCOST_SLOTS * PORT_XCOST_PER) {
+        PortCharas_Init();
+        return alias_more((index - PORT_CHARA_XCOST_INDEX) / PORT_XCOST_PER, (index - PORT_CHARA_XCOST_INDEX) % PORT_XCOST_PER / 2,
+                          (index - PORT_CHARA_XCOST_INDEX) % 2, out, n);
     }
     if (arc == 1 || index < PORT_CHARA_FILE_INDEX) {
         PortCharas_Init();

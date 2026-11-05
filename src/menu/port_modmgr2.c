@@ -3066,6 +3066,9 @@ typedef struct ModGrid {
 } ModGrid;
 
 static s32 Mg_HasCostume(PortModInfo *m, s32 n) {
+    if (n >= 4) { /* (a fifth costume and on: as many as the package has in a row, include/port_chara.h) */
+        return n < m->costumes && n < PORT_COSTUME_MAX;
+    }
     return (m->kinds & (1 << n)) != 0 || (n == 0);
 }
 
@@ -3191,17 +3194,25 @@ static void Mg_Draw(ModGrid *g, f32 in, f32 art) {
             Mx_Text(1098.0f, 611.0f + ny, like, 26.0f, 440.0f, MX_GOLD, 1);
         }
         Mx_Text(1108.0f, 660.0f + ny, "COSTUMES", 20.0f, 0.0f, MX_WHITE, 1);
-        for (k = 0; k < 4; k++) {
-            static char *num[4] = {"1", "2", "3", "4"};
-            f32 cx = 975.0f + 89.0f * (f32)k;
-            f32 cy = 689.0f + ny;
+        {
+            /* four buttons, or as many as it has costumes past four (narrower, in the same width) */
+            s32 shown = m->costumes > 4 ? (m->costumes > PORT_COSTUME_MAX ? PORT_COSTUME_MAX : m->costumes) : 4;
+            f32 pitch = 356.0f / (f32)shown;
+            f32 half = pitch * 0.5f - 6.5f;
+            static char num[PORT_COSTUME_MAX][4];
 
-            if (k == g->costume) {
-                Mx_Bar(MM_TAB_SEL, cx - 38.0f, cy - 15.0f, cx + 38.0f, cy + 15.0f, 0x80);
-                Mx_TextC(cx, cy, num[k], 22.0f, 0.0f, Mx_Rgba(0xFF, 0xFF, 0xF0, 0x80), Mx_Rgba(0xFF, 0xF0, 0xC8, 0x80), Mx_Rgba(0x6C, 0x3C, 0x08, 0x80), 1, 0x80);
-            } else {
-                Mx_Bar(MM_NAVBAR, cx - 38.0f, cy - 14.0f, cx + 38.0f, cy + 14.0f, Mg_HasCostume(m, k) ? 0x80 : 0x40);
-                Mx_TextA(cx, cy, num[k], 22.0f, 0.0f, MX_WHITE, 1, Mg_HasCostume(m, k) ? 0x80 : 0x40);
+            for (k = 0; k < shown; k++) {
+                f32 cx = 930.5f + pitch * ((f32)k + 0.5f);
+                f32 cy = 689.0f + ny;
+
+                sprintf(num[k], "%d", (int)(k + 1));
+                if (k == g->costume) {
+                    Mx_Bar(MM_TAB_SEL, cx - half, cy - 15.0f, cx + half, cy + 15.0f, 0x80);
+                    Mx_TextC(cx, cy, num[k], 22.0f, 0.0f, Mx_Rgba(0xFF, 0xFF, 0xF0, 0x80), Mx_Rgba(0xFF, 0xF0, 0xC8, 0x80), Mx_Rgba(0x6C, 0x3C, 0x08, 0x80), 1, 0x80);
+                } else {
+                    Mx_Bar(MM_NAVBAR, cx - half, cy - 14.0f, cx + half, cy + 14.0f, Mg_HasCostume(m, k) ? 0x80 : 0x40);
+                    Mx_TextA(cx, cy, num[k], 22.0f, 0.0f, MX_WHITE, 1, Mg_HasCostume(m, k) ? 0x80 : 0x40);
+                }
             }
         }
     } else {
@@ -3277,7 +3288,7 @@ s32 PortModGrid_Pick(s32 padNo, s32 *chara, s32 *code) {
         Snd_Update();
         in = Mm_Ease((f32)g->frames / 14.0f);
         /* the model of the one under the cursor, once it has rested */
-        key = g->cur * 4 + g->costume;
+        key = g->cur * PORT_COSTUME_MAX + g->costume;
         if (g->count > 0) {
             Mm_ViewWant(key, g->info[g->cur].chara >= 0 ? g->info[g->cur].chara : 0, g->costume, Port_SkinMod(g->cur), g->rest >= 6);
         }
@@ -3366,11 +3377,11 @@ s32 PortModGrid_Pick(s32 padNo, s32 *chara, s32 *code) {
             Snd_PlaySe(2, 0);
         }
         if (pad->gamePressed & (PADG_R1 | PADG_L1)) {
-            s32 step = (pad->gamePressed & PADG_R1) ? 1 : 3;
+            s32 step = (pad->gamePressed & PADG_R1) ? 1 : PORT_COSTUME_MAX - 1;
             s32 n = g->costume;
 
-            for (k = 0; k < 4; k++) {
-                n = (n + step) % 4;
+            for (k = 0; k < PORT_COSTUME_MAX; k++) {
+                n = (n + step) % PORT_COSTUME_MAX;
                 if (Mg_HasCostume(&g->info[g->cur], n)) {
                     break;
                 }
@@ -3383,7 +3394,7 @@ s32 PortModGrid_Pick(s32 padNo, s32 *chara, s32 *code) {
         }
         if (pad->gamePressed & PADG_CROSS) {
             *chara = Port_ModFighterId(Port_SkinMod(g->cur)); /* (its own id: 0xC6 on) */
-            *code = g->costume;                               /* (its costume, 0..3) */
+            *code = g->costume;                               /* (its costume, 0..PORT_COSTUME_MAX - 1) */
             if (*chara < 0) { /* (not on after all) */
                 Snd_PlaySe(1, 7);
                 continue;

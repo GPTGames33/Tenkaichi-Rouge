@@ -7,6 +7,7 @@
 #include "battle/col_c.h" /* FontStyle / FONT_ALIGN_* / FONT_SHADOW_*, for the names of added stages */
 #include "plat_stages.h"  /* the manifest of added stages: their ids, names and file aliases */
 #include "plat_songs.h"   /* the manifest of added songs (the music select) */
+#include "menu/port_costume.h" /* more than four costumes: the plates in pages, the costume preview */
 #include <stdio.h>
 #include <stdlib.h>
 /* include/battle/view_a.h holds these, but pulling it in clashes with menu_d.h (MsgWin_Init); the values are
@@ -356,7 +357,11 @@ void CharSel_ClipGoto(s32 flash, s32 side, s32 kind, char *label) {
         sprintf(name, "mc_custom_plate_%d", gCharSel->side[side]->customPlate + 1);
         break;
     case CHARSEL_CLIP_COLOR_PLATE:
+#ifdef PORT
+        sprintf(name, "mc_color_plate_%d", PORT_PLATE_NO(gCharSel->side[side]->colorPlate)); /* (four plates a page) */
+#else
         sprintf(name, "mc_color_plate_%d", gCharSel->side[side]->colorPlate + 1);
+#endif
         break;
     case CHARSEL_CLIP_CUSTOM_CHIP:
         sprintf(name, "mc_chara_chip_%03d", gCharSel->side[side]->customCol);
@@ -1169,9 +1174,16 @@ void CharSel_Draw(void) {
             uv.y1 = uv.y0 + 0x20;
             sprintf(name, "mc_color_plate_%d", j + 1);
             Flash_FindLabel(f, NULL, name, &ref);
+#ifdef PORT
+            /* (more than four costumes: the plates show the page of four the cursor is on) */
+            if (j < PORT_PLATE_COUNT(gCharSel->side[i]->colorPlate, gCharSel->colorCount[i])) {
+                Flash_ClipSetFlags(f, &ref, 2, 1);
+                switch (PORT_PLATE_COUNT(gCharSel->side[i]->colorPlate, gCharSel->colorCount[i])) {
+#else
             if (j < gCharSel->colorCount[i]) {
                 Flash_ClipSetFlags(f, &ref, 2, 1);
                 switch (gCharSel->colorCount[i]) {
+#endif
                 case 2:
                     Flash_ClipSetOffset(f, &ref, 0x2D, 0);
                     break;
@@ -1183,6 +1195,9 @@ void CharSel_Draw(void) {
                 Flash_ClipSetUv(f, &ref, &uv);
                 Flash_FindLabel(f, name, "mc_color_text_on", &ref);
                 Flash_ClipSetUv(f, &ref, &uv);
+#ifdef PORT
+                PortPlate_Text(f, name, j, gCharSel->side[i]->colorPlate, gCharSel->colorCount[i]);
+#endif
             } else {
                 Flash_ClipSetFlags(f, &ref, 2, 0);
             }
@@ -1256,6 +1271,7 @@ void CharSel_Draw(void) {
         Port_MenuMovie(i == 1 || i == 2 ? i | 0x100 : i); /* widescreen menus: which of the screen's movies, the two
                                                              rosters marked (port/src/gs_marker.c) */
         Flash_Draw(&gCharSel->flash[i]);
+        PortPlate_Draw(&gCharSel->flash[i]); /* (a costume plate's number past the fourth, with its movie) */
     }
     Port_MenuMovie(0);
 #else
@@ -1329,6 +1345,7 @@ extern s32 Port_SkinCount(void);
 extern int Port_NetSession(void);
 static s32 sPortGridCross[CHARSEL_SIDES]; /* (cross for this side on its next frame) */
 static s32 sPortGridCostume[CHARSEL_SIDES];
+static s32 sPortCostumeCross[CHARSEL_SIDES]; /* (a costume picked in the costume preview: cross on its next frame) */
 
 static s32 CharSel_PortGrid(s32 pad, s32 n) {
     s32 id;
@@ -1850,6 +1867,25 @@ void CharSel_Input(s32 *running) {
             break;
 
         case CHARSEL_ST_COLOR:
+#ifdef PORT
+            /* square: the costume preview (the character in 3D in each costume); a costume picked there is taken as
+               if the cursor had been moved onto its plate and cross pressed (the next frame) */
+            if (sPortCostumeCross[CS_N]) {
+                sPortCostumeCross[CS_N] = 0;
+                gPad[i].gamePressed |= PADG_CROSS;
+                gPad[i].gameRepeat = 0;
+            } else if ((gPad[i].gamePressed & PADG_SQUARE) && PortCostume_CanPick(CS_SIDE->chara, gCharSel->colorCount[CS_N])) {
+                s32 c = CS_SIDE->colorPlate;
+
+                if (PortCostume_Pick(i, CS_SIDE->chara, gCharSel->colorCount[CS_N], &c)) {
+                    CharSel_ClipGoto(CS_N + 3, CS_N, CHARSEL_CLIP_COLOR_PLATE, "fl_off_start");
+                    CS_SIDE->colorPlate = c;
+                    CharSel_ClipGoto(CS_N + 3, CS_N, CHARSEL_CLIP_COLOR_PLATE, "fl_on_start");
+                    sPortCostumeCross[CS_N] = 1;
+                }
+                continue;
+            }
+#endif
             if (gPad[i].gameRepeat & 1) {
                 CharSel_ClipGoto(CS_N + 3, CS_N, CHARSEL_CLIP_COLOR_PLATE, "fl_off_start");
                 CS_SIDE->colorPlate--;

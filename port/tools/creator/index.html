@@ -144,6 +144,7 @@
 "use strict";
 const $ = id => document.getElementById(id);
 let roster = [], fighters = [], spec = null, file = null, dirty = false, tab = "home";
+const COSTUME_MAX = 16; // the costumes a warrior may have (custom_fighter.py COSTUME_MAX; the game's PORT_COSTUME_MAX)
 const SLOT_KEYS = ["blast1_1", "blast1_2", "blast2_1", "blast2_2", "ultimate"];
 const SLOT_LABEL = {blast1_1: "Blast 1 (1)", blast1_2: "Blast 1 (2)", blast2_1: "Blast 2 (1)", blast2_2: "Blast 2 (2)", ultimate: "Ultimate"};
 const SLOT_KIND = {blast1_1: ["blast1_1", "blast1_2"], blast1_2: ["blast1_1", "blast1_2"], blast2_1: ["blast2_1", "blast2_2"],
@@ -479,10 +480,11 @@ function drawWarrior() {
 function drawParts() {
   const cos = spec.costumes || [look()];
   const rows = [{sec: "WHOLE LOOK"}];
-  for (let i = 0; i < 4; i++) {
+  // the costumes it has, and one more row to add the next (up to COSTUME_MAX; four always shown)
+  for (let i = 0; i < Math.min(COSTUME_MAX, Math.max(4, cos.length + 1)); i++) {
     const r = cos[i];
     rows.push({label: `Costume ${i + 1}`, value: r ? nm(r) : "none", sub: i === 0 ? "the look of your warrior" : "",
-      tip: "Body, hair and clothes of a whole character. A warrior can have up to 4 costumes.",
+      tip: `Body, hair and clothes of a whole character. A warrior can have up to ${COSTUME_MAX} costumes.`,
       onclick: () => openPick(`COSTUME ${i + 1}: WHOSE LOOK?`, p => {
         const list = (spec.costumes || [look()]).slice();
         if (p) list[i] = p; else list.splice(i, 1);

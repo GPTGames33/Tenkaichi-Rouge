@@ -540,6 +540,9 @@ MmTex *Mm_Face(s32 i) {
 s32 Mm_HasCostume(s32 i, s32 n) {
     PortModInfo *m = &sMm->info[i];
 
+    if (n >= 4) { /* (a fifth costume and on: as many as the package has in a row, include/port_chara.h) */
+        return !m->raw && n < m->costumes && n < PORT_COSTUME_MAX;
+    }
     if (m->kinds & (1 << n)) {
         return 1;
     }
@@ -1279,22 +1282,31 @@ static void Lib_Info(f32 rise) {
     Mx_Rect(x0 + 24.0f, y + 232.0f, x1 - 24.0f, y + 234.0f, Mx_Rgba(0xA0, 0xE0, 0xE0, 0x50), Mx_Rgba(0xA0, 0xE0, 0xE0, 0x50));
     /* its costumes: the one shown gold */
     n = 0;
-    for (k = 0; k < 4; k++) {
+    for (k = 0; k < PORT_COSTUME_MAX; k++) {
         n += Mm_HasCostume(sMm->cur, k);
     }
     sprintf(line, n == 1 ? "%d COSTUME" : "%d COSTUMES", (int)n);
     Mx_Text(x0 + 22.0f, y + 254.0f, line, 25.0f, 0.0f, MX_GOLD, 0);
-    for (k = 0; k < 4; k++) {
-        static char *num[4] = {"1", "2", "3", "4"};
-        f32 cx = x0 + 59.0f + 87.0f * (f32)k;
-        f32 cy = y + 288.0f;
+    {
+        /* four buttons, or as many as it has costumes past four (narrower, in the same width) */
+        s32 shown = sMm->info[sMm->cur].costumes > 4 && !sMm->info[sMm->cur].raw ? sMm->info[sMm->cur].costumes : 4;
+        f32 pitch = 348.0f / (f32)shown;
+        f32 half = pitch * 0.5f - 7.5f;
+        static char num[PORT_COSTUME_MAX][4];
 
-        if (k == sMm->costume && Mm_HasCostume(sMm->cur, k)) {
-            Mx_Bar(MM_TAB_SEL, cx - 36.0f, cy - 16.0f, cx + 36.0f, cy + 16.0f, 0x80);
-            Mx_TextC(cx, cy, num[k], 24.0f, 0.0f, Mx_Rgba(0xFF, 0xFF, 0xF0, 0x80), Mx_Rgba(0xFF, 0xF0, 0xC8, 0x80), Mx_Rgba(0x6C, 0x3C, 0x08, 0x80), 1, 0x80);
-        } else {
-            Mx_Bar(MM_NAVBAR, cx - 36.0f, cy - 15.0f, cx + 36.0f, cy + 15.0f, Mm_HasCostume(sMm->cur, k) ? 0x80 : 0x40);
-            Mx_TextA(cx, cy, num[k], 24.0f, 0.0f, MX_WHITE, 1, Mm_HasCostume(sMm->cur, k) ? 0x80 : 0x40);
+        shown = shown > PORT_COSTUME_MAX ? PORT_COSTUME_MAX : shown;
+        for (k = 0; k < shown; k++) {
+            f32 cx = x0 + 15.0f + pitch * ((f32)k + 0.5f);
+            f32 cy = y + 288.0f;
+
+            sprintf(num[k], "%d", (int)(k + 1));
+            if (k == sMm->costume && Mm_HasCostume(sMm->cur, k)) {
+                Mx_Bar(MM_TAB_SEL, cx - half, cy - 16.0f, cx + half, cy + 16.0f, 0x80);
+                Mx_TextC(cx, cy, num[k], 24.0f, 0.0f, Mx_Rgba(0xFF, 0xFF, 0xF0, 0x80), Mx_Rgba(0xFF, 0xF0, 0xC8, 0x80), Mx_Rgba(0x6C, 0x3C, 0x08, 0x80), 1, 0x80);
+            } else {
+                Mx_Bar(MM_NAVBAR, cx - half, cy - 15.0f, cx + half, cy + 15.0f, Mm_HasCostume(sMm->cur, k) ? 0x80 : 0x40);
+                Mx_TextA(cx, cy, num[k], 24.0f, 0.0f, MX_WHITE, 1, Mm_HasCostume(sMm->cur, k) ? 0x80 : 0x40);
+            }
         }
     }
     /* what it brings */
@@ -1442,7 +1454,8 @@ static void Mm_DrawAct(void) {
              Mx_Rgba(0x50, 0x20, 0x06, 0x80), 1, 0x80);
     for (k = 0; k < ACT_COUNT; k++) {
         f32 iy = y0 + 66.0f + pitch * (f32)k;
-        s32 live = k != ACT_COSTUME || Mm_HasCostume(sMm->cur, 1) || Mm_HasCostume(sMm->cur, 2) || Mm_HasCostume(sMm->cur, 3);
+        s32 live = k != ACT_COSTUME || Mm_HasCostume(sMm->cur, 1) || Mm_HasCostume(sMm->cur, 2) || Mm_HasCostume(sMm->cur, 3) ||
+                   Mm_HasCostume(sMm->cur, 4);
 
         if (k == sMm->actCur) {
             Mx_Box(MM_BAR_SEL, x0 + 18.0f, iy - 3.0f, x1 - 18.0f, iy + 39.0f, 19.0f, 0x80);
@@ -1853,7 +1866,7 @@ static void Mm_Library(s32 live) {
 
     sMm->wantKey = -1;
     if (have && Mm_HasCostume(sMm->cur, sMm->costume)) {
-        sMm->wantKey = sMm->cur * 4 + sMm->costume;
+        sMm->wantKey = sMm->cur * PORT_COSTUME_MAX + sMm->costume;
         sMm->wantChara = sMm->info[sMm->cur].chara >= 0 ? sMm->info[sMm->cur].chara : 0; /* (not set: shown in the first fighter's place) */
         sMm->wantCostume = sMm->costume;
         sMm->wantPreview = sMm->cur;
@@ -2049,8 +2062,8 @@ static void Lib_Costume(s32 dir) {
     s32 n = sMm->costume;
     s32 k;
 
-    for (k = 0; k < 4; k++) {
-        n = (n + 4 + dir) % 4;
+    for (k = 0; k < PORT_COSTUME_MAX; k++) {
+        n = (n + PORT_COSTUME_MAX + dir) % PORT_COSTUME_MAX;
         if (Mm_HasCostume(sMm->cur, n)) {
             break;
         }
@@ -2447,7 +2460,7 @@ s32 PortModMgr_Run(void) {
            shown. (The contribution's "its base in costume 8 and on" was a model file of another character's numbers:
            the fight crashed binding it.) */
         testChara = m->isNew ? Port_ModFighterId(sMm->cur) : m->chara;
-        testCostume = sMm->costume >= 0 && sMm->costume < 4 ? sMm->costume : 0;
+        testCostume = sMm->costume >= 0 && sMm->costume < PORT_COSTUME_MAX ? sMm->costume : 0;
         if (testChara < 0) {
             test = 0; /* (not on after all: no fight) */
             gPortModTest = 0;

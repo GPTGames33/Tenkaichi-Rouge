@@ -6,6 +6,7 @@
 #ifdef PORT
 #include "battle/col_c.h" /* FontStyle / FONT_ALIGN_* / FONT_SHADOW_*, for the names of added songs */
 #include "plat_songs.h"   /* the songs added from outside the disc (the music select) */
+#include "menu/port_costume.h" /* more than four costumes: the plates in pages, the costume preview */
 /* The port's song-name overlay (port/src/gs/ui.cpp / gs_draw.c), as the duel's select uses it (menu_c_e.c). */
 extern volatile int gUiSongX, gUiSongY, gUiSongW, gUiSongH;
 extern volatile int gUiSongIdx, gUiSongReady, gUiSongLit;
@@ -432,7 +433,11 @@ void TeamSel_ClipGoto(s32 flash, s32 side, s32 kind, char *label) {
         sprintf(name, "mc_custom_plate_%d", gTeamSel->side[side]->member[gTeamSel->side[side]->cur].plate + 1);
         break;
     case TEAMSEL_CLIP_COLOR_PLATE:
+#ifdef PORT
+        sprintf(name, "mc_color_plate_%d", PORT_PLATE_NO(gTeamSel->side[side]->member[gTeamSel->side[side]->cur].color)); /* (four a page) */
+#else
         sprintf(name, "mc_color_plate_%d", gTeamSel->side[side]->member[gTeamSel->side[side]->cur].color + 1);
+#endif
         break;
     case TEAMSEL_CLIP_TEAM:
         switch (gTeamSel->side[side]->cur) {
@@ -1208,9 +1213,16 @@ void TeamSel_Draw(void) {
             uv.y1 = uv.y0 + 0x20;
             sprintf(name, "mc_color_plate_%d", j + 1);
             Flash_FindLabel(flash, NULL, name, &ref);
+#ifdef PORT
+            /* (more than four costumes: the plates show the page of four the cursor is on) */
+            if (j < PORT_PLATE_COUNT(gTeamSel->side[i]->member[gTeamSel->side[i]->cur].color, gTeamSel->colorCount[i])) {
+                Flash_ClipSetFlags(flash, &ref, 2, 1);
+                switch (PORT_PLATE_COUNT(gTeamSel->side[i]->member[gTeamSel->side[i]->cur].color, gTeamSel->colorCount[i])) {
+#else
             if (j < gTeamSel->colorCount[i]) {
                 Flash_ClipSetFlags(flash, &ref, 2, 1);
                 switch (gTeamSel->colorCount[i]) {
+#endif
                 case 2:
                     Flash_ClipSetOffset(flash, &ref, 0x2D, 0);
                     break;
@@ -1222,6 +1234,9 @@ void TeamSel_Draw(void) {
                 Flash_ClipSetUv(flash, &ref, &uv);
                 Flash_FindLabel(flash, name, "mc_color_text_on", &ref);
                 Flash_ClipSetUv(flash, &ref, &uv);
+#ifdef PORT
+                PortPlate_Text(flash, name, j, gTeamSel->side[i]->member[gTeamSel->side[i]->cur].color, gTeamSel->colorCount[i]);
+#endif
             } else {
                 Flash_ClipSetFlags(flash, &ref, 2, 0);
             }
@@ -1375,6 +1390,7 @@ void TeamSel_Draw(void) {
         Port_MenuMovie(i == 3 || i == 4 ? i | 0x100 : i); /* (its movies as the one-on-one select's: 1, 3 and 5 the first
                                                              player's, 2, 4, 6 the other's; 3 and 4 the rosters) */
         Flash_Draw(&gTeamSel->flash[i]);
+        PortPlate_Draw(&gTeamSel->flash[i]); /* (a costume plate's number past the fourth, with its movie) */
     }
     Port_MenuMovie(0);
 #else
@@ -1475,6 +1491,7 @@ extern s32 Port_SkinCount(void);
 extern int Port_NetSession(void);
 static s32 sPortGridCross[TEAMSEL_SIDES]; /* (cross for this side on its next frame) */
 static s32 sPortGridCostume[TEAMSEL_SIDES];
+static s32 sPortCostumeCross[TEAMSEL_SIDES]; /* (a costume picked in the costume preview: cross on its next frame) */
 
 static s32 TeamSel_PortGrid(s32 pad, s32 n) {
     TeamSelSide *side = gTeamSel->side[n];
@@ -2008,6 +2025,24 @@ f32 TeamSel_Input(s32 *result) {
                 break;
 
             case TEAMSEL_ST_COLOR:
+#ifdef PORT
+                /* square: the costume preview; a costume picked there is taken as its plate and cross (next frame) */
+                if (sPortCostumeCross[CUR_N]) {
+                    sPortCostumeCross[CUR_N] = 0;
+                    gPad[i].gamePressed |= PADG_CROSS;
+                    gPad[i].gameRepeat = 0;
+                } else if ((gPad[i].gamePressed & PADG_SQUARE) && PortCostume_CanPick(CUR_SIDE->chara, gTeamSel->colorCount[CUR_N])) {
+                    s32 c = CUR_MEMBER.color;
+
+                    if (PortCostume_Pick(i, CUR_SIDE->chara, gTeamSel->colorCount[CUR_N], &c)) {
+                        TeamSel_ClipGoto(CUR_N + 5, CUR_N, TEAMSEL_CLIP_COLOR_PLATE, "fl_off_start");
+                        CUR_MEMBER.color = c;
+                        TeamSel_ClipGoto(CUR_N + 5, CUR_N, TEAMSEL_CLIP_COLOR_PLATE, "fl_on_start");
+                        sPortCostumeCross[CUR_N] = 1;
+                    }
+                    continue;
+                }
+#endif
                 if (gPad[i].gameRepeat & 1) {
                     TeamSel_ClipGoto(CUR_N + 5, CUR_N, TEAMSEL_CLIP_COLOR_PLATE, "fl_off_start");
                     CUR_MEMBER.color--;
