@@ -65,6 +65,7 @@ void GsGl_StripTextureFree(unsigned id);
 const char *PortStages_Dir(void);                          // plat_stages.c
 const char *PortStages_Name(int index);
 int PortStages_Count(void);
+const unsigned char *PortStages_Title(int index, int *w, int *h); // a stage package's own name picture
 const char *PortSongs_Dir(void);                           // plat_songs.c
 const char *PortSongs_Name(int index);
 int PortSongs_Count(void);
@@ -2787,6 +2788,31 @@ static const FontName *font_name(int style, const char *text) {
     return n.tex != NULL ? &n : NULL;
 }
 
+/* A stage package's own name picture (a BT4 stage's, as that disc's select has it: 512 x 64 like the disc's own),
+   drawn where the disc's are with the menu font "Original". Made into a texture once per stage. */
+static FontName sTitleNames[64];
+static const FontName *stage_title(int idx) {
+    if (MenuText_GetFont() != 0 || idx < 0 || idx >= (int)(sizeof(sTitleNames) / sizeof(sTitleNames[0]))) {
+        return NULL;
+    }
+    FontName &n = sTitleNames[idx];
+    if (!n.used) {
+        int w = 0, h = 0;
+        const unsigned char *src = PortStages_Title(idx, &w, &h);
+        n.used = true;
+        if (src != NULL) {
+            unsigned char *pix = (unsigned char *)malloc((size_t)w * h * 4);
+            if (pix != NULL) {
+                memcpy(pix, src, (size_t)w * h * 4);
+                n.tex = make_strip(pix, (size_t)w * h * 4, (uint32_t)w, (uint32_t)h, 1); // (frees pix)
+                n.w = w;
+                n.h = h;
+            }
+        }
+    }
+    return n.tex != NULL ? &n : NULL;
+}
+
 /* Draws such a name over the place of the disc's name picture: (x, y) is the corner of that picture's row in the
    window, kx and ky are window pixels per pixel of the row (512 wide). A name longer than the row is made smaller
    to fit, about the row's middle line; a stage name stays in the middle, a song name keeps its left edge. */
@@ -3213,7 +3239,10 @@ static bool frame_build(void) {
         ImDrawList *dl = ImGui::GetBackgroundDrawList();
 
         if (nameOn) {
-            const FontName *fn = font_name(NF_STAGE, PortStages_Name(gUiNameIdx));
+            const FontName *fn = stage_title(gUiNameIdx);
+            if (fn == NULL) {
+                fn = font_name(NF_STAGE, PortStages_Name(gUiNameIdx));
+            }
             float x = (float)gUiPresentX + (float)gUiNameX * sx, y = (float)gUiPresentY + (float)gUiNameY * sy;
             if (fn != NULL) {
                 float kx = (float)gUiNameW * sx / 384.0f, ky = (float)gUiNameH * sy / 48.0f;

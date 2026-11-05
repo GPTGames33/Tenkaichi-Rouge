@@ -280,6 +280,12 @@ f32 BtlChar_RandF(void) {
 s32 BtlChar_IsStage4Or27(void) {
     s32 stage = Battle_GetStage();
 
+#ifdef PORT
+    {
+        extern int Port_StageRules(int stage); /* port/src/plat_stages.c: what an added stage counts as */
+        stage = Port_StageRules(stage);
+    }
+#endif
     if (stage == 4 || stage == 27) {
         return 1;
     }

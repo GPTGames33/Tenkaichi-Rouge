@@ -99,9 +99,13 @@ In the game, F1 > Video has a switch for the pack.
 STAGES_NOTE = """Stages from outside the disc.
 
 Put a stage's model file (.unk, the kind made for this game's mods) into this folder. It gets one more cell at the
-end of the stage select, named after the file ("My_Map.unk" is shown as "My Map"). Up to 26 stages.
+end of the stage select, named after the file ("My_Map.unk" is shown as "My Map"). Up to 64 stages.
 
 Optional: a file maps.txt here, one line per stage, "file.unk|Name In The Menu", gives other names and an order.
+
+A stage package is a folder here with a stage.txt (name=..., and its files: model.unk, split.unk, bank.bin,
+thumb.bin, icon.bin, name.rgba, transition.bin; destroyed= the package it turns into). port/tools/bt4/
+import_bt4_stages.py makes one for every stage of the BT4 mod that BT3 does not have, from your BT4 disc.
 
 Added stages are not written to your save, and they are not offered in an online match (Tenkaichi Budokai Online).
 """

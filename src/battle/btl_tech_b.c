@@ -1403,6 +1403,14 @@ void BtlSuper_GetStagePlacement(BtlTechBChr *chr, s32 slot, s32 n, Vec4 *pos, Ve
     s32 stage = Battle_GetStage();
     BtlTechPlaceTbl *tbl;
 
+#ifdef PORT
+    {
+        /* PC build: the table has the disc's stages only; an added stage takes a disc stage's places (its package
+           says which; BT4 itself takes stage % 35). It read past the table before. */
+        extern int Port_StagePlacement(int stage); /* port/src/plat_stages.c */
+        stage = Port_StagePlacement(stage);
+    }
+#endif
     if ((u32)(slot - 2) < 3 && (tbl = chr->place[slot - 2]) != NULL) {
         pos->x = tbl->rec[stage * 5 + n].x;
         pos->y = tbl->rec[stage * 5 + n].y;

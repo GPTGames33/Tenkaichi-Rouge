@@ -485,6 +485,17 @@ s32 BtlStage_GetChangeTarget(void) {
     if (!BtlStage_IsReady()) {
         return -1;
     }
+#ifdef PORT
+    {
+        /* PC build: a stage added from outside the disc turns into what its package says (a BT4 stage's model
+           keeps its own target in the byte after the kind, which the disc's rule here would not read) */
+        extern s32 Battle_GetStage(void);
+        extern int Port_StageChangeTarget(int stage); /* port/src/plat_stages.c */
+        if (Battle_GetStage() >= 0x24) {
+            return Port_StageChangeTarget(Battle_GetStage());
+        }
+    }
+#endif
     kind = gBtlStage->data->info->changeKind;
     if (kind == 1) {
         return 0xF;
@@ -524,6 +535,19 @@ void BtlStage_Update(void) {
     if (Battle_GetWork()->flags & BATTLE_FLAG_LOADING) {
         return;
     }
+#ifdef PORT
+    {
+        /* PC build, testing: BT3_TEST_DESTROY=<frames>: the stage is destroyed (changed into its target) that many
+           stage updates into the fight, and again as often on the next (a whole destruction chain in one fight) */
+        extern int Port_TestDestroy(void); /* port/src/plat_stages.c: BT3_TEST_DESTROY, else 0 */
+        extern void BtlStage_RequestChange(void);
+        static s32 frames;
+        if (Port_TestDestroy() > 0 && ++frames >= Port_TestDestroy()) {
+            frames = 0;
+            BtlStage_RequestChange();
+        }
+    }
+#endif
     BtlStage_UpdateTimers();
     BtlStage_UpdateObjs();
     StgAmb_Update();

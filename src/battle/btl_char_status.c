@@ -244,7 +244,12 @@ s32 BtlStat_GetMod(BtlStatChr *chr, s32 stat) {
             }
             break;
     }
+#ifdef PORT
+    extern int Port_StageRules(int stage); /* port/src/plat_stages.c: what an added stage counts as */
+    switch (Port_StageRules(Battle_GetStage())) {
+#else
     switch (Battle_GetStage()) {
+#endif
         case 2:
         case 3:
             if (BtlMember_HasAbility(chr, 0x59)) {

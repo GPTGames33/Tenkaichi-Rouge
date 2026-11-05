@@ -25,8 +25,8 @@ extern void PortStageIcons_Load(void), PortStageIcons_Free(void); /* port/src/pl
 extern void *PortStageIcons_Get(int id);
 /* include/battle/view_a.h holds these; repeated here (pulling it in clashes with the menu headers). The PC build
    moves the locked / empty markers up so added stages keep their own ids. */
-#define STGGRID_ID_LOCKED 0x3E
-#define STGGRID_ID_EMPTY 0x3F
+#define STGGRID_ID_LOCKED 0x7E
+#define STGGRID_ID_EMPTY 0x7F
 #endif
 #ifdef PORT
 extern void Port_MenuPage(int screen); /* port/src/gs_marker.c: widescreen menus */
@@ -670,7 +670,7 @@ void TeamSel_Init(s32 section) {
            an online session. The list is ours, with whole rows: the reel reads rows of six. */
         extern int gPortStageReplaceCount, gPortReplaceOld[16], gPortReplaceNew[16];
         extern int Port_NetSession(void); /* port/src/gs/net.c */
-        static s32 sAllIds[96];
+        static s32 sAllIds[128];
         s32 extra = Port_NetSession() ? 0 : gPortExtraStageCount;
         s32 swaps = Port_NetSession() ? 0 : gPortStageReplaceCount;
         s32 n = gTeamSel->stageCount, k, r;
@@ -680,10 +680,10 @@ void TeamSel_Init(s32 section) {
             if (n > 64) {
                 n = 64;
             }
-            for (k = 0; k < 96; k++) {
+            for (k = 0; k < 128; k++) {
                 sAllIds[k] = k < n ? gTeamSel->stageIds[k] : STGGRID_ID_EMPTY;
             }
-            for (k = 0; k < extra && n < 90; k++) {
+            for (k = 0; k < extra && n < 124; k++) {
                 sAllIds[n++] = (s32)gPortExtraStages[k];
             }
             for (r = 0; r < swaps; r++) {

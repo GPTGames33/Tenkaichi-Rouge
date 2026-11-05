@@ -189,6 +189,12 @@ int __wrap_Progress_Main(int arg) {
                         if (getenv("BT3_TEST_MODMGR")[4] != '\0') {
                             gProgress->mainMenuItem = 13;
                         }
+                    } else if (strcmp(getenv("BT3_TEST_MODMGR"), "select") == 0) {
+                        /* (=select: the versus mode's character select, 1P vs CPU, single battle (an online
+                           session opens it with 1P vs 2P); testing the stage select with BT3_PAD) */
+                        gProgress->mode = 39;
+                        *(int *)((char *)gProgress + 0x620) = 0;
+                        *(int *)((char *)gProgress + 0x624) = 0;
                     } else if (strcmp(getenv("BT3_TEST_MODMGR"), "creator") == 0) {
                         gPortDuelRole = 3; /* (=creator: the Custom Character screen, main menu item 13) */
                         gProgress->mode = 38;
