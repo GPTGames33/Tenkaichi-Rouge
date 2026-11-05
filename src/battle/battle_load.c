@@ -20,7 +20,12 @@
    files. Found 2026-10-08 while listing the file ids for added characters.) */
 #define PORT_ADDED_STAGE_FILE(stage) (0xD48 + 70000 + ((stage) - 0x24))
 #define BTL_STAGE_MODEL(stage) ((stage) >= 0x24 ? PORT_ADDED_STAGE_FILE(stage) : (stage) + BTL_FILE_STAGE)
-#define BTL_STAGE_BANK(stage) (((stage) >= 0x24 ? 0 : (stage)) + BTL_FILE_SND_STAGE)
+/* (a stage package may bring its own sound bank and split-screen model: port/src/plat_stages.c) */
+extern int Port_StageBankFile(int stage), Port_StageSplitFile(int stage), Port_StageTransitionFile(int from);
+extern int Port_StageValid(int stage);
+#define BTL_STAGE_BANK(stage) ((stage) >= 0x24 ? Port_StageBankFile(stage) : (stage) + BTL_FILE_SND_STAGE)
+#define BTL_STAGE_SPLIT(stage) (Battle_IsSplitScreen() ? Port_StageSplitFile(stage) : BTL_STAGE_MODEL(stage))
+static s32 sPortChangeFrom = -1; /* the stage an in-battle change leaves (its package may have its own scene) */
 #else
 #define BTL_STAGE_MODEL(stage) ((stage) + BTL_FILE_STAGE)
 #define BTL_STAGE_BANK(stage) ((stage) + BTL_FILE_SND_STAGE)
@@ -204,7 +209,7 @@ s32 BtlLoad_StepStageReload(BtlJob *job) {
            split-screen model would have belongs to other files (the menu archives, the stage transitions): it
            is loaded for split screen too. The disc's own stages keep their lighter split-screen model. */
         if (Battle_GetStage() >= 0x24) {
-            id = BTL_STAGE_MODEL(Battle_GetStage());
+            id = BTL_STAGE_SPLIT(Battle_GetStage());
         } else
 #endif
         if (Battle_IsSplitScreen()) {
@@ -247,6 +252,12 @@ s32 BtlLoad_StepStageChange(BtlJob *job) {
         job->state++;
         break;
     case 1:
+#ifdef PORT
+        /* PC build: a stage package's own scene of its destruction (a BT4 stage's, port/src/plat_stages.c) */
+        if (Port_StageTransitionFile(sPortChangeFrom) != 0) {
+            res->transition = File_Request3(Port_StageTransitionFile(sPortChangeFrom), NULL, 0);
+        } else
+#endif
         if (job->kind == 3) {
             res->transition = File_Request3(BTL_FILE_TRANSITION_3, NULL, 0);
         } else {
@@ -498,6 +509,14 @@ s32 BtlLoad_StepInitial(BtlJob *job) {
 
     switch (job->state) {
     case 0:
+#ifdef PORT
+        /* PC build: a replay or a set-up naming a stage added from outside the disc that this copy does not have
+           (its package removed, or another machine's): a disc stage instead of a model that is not there. */
+        if (!Port_StageValid(Battle_GetStartStage())) {
+            Battle_GetSetup()->rule.stage = 0;
+            Battle_GetSetup()->rule.curStage = 0;
+        }
+#endif
         res->sndCommon = File_Request3(BTL_FILE_SND_COMMON, NULL, 0);
         res->sndStage = File_Request3(BTL_STAGE_BANK(Battle_GetStartStage()), NULL, 0);
         res->sndChara[0] = File_Request3(CHARA_VOICE_FILE(BattleSide_GetStartChara(0), ((gSaveData->flags & SAVE_FLAG_VOICE) ? BTL_FILE_VOICE_ALT : BTL_FILE_VOICE), gSaveData->flags & SAVE_FLAG_VOICE), NULL, 0);
@@ -578,7 +597,7 @@ s32 BtlLoad_StepInitial(BtlJob *job) {
 #ifdef PORT
         /* PC build: see the note in the stage-swap job: an added stage has one model, for split screen too. */
         if (Battle_GetStartStage() >= 0x24) {
-            id = BTL_STAGE_MODEL(Battle_GetStartStage());
+            id = BTL_STAGE_SPLIT(Battle_GetStartStage());
         } else
 #endif
         if (Battle_IsSplitScreen()) {
@@ -666,6 +685,9 @@ s32 BtlLoad_RequestStageChange(s32 stage) {
     job->step = BtlLoad_StepStageChange;
     job->state = 0;
     job->kind = stage;
+#ifdef PORT
+    sPortChangeFrom = Battle_GetStage();
+#endif
     Battle_SetStage(stage);
     Job_Push((Job *)job);
     Fade_Start(2, 1, 1.0f);

@@ -354,7 +354,12 @@ s32 BtlScene_IsCharInView(s32 objId) {
 s32 BtlScene_IsStageFlagOn(void) {
     u8 *p;
 
+#ifdef PORT
+    extern int Port_StageRules(int stage); /* port/src/plat_stages.c: what an added stage counts as */
+    switch (Port_StageRules(Battle_GetStage())) {
+#else
     switch (Battle_GetStage()) {
+#endif
     case 3:
     case 15:
     case 16:
