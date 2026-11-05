@@ -1708,13 +1708,15 @@ static void rows_parts(std::vector<Row> &rows) {
     std::vector<J> cos;
     if (sSpec["costumes"].size()) { for (size_t i = 0; i < sSpec["costumes"].size(); i++) { cos.push_back(sSpec["costumes"][i]); } }
     else { cos.push_back(look()); }
-    for (int i = 0; i < 4; i++) {
+    int shownRows = (int)cos.size() + 1; // the costumes there are and one more (4 at least, up to 16)
+    shownRows = shownRows < 4 ? 4 : shownRows > 16 ? 16 : shownRows;
+    for (int i = 0; i < shownRows; i++) {
         Row r;
         r.label = "Costume " + std::to_string(i + 1);
         r.value = i < (int)cos.size() ? nm(cos[i], "?") : "none";
         r.sub = i == 0 ? "the look of your warrior" : i == sShownCostume && i < (int)cos.size() ? "shown" : "";
         r.face = i < (int)cos.size() ? chara_id(cos[i]) : -1;
-        r.tip = "Body, hair and clothes of a whole character. A warrior can have up to 4 costumes (L2 / R2 show them).";
+        r.tip = "Body, hair and clothes of a whole character. A warrior can have up to 16 costumes (L2 / R2 show them).";
         r.ok = [i] {
             open_grid("COSTUME " + std::to_string(i + 1) + ": WHOSE LOOK?", [i](const J *p) {
                 std::vector<J> list;
@@ -2768,11 +2770,11 @@ static void want_model(int key, int chara, int costume, const std::string &folde
 }
 static int sBuiltKey = -1, sBuiltAs = 0;
 static std::string sBuiltFolder;
-static void want_disc(const J &ref) { // a disc character's own model (key 1 + id * 8 + costume)
+static void want_disc(const J &ref) { // a disc character's own model (key 1 + id * 16 + costume)
     int id = chara_id(ref), costume = (int)ref["costume"].number(1) - 1;
     if (id < 0 || id >= 161) { return; }
-    costume = costume < 0 || costume > 3 ? 0 : costume;
-    want_model(1 + id * 8 + costume, id, costume, "");
+    costume = costume < 0 || costume > 15 ? 0 : costume;
+    want_model(1 + id * 16 + costume, id, costume, "");
 }
 static void model_frame(void) {
     // the grid's cursor, once it rested on a character of the disc: that one
@@ -2781,7 +2783,7 @@ static void model_frame(void) {
         if (sOv.back().cur < (int)items.size()) {
             const J &c = *items[(size_t)sOv.back().cur];
             int id = (int)c["id"].number(-1);
-            if (id >= 0 && id < 161) { want_model(1 + id * 8, id, 0, ""); return; }
+            if (id >= 0 && id < 161) { want_model(1 + id * 16, id, 0, ""); return; }
         }
     }
     if (sScreen == SC_HOME) {

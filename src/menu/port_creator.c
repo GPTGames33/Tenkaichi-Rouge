@@ -125,7 +125,7 @@ s32 PortCreator_Run(void) {
         BattleSetup_SetRule(0, 6, 8, 0, 1, Port_ModTestStage(), 0);
         BattleSetup_SetSide(0, 0, 0, 1, 1, 1, 0, NULL);
         BattleSetup_SetSide(1, 2, 1, 1, 1, 1, 0, NULL);
-        BattleSetup_SetMember(0, 0, testChara, testCostume >= 0 && testCostume < 4 ? testCostume : 0, 0, -1, 100.0f, noItems);
+        BattleSetup_SetMember(0, 0, testChara, testCostume >= 0 && testCostume < PORT_COSTUME_MAX ? testCostume : 0, 0, -1, 100.0f, noItems);
         BattleSetup_SetMember(1, 0, gMmTestFoe, 0, 0, -1, 100.0f, noItems);
         BattleSetup_Finish();
     }
