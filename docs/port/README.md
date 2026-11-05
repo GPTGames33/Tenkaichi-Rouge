@@ -4818,3 +4818,35 @@ the repository's own license). Its six files are `port/src/bt3_{zcounter2,bombar
   (it rewrites the player's characters folder), coming back from the test fight's pause menu.
 - Also: the screen reader's copy of `MainMenu` (port/src/a11y_game.c) had 12 items where the game has had 13 since
   the Mod Manager (the count and the ring's top were read 4 bytes off); it now has `MAINMENU_ITEM_MAX` (14).
+
+## The title screen's logo replaced (2026-11-05)
+
+Asked for by the user: their own logo ("Dragon Ball Super / Custom / Tenkaichi") in place of "Dragon Ball Z Budokai
+Tenkaichi 3" on the title / "Press START" screen.
+
+- **Where the logo is.** The title screen (`Title_Draw`, src/menu/menu_a_c.c: in the title's movie, a 512 x 256
+  texture of 256 colours drawn at 1:1 from the screen's top left, the logo from (105, 25) to (407, 232), alpha 0x7F
+  at most); the attract demo the title leaves for (the small copy in the top right corner over the fight, 256 x 128,
+  the logo from (75, 0) to (255, 124)); the opening movie's last shot (part of the video: not replaced). Not on the
+  publishers' pages, the copyright page or the main menu. Found with `BT3_TEX_DUMP` from the start into the demo.
+- **How.** `port/src/gs/title_logo.c`, called from `texture_get` (gs_draw.c) for each newly decoded paletted
+  texture: one of those two sizes is hashed (FNV-1a over the decoded pixels) and, when it is one of the logos
+  (`kLogos`, the US disc's), replaced the way a texture pack's file is (`replaced` = 1: filtered, sampled per output
+  pixel inside the piece's rectangle, alpha kept at or below the original's): an image of the original's layout at
+  SCALE times its size, transparent, with the new picture fitted inside the old logo's rectangle at its own
+  proportions, in the middle (Catmull-Rom, widened when made smaller; premultiplied). The game draws it exactly as
+  its own, the zoom as it comes in and the fades included, at the resolution the picture is rendered at. Nothing on
+  the disc changes. (Not an 8-bit texture put into the archive through `gamedata/mods`: 303 x 208 texels with 16
+  alpha levels would show the logo at the PS2's resolution.) The setting and SCALE are part of every paletted
+  texture's identity (`TitleLogo_Key`), so a change of either takes effect at once.
+- **The picture.** `title/logo.png` next to the game (any size, RGBA; the log says `bt3: title logo: title/logo.png`)
+  wins; else the one built into the program, `port/assets/title/logo.png` (1503 x 718), written into it as bytes by
+  undefined.py (`title_logo_png.h`, like the side bars). It was cut out of the user's picture on white by
+  `port/tools/title_logo.py`: the white connected to the borders flooded (through anything lighter than 48), the
+  outline's anti-aliased ramp made alpha with the white taken out of its colour, white inside the outline kept, the
+  blank canvas cropped.
+- **Setting** `title_logo` (bt3_settings.txt, 1 by default): 0 gives the game's own logo. `BT3_TITLE_LOGO_LOG=1`
+  prints the hash of every texture of a logo's size (another disc's logo would be added to `kLogos` that way).
+- A texture pack that has the logo wins over this (its lookup comes first).
+- Checked offscreen (Vulkan) from the start through the title into the attract demo at scale 2 (4:3, and a 1920 x
+  1080 window): the logo sharp with clean edges on the sky, its zoom-in and fades; `title_logo=0` the original.

@@ -28,6 +28,7 @@
 #include "menu_text.h"  /* editable labels in the original menu texture slots */
 #include "menu_labels.h"      /* European menu art and native language selector pictures */
 #include "mods.h"             /* the look script mods ask for (bt3.look) */
+#include "title_logo.h"       /* the title screen's logo replaced (title_logo.c) */
 #include <math.h>
 
 /* Stage-name overlay: defined here (C) so both the renderer (gs_gpu.c) and the game's menu (menu_c_e.c) can
@@ -809,6 +810,7 @@ static GsTex texture_get(int ctx) {
        texture identities when the artwork is still on "Original". */
     gen ^= MenuText_TexKey((int)tw, (int)th, bits <= 8, (int)tbp, (int)cbp, MenuText_RasterScale(SCALE));
     gen ^= bits <= 8 ? MenuLabels_ArtKey() : 0; /* the chosen language's menu art ready: decoded again */
+    gen ^= bits <= 8 ? TitleLogo_Key() : 0;     /* the title's logo replaced: its setting and SCALE in the identity */
     int toonSharp = sToonWanted ? Mods_Look()->shading : 0; /* (a fighter's shading ramp, redrawn: its own copy) */
     if (toonSharp > 0) { gen ^= 0x70017000u + (uint32_t)toonSharp * 0x9E3779B1u; }
     if (sTexPackOn && TexPack_Count() != 0) {
@@ -914,6 +916,11 @@ static GsTex texture_get(int ctx) {
                 sTexAvg[2] = sa > 0.0 ? (float)(sb / sa / 255.0) : 1.0f;
             }
         }
+    }
+    if (px != NULL && !replaced && bits <= 8 && TitleLogo_Swap(px, tw, th, &pack, &packMaxAlpha)) {
+        replaced = 1; /* the title's logo: another picture, made at SCALE (title_logo.c), drawn as a pack's file is */
+        rw = pack.w;
+        rh = pack.h;
     }
     if (px != NULL && !replaced && bits <= 8) {
         MenuLabels_ArtSwap((unsigned char *)px, (int)tw, (int)th); /* the European picture, in the chosen language */

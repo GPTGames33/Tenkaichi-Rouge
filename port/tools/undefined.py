@@ -244,6 +244,12 @@ def main():
     bars = "".join(f"static const unsigned char kBars{n.capitalize()}Png[] = {{" + ",".join(str(b) for b in (ROOT / "port/assets/bars" / (n + ".png")).read_bytes()) + "};\n"
                    for n in ("trim", "fill"))
     (gen / "bars_png.h").write_text("/* generated from port/assets/bars by port/tools/undefined.py */\n" + bars)
+    # the title screen's logo (port/assets/title/logo.png, made by title_logo.py), as bytes in the program too
+    logo = (ROOT / "port/assets/title/logo.png").read_bytes()
+    logo_h = ("/* generated from port/assets/title/logo.png by port/tools/undefined.py */\n"
+              "static const unsigned char kTitleLogoPng[] = {" + ",".join(str(b) for b in logo) + "};\n")
+    if not (gen / "title_logo_png.h").exists() or (gen / "title_logo_png.h").read_text() != logo_h:
+        (gen / "title_logo_png.h").write_text(logo_h)
     (gen / "shaders.h").write_text("/* generated from port/src/gs/shaders by port/tools/undefined.py */\n" + "".join(arrays))
     for f in sorted((ROOT / "port/src/gs").glob("*.c")):
         o = OBJ / ("gs_" + f.stem + ".o")
