@@ -41,13 +41,18 @@ MainMenu *gMainMenu = NULL;
    third sheet (PortMainMenu_AddSheet: a copy of the second with pixels of its own) whose first row is its label
    (label 16), drawn with the font list's line font in the main menu's own colours (port/src/gs/menu_text.c,
    Port_MainItemText); its icon is the Data Center's. Choosing it opens the Duel mode with gPortDuelRole 2, where
-   Duel_Main runs the manager's screen (menu/port_modmgr.c) instead of its own. */
+   Duel_Main runs the manager's screen (menu/port_modmgr.c) instead of its own.
+   "Custom Character" (item 13), listed after the Mod Manager: its label is the second row of the same third sheets
+   (label 17), its icon Evolution Z's; it opens the Duel mode with gPortDuelRole 3, which runs the Custom Character
+   screen (menu/port_creator.c, port/src/gs/creator_ui.cpp). Not listed in an online session (packages are not
+   used online). */
 
 #define MAINMENU_TBO 11
 #define MAINMENU_MOD_MANAGER 12
-s32 gPortDuelRole; /* the Duel screens (progress mode 38) are open for a screen of the PC's: 2 the Mod Manager */
-#define MM_LABEL(item) ((item) == MAINMENU_MOD_MANAGER ? 16 : (item)) /* whose label row an item shows */
-#define MM_ICON(item) ((item) == MAINMENU_MOD_MANAGER ? 7 : (item) == MAINMENU_TBO ? 4 : (item)) /* whose icon an item shows */
+#define MAINMENU_CREATOR 13
+s32 gPortDuelRole; /* the Duel screens (progress mode 38) are open for a screen of the PC's: 2 the Mod Manager, 3 Custom Character */
+#define MM_LABEL(item) ((item) == MAINMENU_MOD_MANAGER ? 16 : (item) == MAINMENU_CREATOR ? 17 : (item)) /* whose label row an item shows */
+#define MM_ICON(item) ((item) == MAINMENU_MOD_MANAGER ? 7 : (item) == MAINMENU_CREATOR ? 5 : (item) == MAINMENU_TBO ? 4 : (item)) /* whose icon an item shows */
 
 /* A third label sheet for a plate state (slot 8: not chosen, 12: chosen): the movie takes a label's sheet as the
    n-th entry behind the one in gMainMenu->tex[slot], so the two entries of the game are copied into a block with
@@ -266,7 +271,7 @@ void MainMenu_Init(s32 section) {
         if (i == 4 && !Port_NetMenuListed()) {
             continue;
         }
-        if (i == MAINMENU_TBO || i == MAINMENU_MOD_MANAGER) { /* (listed after the game's they follow, below) */
+        if (i == MAINMENU_TBO || i == MAINMENU_MOD_MANAGER || i == MAINMENU_CREATOR) { /* (listed after the game's they follow, below) */
             continue;
         }
 #else
@@ -284,6 +289,9 @@ void MainMenu_Init(s32 section) {
         }
         if (i == 9) {
             gMainMenu->items[gMainMenu->itemCount++] = MAINMENU_MOD_MANAGER;
+            if (!Port_NetSession()) {
+                gMainMenu->items[gMainMenu->itemCount++] = MAINMENU_CREATOR;
+            }
         }
 #endif
     }
@@ -293,9 +301,16 @@ void MainMenu_Init(s32 section) {
         PortMainMenu_WriteRuns(gMainMenu->tex[8] + 0x40, 3, sPortTboOff, sizeof(sPortTboOff) / sizeof(sPortTboOff[0]));
         PortMainMenu_WriteRuns(gMainMenu->tex[12] + 0x40, 3, sPortTboOn, sizeof(sPortTboOn) / sizeof(sPortTboOn[0]));
     }
-    /* the Mod Manager: the first row of the third sheets */
-    PortMainMenu_WriteText(PortMainMenu_AddSheet(8), 0, 0, "Mod Manager");
-    PortMainMenu_WriteText(PortMainMenu_AddSheet(12), 0, 1, "Mod Manager");
+    /* the Mod Manager and Custom Character: the first two rows of the third sheets */
+    {
+        u8 *off = PortMainMenu_AddSheet(8);
+        u8 *on = PortMainMenu_AddSheet(12);
+
+        PortMainMenu_WriteText(off, 0, 0, "Mod Manager");
+        PortMainMenu_WriteText(on, 0, 1, "Mod Manager");
+        PortMainMenu_WriteText(off, 1, 0, "Custom Character");
+        PortMainMenu_WriteText(on, 1, 1, "Custom Character");
+    }
 #endif
     gMainMenu->top = gMainMenu->itemCount - 1;
     for (i = 0; i < gMainMenu->itemCount; i++) {
@@ -666,6 +681,11 @@ void MainMenu_Input(s32 *result) {
             break;
         case MAINMENU_MOD_MANAGER: /* the Duel mode runs the manager's screen (menu_g_b.c) */
             gPortDuelRole = 2;
+            MAINMENU_COUNT();
+            MAINMENU_CHOOSE(38);
+            break;
+        case MAINMENU_CREATOR: /* the Duel mode runs the Custom Character screen (menu_g_b.c, menu/port_creator.c) */
+            gPortDuelRole = 3;
             MAINMENU_COUNT();
             MAINMENU_CHOOSE(38);
             break;

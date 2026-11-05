@@ -112,7 +112,7 @@ s32 Progress_Main(s32 arg) {
             extern s32 gPortDuelRole;
 
             if (gPortModTest && (reason & 0x10)) {
-                gPortDuelRole = 2;
+                gPortDuelRole = gPortModTest == 2 ? 3 : 2; /* (2: the Custom Character screen's: menu/port_creator.c) */
                 gProgress->mode = 38;
             }
             gPortModTest = 0;

@@ -4778,3 +4778,42 @@ the repository's own license). Its six files are `port/src/bt3_{zcounter2,bombar
   the fixes off and with them on (on, the CPU fighters never reach the Z Counter's movement input: no capture; the
   demo is not a replay). A fight with the fixes on, played by a person, is still to be done (the package's author did
   not play one either).
+
+## Custom Character in the game (2026-11-05)
+
+- **Main menu item 13, "Custom Character"** (after the Mod Manager; label 17 = the second row of the third label
+  sheets, `PortMainMenu_WriteText`; Evolution Z's icon; not listed in an online session). It opens the Duel mode
+  with `gPortDuelRole 3` (`src/menu/menu_g_b.c`), which runs `PortCreator_Run` (`src/menu/port_creator.c`): the
+  Mod Manager's backdrop and platform, and the Character Reference's viewer for the model (`Mm_ViewWantPreview`,
+  `Mm_ViewTurn` in `port_modmgr.c`).
+- **The screen** is `port/src/gs/creator_ui.cpp`, drawn with Dear ImGui into the background list on the render
+  thread (`Creator_Frame`, from `ui.cpp`): title, tabs WARRIOR / PARTS / MOVES / FORMS / SAVE & PLAY (L1 / R1), the
+  list (d-pad, cross, circle, square, triangle; left / right on numbers), the character grid with BT3 / BT4 / ALL and
+  typed search (the model shows whom the cursor rests on), the on-screen keyboard (and the physical one), the
+  textures' swatches and a palette for colours, the forms list, the tip box with a host, the button prompts (the
+  keyboard's keys once it was used last: Enter, Esc, F, R, Q / E, Z / C, Ctrl+S; A / D or the right stick or a mouse
+  drag turn the model; L2 / R2 show the other costumes). While it is open the game gets no input (`gPortOverlayOpen`)
+  and Esc is its "back".
+- **It is a client of `port/tools/creator/creator.py`** (the same JSON API as `index.html`). A creator answering
+  `/api/version` on 127.0.0.1:`creator_port` (8765) is used; otherwise the game starts one hidden
+  (`py -3`, `python`, `pythonw`, `python3`; output in `custom_fighters/.ingame_creator_log.txt`) in a job object
+  that ends it with the game. The script: setting `creator_path` (the file or a folder of the repository), else
+  `<game>/../Tenkaichi3Decomp`, `<game>/../../Tenkaichi3Decomp`, the game folder, or beside `port/build`. Requests
+  run on two worker threads (WinHTTP; a socket elsewhere): requests in order, portraits (from the creator's cache
+  files `custom_fighters/.cache/face_NNN.png`, else `/face/<id>.png`).
+- **The model is the game's own**: `/api/preview` (new) builds the warrior's current look (one costume: pieces,
+  colours, animations) into `custom_fighters/.cache/preview/<hash>/`, which `PortCharas_Preview` serves for the
+  disc character it is shown as while the viewer shows that character. A look waits a third of a second of rest;
+  only the newest waiting one is built.
+- **Add to roster** = `/api/package`, then `PortCharas_Reload` on the game's thread: the cell is on the character
+  select at once. **Test fight** (SAVE & PLAY) leaves for a training fight with the added character
+  (`gPortModTest 2`: its pause menu says "Return to Custom Character" and comes back to the same warrior).
+- Testing: `BT3_TEST_MODMGR=creator` opens the screen at once (`=menucreator`: the main menu on its item),
+  `BT3_CREATOR_SCRIPT=<frame>:<button>,...` presses buttons (up down left right ok back sq tri l1 r1 l2 r2 start,
+  `type=<text>`), `BT3_CREATOR_PORT` another port. Checked from the window's picture (`BT3_UI_SHOT`, Vulkan): the
+  main menu's item, My Fighters, every tab, the grid, the keyboard, the colours (a colour changed: the model rebuilt
+  in the new colour), a new warrior from a body, leaving to the main menu, starting the creator when none answered
+  (and its end with the game), the test fight. Not checked: a controller, typing on a real keyboard, Add to roster
+  (it rewrites the player's characters folder), coming back from the test fight's pause menu.
+- Also: the screen reader's copy of `MainMenu` (port/src/a11y_game.c) had 12 items where the game has had 13 since
+  the Mod Manager (the count and the ring's top were read 4 bytes off); it now has `MAINMENU_ITEM_MAX` (14).

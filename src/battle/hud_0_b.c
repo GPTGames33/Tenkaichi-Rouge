@@ -236,10 +236,11 @@ u16 *BtlMenu_GetItemText(s32 n) {
     static const char from[] = "Return to Character Select";
     static const char toTbo[] = "Back to Budokai Online";
     static const char toManager[] = "Return to Mod Manager"; /* (the Mod Manager's test fight goes back to it) */
+    static const char toCreator[] = "Return to Custom Character"; /* (and the Custom Character screen's: gPortModTest 2) */
     static u16 line[32];
     extern s32 gPortTboSpar; /* menu/port_tbo.c */
     extern s32 gPortModTest; /* menu/port_modmgr.c */
-    const char *to = gPortTboSpar ? toTbo : toManager;
+    const char *to = gPortTboSpar ? toTbo : gPortModTest == 2 ? toCreator : toManager;
     u16 *s;
 
     if (n >= 0x6FFE) { /* the port's own (port/src/spec_menu.c): a lobby's "Back to the Lobby" (0x6FFE), a spectator's

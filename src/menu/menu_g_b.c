@@ -23,6 +23,7 @@ s32 Duel_Mode41(s32 arg);
 #ifdef PORT
 extern s32 gPortDuelRole;
 extern s32 PortModMgr_Run(void);
+extern s32 PortCreator_Run(void);
 #endif
 s32 Duel_Main(void) {
     s32 bgm = 0;
@@ -46,6 +47,14 @@ s32 Duel_Main(void) {
             gProgress->mode = 4;
             result = 0;
         }
+        done = 1;
+    }
+    if (gPortDuelRole == 3) { /* opened from the main menu's Custom Character item (menu/port_creator.c): the same way */
+        Bgm_Play(0x10B16 + 2);
+        result = PortCreator_Run();
+        Adx_StopAll();
+        gPortDuelRole = 0;
+        gProgress->mode = result ? 45 : 4; /* (left for a test fight: a training battle is set up) */
         done = 1;
     }
 #endif

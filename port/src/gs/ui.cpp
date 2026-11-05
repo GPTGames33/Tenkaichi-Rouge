@@ -115,6 +115,9 @@ static void spec_view_next(void);               // watching a match: the next vi
 void ModsUi_Tab(void);                          // gs/mods_ui.cpp: the settings window's Mods tab
 void ModsUi_Draw(void);                         // ... the script mods' shapes over the picture
 extern "C" int Mods_HudActive(void);            // gs/mods.c: they drew something at the last blank
+bool Creator_Frame(bool input);                 // gs/creator_ui.cpp: the Custom Character screen (main menu item 13)
+bool Creator_Typing(void);                      // ... it takes typed letters now
+extern "C" int PortCreator_Active(void);        // ... it is open (its keyboard and controller are its own)
 static const char *spec_view_name(int view);
 static int sForceTab = -1;                     // BT3_UI_OPEN=<tab>: open at start on that tab (testing)
 static int sCapKind, sCapPlayer, sCapAction;   // waiting for a key (1) or a controller button (2) to bind
@@ -612,7 +615,7 @@ int Ui_Init(SDL_Window *window, SDL_GPUDevice *device, void *gl_context, const c
 // The game gets nothing from keyboard or controller while the window or the exit question is up; and the button
 // that closed either is not the game's.
 static void input_owner(void) {
-    int up = sOpen || sQuit;
+    int up = sOpen || sQuit || PortCreator_Active();
     if (gPortOverlayOpen && !up) {
         PortInput_Swallow();
     }
@@ -1241,6 +1244,11 @@ int Ui_Event(const SDL_Event *ev) {
             sQuitNo = sQuitNo || !ev->key.repeat; // (taken away where it is drawn)
             return 1;
         }
+        ImGui_ImplSDL3_ProcessEvent(ev);
+        return ev->type == SDL_EVENT_KEY_DOWN || ev->type == SDL_EVENT_KEY_UP || ev->type == SDL_EVENT_TEXT_INPUT ||
+               ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN || ev->type == SDL_EVENT_MOUSE_BUTTON_UP || ev->type == SDL_EVENT_MOUSE_WHEEL;
+    }
+    if (!sOpen && !sQuit && PortCreator_Active()) { // the Custom Character screen: its keys, letters and mouse (Esc is its "back")
         ImGui_ImplSDL3_ProcessEvent(ev);
         return ev->type == SDL_EVENT_KEY_DOWN || ev->type == SDL_EVENT_KEY_UP || ev->type == SDL_EVENT_TEXT_INPUT ||
                ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN || ev->type == SDL_EVENT_MOUSE_BUTTON_UP || ev->type == SDL_EVENT_MOUSE_WHEEL;
@@ -2975,7 +2983,7 @@ static bool frame_build(void) {
     PortInput_TboClipboard();
     { // a keypad of Tenkaichi Budokai Online takes text: the system's text input is on for it (letters as typed)
         static SDL_Window *on = NULL;
-        SDL_Window *want = gPortTboTyping && !sOpen && !sQuit && !sChat ? SDL_GetKeyboardFocus() : NULL;
+        SDL_Window *want = (gPortTboTyping || Creator_Typing()) && !sOpen && !sQuit && !sChat ? SDL_GetKeyboardFocus() : NULL;
         if (want != on) {
             if (on != NULL) { SDL_StopTextInput(on); }
             if (want != NULL) { SDL_StartTextInput(want); }
@@ -3037,11 +3045,19 @@ static bool frame_build(void) {
     bool saving = save_icon_on(now) && sReady && gUiPresentW > 0 && gUiPresentH > 0;
     bool watched = sReady && Port_NetWatchers() > 0 && !sOpen;  // a player's: who watches the match
     bool mods = sReady && Mods_HudActive();                      // the script mods drew over the picture (gs/mods.c)
+    bool creator = sReady && PortCreator_Active();               // the Custom Character screen (gs/creator_ui.cpp)
+    { // (its opening and closing: the game's input is not the game's while it is up)
+        static bool was;
+        if (creator != was) {
+            was = creator;
+            input_owner();
+        }
+    }
     meter_count();
     sBuilt = false;
     bool upd = updLine[0] != '\0';
     UiA11y_Frame(sReady && sOpen && !sQuit, !sQuit); // (the screen reader in the windows: ui_a11y.cpp)
-    if (!sReady || (!sOpen && !sQuit && !notice && !overlay && !meter && !names && !bars && !chat && !banner && !saving && !watched && !upd && !mods)) {
+    if (!sReady || (!sOpen && !sQuit && !notice && !overlay && !meter && !names && !bars && !chat && !banner && !saving && !watched && !upd && !mods && !creator)) {
         return false;
     }
     if (sPadHold && sCapKind != 2) { // a binding was taken: the controller works the window again once nothing is held
@@ -3059,10 +3075,15 @@ static bool frame_build(void) {
     }
     // (the button that becomes the binding would also press the row it is bound in; while a chat line is typed the
     // controller is the game's)
-    if (sPadHold || (sChat && !sOpen)) {
+    if (sPadHold || (sChat && !sOpen) || (creator && !sOpen && !sQuit)) { // (the Custom Character screen reads its buttons itself)
         ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
     } else {
         ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    }
+    if (creator && !sOpen && !sQuit) {
+        ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
+    } else {
+        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     }
     sBuilt = true;
     if (sGL) {
@@ -3077,13 +3098,16 @@ static bool frame_build(void) {
     // The mouse pointer is hidden over the game's picture and shown with a window of this file that takes the mouse:
     // the settings, the online windows, the question before the game closes, a chat line being typed (setting
     // hide_pointer, on unless 0). The SDL back end hides it for this cursor at the next frame.
-    if (!sOpen && !sQuit && !sChat && Port_Setting("hide_pointer", 1) != 0) {
+    if (!sOpen && !sQuit && !sChat && !creator && Port_Setting("hide_pointer", 1) != 0) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_None);
     }
     if (bars) {
         bars_draw();
     }
     ModsUi_Draw(); // (the script mods' shapes over the picture: gs/mods_ui.cpp)
+    if (creator) {
+        Creator_Frame(!sOpen && !sQuit); // (under the settings window, which has the input while it is open)
+    }
     if (sOpen) {
         if (sNet) {
             build_net();

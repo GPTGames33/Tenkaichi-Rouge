@@ -176,6 +176,8 @@ void Mm_Align(s32 align);  /* 0 from x on, 1 centred on x, 2 up to x */
 void Mm_ViewOpen(void);
 void Mm_ViewClose(void);
 void Mm_ViewWant(s32 key, s32 chara, s32 costume, s32 mod, s32 rested);
+void Mm_ViewWantPreview(s32 key, s32 chara, s32 costume); /* the Custom Character screen's (port_creator.c) */
+void Mm_ViewTurn(f32 d);
 s32 Mm_ViewReady(void);
 s32 Mm_ViewKey(void);
 void Mm_ViewDraw(f32 cx, f32 feet, f32 height);

@@ -239,6 +239,38 @@ class App:
         m = self._model
         return {k: m.get(k) for k in ("positions", "normals", "uvs", "indices", "groups", "textures", "bbox", "notes")}
 
+    def preview(self, spec, costume=0):
+        """For the game's own Custom Character screen (port/src/gs/creator_ui.cpp): one costume of the warrior as it
+        is now - its model, with pieces and colours, and its animations - in a folder the game shows on its
+        platform as a package's preview (PortCharas_Preview). -> {"folder", "as": the disc character it is shown
+        as, "notes"}. A folder per look (named by it), the last few kept: a model being read is never rewritten."""
+        import hashlib, os, shutil
+        spec = dict(spec, name=spec.get("name") or "preview")
+        f = cf.Fighter(self.disc, spec, "preview")
+        look = f.costumes[min(max(costume, 0), len(f.costumes) - 1)]
+        key = json.dumps([list(look)] + [spec.get(k) for k in (
+            "parts", "colours", "body", "moveset", "moves", "melee", "ki_blasts", "voice", "names")], sort_keys=True)
+        h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+        root = self.cache / "preview"
+        out = root / h
+        if not (out / "preview_1p.pak").exists():
+            tmp = root / (h + ".part")
+            tmp.mkdir(parents=True, exist_ok=True)
+            (tmp / "preview_1p.pak").write_bytes(f.model(look, False).bytes())
+            (tmp / "preview_anm.pak").write_bytes(f.anims().bytes())
+            (tmp / "character.txt").write_text("# the Custom Character screen's preview (not a character)\nformat=1\n"
+                                               f"base={f.base[0]}\n", encoding="utf-8")
+            if out.exists():
+                shutil.rmtree(out, ignore_errors=True)
+            tmp.replace(out)
+            old = sorted((d for d in root.iterdir() if d.is_dir() and d != out), key=lambda d: d.stat().st_mtime)
+            for d in old[:-5]:
+                shutil.rmtree(d, ignore_errors=True)
+        else:
+            os.utime(out)
+        shown = look[0] if not cf.is_bt4(look[0]) else f.base[0]
+        return {"folder": str(out), "as": shown, "notes": list(f.notes)}
+
     def layer_nodes(self, spec):
         """For the Workshop: the strands (nodes) of every piece layer, and the body's own parts."""
         import mix
@@ -570,6 +602,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.send(200, {"text": a.uninstall(body["file"])})
                 if act == "/api/package":
                     return self.send(200, {"text": a.package(body["file"])})
+                if act == "/api/preview":
+                    return self.send(200, a.preview(body["spec"], int(body.get("costume", 0))))
                 if act == "/api/layernodes":
                     return self.send(200, a.layer_nodes(body["spec"]))
                 if act == "/api/fxcolours":

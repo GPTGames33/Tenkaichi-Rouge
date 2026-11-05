@@ -57,7 +57,7 @@ extern void Save_UnlockAll(void *opt);
 extern int Port_NetSession(void); /* gs/net.c */
 extern int Port_NetWarp(void);
 extern void Port_NetArrived(void);
-extern struct { int unk0[2]; int loadPack, loadRes, loadSprites; int flags; int mode; } GAME_PTR gProgress; /* include/menu/menu_a.h */
+extern struct { int unk0[2]; int loadPack, loadRes, loadSprites; int flags; int mode; int unk1C[4]; int mainMenuItem; } GAME_PTR gProgress; /* include/menu/menu_a.h */
 static int sNetEntered;
 /* The vertical blank at which the session's start-up was over (0: not yet). Part of the game's state like the rest
    of this file's variables, so it goes back with a rollback: it is always what the blanks as they were last run
@@ -179,13 +179,19 @@ int __wrap_Progress_Main(int arg) {
                 }
             }
             {   /* BT3_TEST_MODMGR=1 (testing): the Mod Manager at once, as its main-menu item opens it (the Duel mode with
-                   gPortDuelRole 2: src/menu/menu_g_b.c); =menu: the main menu */
+                   gPortDuelRole 2: src/menu/menu_g_b.c); =menu: the main menu; =creator: the Custom Character screen */
                 static int entered;
                 if (!entered && getenv("BT3_TEST_MODMGR") != NULL && gProgress != NULL && gSaveData != NULL && !Port_NetSession()) {
                     extern int gPortDuelRole;
                     entered = 1;
-                    if (strcmp(getenv("BT3_TEST_MODMGR"), "menu") == 0) {
-                        gProgress->mode = 4; /* (=menu: the main menu, where its item is) */
+                    if (strcmp(getenv("BT3_TEST_MODMGR"), "menu") == 0 || strcmp(getenv("BT3_TEST_MODMGR"), "menucreator") == 0) {
+                        gProgress->mode = 4; /* (=menu: the main menu, where its item is; =menucreator: on Custom Character's) */
+                        if (getenv("BT3_TEST_MODMGR")[4] != '\0') {
+                            gProgress->mainMenuItem = 13;
+                        }
+                    } else if (strcmp(getenv("BT3_TEST_MODMGR"), "creator") == 0) {
+                        gPortDuelRole = 3; /* (=creator: the Custom Character screen, main menu item 13) */
+                        gProgress->mode = 38;
                     } else {
                         gPortDuelRole = 2;
                         gProgress->mode = 38;

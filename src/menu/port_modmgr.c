@@ -1009,6 +1009,46 @@ void Mm_ViewWant(s32 key, s32 chara, s32 costume, s32 mod, s32 rested) {
     sMvShown = key;
 }
 
+/* The Custom Character screen's model (menu/port_creator.c): as Mm_ViewWant, with the files of the warrior being made
+   (the creator's preview folder, put in place by PortCreator_ApplyPreview: port/src/gs/creator_ui.cpp) or, with none,
+   the disc character's own. Its turn stays where the player turned it (Mm_ViewTurn). */
+void Mm_ViewWantPreview(s32 key, s32 chara, s32 costume) {
+    extern s32 PortCreator_ApplyPreview(s32 key);
+
+    if (!ChrView_PortInitDone()) {
+        return;
+    }
+    Job_Run(); /* (the viewer's reads) */
+    if (key == sMvShown || ChrView_IsLoading()) {
+        return;
+    }
+    if (key < 0) {
+        ChrView_Hide();
+        PortCreator_ApplyPreview(-1);
+    } else {
+        PortCreator_ApplyPreview(key);
+        ChrView_Show(chara, costume, 0);
+        sMvChara = chara;
+        if (sMvYaw == 0.0f) {
+            sMvYaw = MM_VIEW_YAW;
+        }
+    }
+    sMvShown = key;
+}
+
+/* Turns the model of Mm_ViewDraw by `d` (radians). */
+void Mm_ViewTurn(f32 d) {
+    sMvYaw += d;
+    if (sMvYaw > 6.2831853f) {
+        sMvYaw -= 6.2831853f;
+    } else if (sMvYaw < 0.0f) {
+        sMvYaw += 6.2831853f;
+    }
+    if (sMvYaw == 0.0f) {
+        sMvYaw = 0.0001f;
+    }
+}
+
 /* 1 while the model is there to be drawn. */
 s32 Mm_ViewReady(void) {
     return ChrView_PortInitDone() && sMvShown >= 0 && ChrView_IsVisible() && gChrView->cur != NULL && !ChrView_IsLoading();
