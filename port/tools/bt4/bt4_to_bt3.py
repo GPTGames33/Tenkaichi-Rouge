@@ -15,6 +15,9 @@ characters of both games part by part (map_stats.py); `c` = BT4 character, k = c
                                                        - 21 (0x16, talk table): 1040 bytes in BT4 (252 opponents
                                                          instead of 162) -> remapped by opponent id
                                                        - 22 (0x17, chains) stays in the model pack, part 22
+                                                       - 23 (0x18, techniques): the partner a rush brings in is
+                                                         where BT4 keeps it -> put where BT3 reads it
+                                                         (super_bt4_to_bt3)
                                                        - 25 (0x1A) is empty in BT3; BT4's model part 25 is a BT4 extra
   28..34, 36..39          model extras                 model pack part i
   35     (0x24)           "aC" table                   0xF3C + c (raw file)
@@ -149,6 +152,45 @@ def talk_bt3_to_bt4(t3):
     return bytes(out) + b'\0' * (BLOB[21][1] - len(out))
 
 
+# --- technique table (part 23, entry 0x18: Blast 2 x 2 + Ultimate, arrays of 3; include/battle/btl_tech_b.h) ------
+# The partner a rush sequence brings in (a character, or an object 0x100..: file 0xC1C + id) sits elsewhere in BT4.
+# BT3 (BtlSuper_GetThrowChara / GetThrowCostume, 0x211718 / 0x2117C0): s16 throwChara[3] at 0x208 and
+# throwCharaAlt[3] at 0x20E (the one taken when the user is that character), -1 = none. Team BT4 rewrote both
+# functions: s16 [costume 0..3][slot] at 0x244 (past the end of BT3's table) and u8 costume [slot][costume] at 0x208.
+# Left as it was, BT3 read 0 at 0x208 in nearly every BT4 technique: Goku (Early) as a partner of every rush, with
+# no step of the sequence (+0x220, -2) to take him in or let him go, so the change request stayed open and time
+# stood still for good once an Ultimate connected (the "freeze after BT4 Ultimates").
+SUPER_PARTNER_BT3, SUPER_PARTNER_ALT_BT3, SUPER_PARTNER_BT4, SUPER_STEP, SUPER_STEPS = 0x208, 0x20E, 0x244, 0x220, 0x159
+OBJECT_IDS = range(0x100, 0x12C)       # objects with a file (0xC1C + id: 0xD1C..0xD47, the first archive's last)
+
+
+def super_partner_bt4_to_bt3(v):
+    """A BT4 partner id as BT3's: a character both games have, an object, or -1 (none, or a BT4-only character)."""
+    if v < 0:
+        return -1
+    if v < 0x100:
+        return BT4_TO_BT3.get(v, -1)
+    return v if v in OBJECT_IDS else -1
+
+
+def super_bt4_to_bt3(t, costume):
+    """BT4's technique table with the partners where BT3 reads them (this costume's); a partner that cannot be
+    brought in (none in BT3, or no step of the sequence for it) is none, and so is that step. BT4's partner
+    costumes have no place in BT3: the partner comes in its first costume (as BT3's own do)."""
+    t = bytearray(t)
+    if len(t) < SUPER_PARTNER_BT4 + 24:
+        return bytes(t)
+    for j in range(3):
+        v = super_partner_bt4_to_bt3(struct.unpack_from('<h', t, SUPER_PARTNER_BT4 + ((costume & 3) * 3 + j) * 2)[0])
+        step, steps = struct.unpack_from('<b', t, SUPER_STEP + j)[0], max(1, struct.unpack_from('<b', t, SUPER_STEPS + j)[0])
+        if v < 0 or not 0 <= step < steps:
+            v = -1
+            struct.pack_into('<b', t, SUPER_STEP + j, -2)
+        struct.pack_into('<h', t, SUPER_PARTNER_BT3 + j * 2, v)
+        struct.pack_into('<h', t, SUPER_PARTNER_ALT_BT3 + j * 2, v)
+    return bytes(t)
+
+
 # --- BT4 -> BT3 ---------------------------------------------------------------------------------------------------
 class BT4Chars:
     def __init__(self, disc):
@@ -182,6 +224,7 @@ def bt3_model_pack(bt4disc, c, costume, damaged=False):
     blob = p3[1]
     for i, (o, n) in BLOB.items():
         parts[i] = talk_bt4_to_bt3(blob[o:o + n]) if i == 21 else blob[o:o + n]
+    parts[23] = super_bt4_to_bt3(parts[23], costume)
     parts[35] = raw_part(s.raw(s.ch.file_id('data_f3c', c)))
     cam = pack_split(p3[2])
     for j in range(3):
@@ -211,7 +254,15 @@ def bt3_voice_files(bt4disc, c, bt3_c):
     """{BT3 file id: bytes} of BT4 character c's voice, for BT3 character slot bt3_c: two banks, 2 x 100 lines.
     Lines and banks are plain copies (ADX / IECS banks, same formats); a placeholder (empty) line is skipped."""
     s = _src(bt4disc)
-    out = {BT3_BANK_US + bt3_c: s.raw(BT4_BANK_US + c), BT3_BANK_JP + bt3_c: s.raw(BT4_BANK_JP + c)}
+    us, jp = s.raw(BT4_BANK_US + c), s.raw(BT4_BANK_JP + c)
+    # A bank is a pack. Some BT4 characters have a lone ADX line in one language's bank slot (Time Patroller's
+    # English one): the game read it as a bank and crashed loading the fight (Snd_LoadBank, SndHd_GetVagInfo).
+    # That language then takes the other one's bank.
+    if not is_pack(us) and is_pack(jp):
+        us = jp
+    elif not is_pack(jp) and is_pack(us):
+        jp = us
+    out = {BT3_BANK_US + bt3_c: us, BT3_BANK_JP + bt3_c: jp}
     for l in range(LINES):
         for b3, b4 in ((BT3_LINE_US, BT4_LINE_US), (BT3_LINE_JP, BT4_LINE_JP)):
             d = s.raw(b4 + c * LINES + l)
