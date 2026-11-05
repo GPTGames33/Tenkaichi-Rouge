@@ -233,10 +233,11 @@ class App:
         if getattr(self, "_model_key", None) != key:
             pack = f.model(look, False)
             self._model = mdl.extract(pack.bytes(), pose="relaxed", hide_optional=True)
+            self._model["notes"] = list(f.notes)  # (layers that could not be put on)
             self._model_pack = pack
             self._model_key = key
         m = self._model
-        return {k: m[k] for k in ("positions", "normals", "uvs", "indices", "groups", "textures", "bbox")}
+        return {k: m.get(k) for k in ("positions", "normals", "uvs", "indices", "groups", "textures", "bbox", "notes")}
 
     def layer_nodes(self, spec):
         """For the Workshop: the strands (nodes) of every piece layer, and the body's own parts."""

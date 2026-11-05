@@ -92,7 +92,7 @@
     background: #2a1a55; border: 2px solid #cdbdff; font-size: 11px; }
 
   /* picker */
-  #pick { position: absolute; inset: 0; background: rgba(10, 5, 30, 0.72); display: none; }
+  #pick { position: absolute; inset: 0; background: rgba(10, 5, 30, 0.72); display: none; z-index: 6; }
   #pickbox { position: absolute; left: 60px; right: 60px; top: 40px; bottom: 40px; background: var(--panel); border: 3px solid var(--edge);
     border-radius: 12px; display: flex; flex-direction: column; padding: 12px 16px; }
   #pickhead { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
@@ -241,6 +241,7 @@ async function loadModel() {
         texs[t.index] = tx; res(); }; img.onerror = res; img.src = "data:image/png;base64," + t.png; })));
     if (V.model) V.gl.deleteVertexArray(V.model.vao);
     V.model = {vao, groups: m.groups, texs, bbox: m.bbox};
+    if (m.notes && m.notes.length) toast("Some pieces could not be put on:\n" + m.notes.join("\n"), true);
     $("view3d").classList.add("on"); $("hero").style.display = "none";
   } catch (e) { V.key = ""; $("view3d").classList.remove("on"); $("hero").style.display = ""; toast(e.message, true); }
   V.loading = false;
@@ -282,15 +283,16 @@ function hero() {
 }
 
 // -------------------------------------------------------------------------------------------- pickers
-let pickDone = null, pickGame = "All";
+let pickDone = null, pickGame = "All", pickSeq = 0;
 function openPick(title, onPick, opts = {}) {
+  pickSeq++;
   $("pick").classList.remove("side");
   pickGame = opts.game || "All";
   $("picktitle").textContent = title; $("pick").style.display = "block"; $("pickfilter").value = "";
   $("grid").style.display = "grid"; $("picklist").style.display = "none";
   pickDone = onPick; drawGrid(opts); $("pickfilter").oninput = () => drawGrid(opts); $("pickfilter").focus();
 }
-function closePick() { $("pick").style.display = "none"; $("pick").classList.remove("side"); pickDone = null; }
+function closePick() { pickSeq++; $("pick").style.display = "none"; $("pick").classList.remove("side"); pickDone = null; }
 function drawGrid(opts) {
   const q = $("pickfilter").value.toLowerCase();
   const items = [];
@@ -535,12 +537,14 @@ function wsPrune() {
   for (const k of Object.keys(spec.parts || {})) for (const l of [].concat(spec.parts[k])) if (l && l.adjust) { clean(l.adjust); if (!Object.keys(l.adjust).length) delete l.adjust; }
 }
 async function openWorkshop(piece, layer = 0) {
+  const seq = ++pickSeq;
   WS.piece = piece; WS.layer = layer; WS.node = null; $("pick").classList.add("side");
   $("picktitle").textContent = "WORKSHOP"; $("pick").style.display = "block"; $("grid").style.display = "none";
   $("picknone").style.display = "none"; $("pickgames").innerHTML = "";
   const L = $("picklist"); L.style.display = "block";
   L.innerHTML = `<div class="sec">READING THE PARTS...</div>`;
-  try { WS.info = await api("/api/layernodes", {spec}); } catch (e) { L.innerHTML = `<div class="sec">${esc(e.message)}</div>`; return; }
+  try { WS.info = await api("/api/layernodes", {spec}); } catch (e) { if (seq === pickSeq) L.innerHTML = `<div class="sec">${esc(e.message)}</div>`; return; }
+  if (seq !== pickSeq) return;
   drawWorkshop();
 }
 const FMT = {pct: v => Math.round(v * 100) + "%", pct100: v => Math.round(v) + "%", deg: v => Math.round(v) + "°", num: v => (+v).toFixed(1)};
@@ -597,13 +601,15 @@ function drawWorkshop() {
   tip("Stretch it, move it, turn it! Your warrior changes as you go. Esc when done.");
 }
 async function openFx(what, label) {
+  const seq = ++pickSeq;
   $("pick").classList.add("side");
   $("picktitle").textContent = "ATTACK COLOURS"; $("pick").style.display = "block"; $("grid").style.display = "none";
   $("picknone").style.display = "none"; $("pickgames").innerHTML = "";
   const L = $("picklist"); L.style.display = "block";
   L.innerHTML = `<div class="sec">${esc(label.toUpperCase())}: READING ITS EFFECTS...</div>`;
   let r;
-  try { r = await api("/api/fxcolours", {spec, what}); } catch (e) { L.innerHTML = `<div class="sec">${esc(e.message)}</div>`; return; }
+  try { r = await api("/api/fxcolours", {spec, what}); } catch (e) { if (seq === pickSeq) L.innerHTML = `<div class="sec">${esc(e.message)}</div>`; return; }
+  if (seq !== pickSeq) return;
   const changes = (spec.attack_colours || {})[what] || [];
   L.innerHTML = `<div class="sec">${esc(label.toUpperCase())}</div>` +
     (r.png ? `<img src="data:image/png;base64,${r.png}" style="max-width:100%;border-radius:6px;margin:6px 0;display:block">` : "") +
@@ -624,13 +630,15 @@ async function openFx(what, label) {
   tip("Pick a colour of the attack, then its new colour. The picture shows its textures and colours.");
 }
 async function openColours() {
+  const seq = ++pickSeq;
   $("pick").classList.add("side");
   $("picktitle").textContent = "COLOURS"; $("pick").style.display = "block"; $("grid").style.display = "none";
   $("picknone").style.display = "none"; $("pickgames").innerHTML = "";
   const L = $("picklist"); L.style.display = "block";
   L.innerHTML = `<div class="sec">READING YOUR WARRIOR'S TEXTURES...</div>`;
   let tex;
-  try { tex = await api("/api/colours", {spec}); } catch (e) { L.innerHTML = `<div class="sec">${esc(e.message)}</div>`; return; }
+  try { tex = await api("/api/colours", {spec}); } catch (e) { if (seq === pickSeq) L.innerHTML = `<div class="sec">${esc(e.message)}</div>`; return; }
+  if (seq !== pickSeq) return;
   const changes = spec.colours || [];
   L.innerHTML = `<div class="sec">PICK A COLOUR OF A TEXTURE, THEN ITS NEW COLOUR</div>` + tex.map(t => `
     <div class="row" style="grid-template-columns: 76px 1fr auto; cursor: default">

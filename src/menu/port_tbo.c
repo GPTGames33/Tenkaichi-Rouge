@@ -55,12 +55,14 @@ static s32 Port_EscTake(void) {
 }
 
 /* The fighters' names (Train While Waiting's choice), by character id. */
-static const char *const sTbNames[];
+/* (text, not pointers: a table of 4-byte pointers declared ahead of its size was read 8 bytes an entry here, two
+   names as one address: a crash when an added fighter's form is a disc character) */
+static const char sTbNames[161][48];
 /* (also the skill list's transformation page that port/src/plat_charas.c makes for a package's fighter) */
 const char *Port_DiscCharaName(s32 chara) {
     return chara >= 0 && chara < 161 ? sTbNames[chara] : "";
 }
-static const char *const sTbNames[] = {
+static const char sTbNames[161][48] = {
     "Goku (Early)",
     "Goku (Med)",
     "Goku (Med) Super Saiyan",
