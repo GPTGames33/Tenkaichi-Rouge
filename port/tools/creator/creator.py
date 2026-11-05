@@ -229,7 +229,7 @@ class App:
         spec = dict(spec, name=spec.get("name") or "preview")
         f = cf.Fighter(self.disc, spec, "preview")
         look = f.costumes[min(costume, len(f.costumes) - 1)]
-        key = json.dumps([look, spec.get("parts"), spec.get("colours"), spec.get("body")], sort_keys=True)
+        key = json.dumps([look, spec.get("parts"), spec.get("colours"), spec.get("body"), spec.get("paint")], sort_keys=True)
         if getattr(self, "_model_key", None) != key:
             pack = f.model(look, False)
             self._model = mdl.extract(pack.bytes(), pose="relaxed", hide_optional=True)
@@ -249,7 +249,7 @@ class App:
         f = cf.Fighter(self.disc, spec, "preview")
         look = f.costumes[min(max(costume, 0), len(f.costumes) - 1)]
         key = json.dumps([list(look)] + [spec.get(k) for k in (
-            "parts", "colours", "body", "moveset", "moves", "melee", "ki_blasts", "voice", "names")], sort_keys=True)
+            "parts", "colours", "body", "paint", "moveset", "moves", "melee", "ki_blasts", "voice", "names")], sort_keys=True)
         h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
         root = self.cache / "preview"
         out = root / h
@@ -317,6 +317,63 @@ class App:
                             "share": sum(g["count"] for g in m["groups"] if g["texture"] == index)})
         out.sort(key=lambda t: -t["share"])
         return out
+
+    def textures(self, spec, costume=0):
+        """For the texture painter (port/src/gs/creator_ui.cpp): the textures a costume of the warrior draws with, as
+        built (pieces and colour changes, without its paint, which the painter lays over them): [{index, key (the
+        spec's "paint" key), w, h, bits (4 or 8: 16 or 256 colours), sig, png (base64), palette (the colours its
+        pixels use), share (how much of the model it covers), variants (eye frames, mouth textures, damaged copies:
+        the same picture, painted with it)}], most used first."""
+        import base64
+        import model as mdl
+        spec = {k: v for k, v in spec.items() if k != "paint"}
+        spec["name"] = spec.get("name") or "preview"
+        f = cf.Fighter(self.disc, spec, "preview")
+        k = min(max(costume, 0), len(f.costumes) - 1)
+        key = json.dumps([k] + [spec.get(x) for x in ("costumes", "look", "base", "parts", "colours", "body")], sort_keys=True)
+        if getattr(self, "_tex_key", None) == key:
+            return self._tex
+        pack = f.model(f.costumes[k], False)
+        m = mdl.extract(pack.bytes(), pose="relaxed", hide_optional=True)  # (its groups name their textures)
+        share = {}
+        for g in m["groups"]:
+            share[g["texture"]] = share.get(g["texture"], 0) + g["count"]
+        tex, before = pack[0xC], f.pre_colours[0xC]  # (the variants are compared as they were before the colours)
+        others = []  # (w, h, rgba) of the eye frames and mouth textures
+        for e in cf.PAINT_ENTRIES[1:]:
+            if pack[e]:
+                for j in range(struct.unpack_from("<I", pack[e], 0)[0]):
+                    lay = cf.tex_layout(pack[e], j)
+                    if lay:
+                        others.append((lay["w"], lay["h"], cf.tex_rgba(pack[e], lay)))
+        out = []
+        for i, cnt in sorted(share.items(), key=lambda x: -x[1]):
+            lay = cf.tex_layout(tex, i)
+            if lay is None:
+                continue
+            idx = cf.tex_indices(tex, lay)
+            rgba = cf.tex_rgba(tex, lay, idx)
+            w, h = lay["w"], lay["h"]
+            pal = []
+            for u in sorted(set(idx)):
+                o = lay["pal"][u]
+                if o is not None:
+                    c = "#%02x%02x%02x" % tuple(tex[o:o + 3])
+                    if c not in pal:
+                        pal.append(c)
+            variants = 0
+            if any((ow, oh) == (w, h) for ow, oh, _ in others):
+                ref = cf.tex_rgba(before, lay)
+                opaque = [p for p in range(w * h) if ref[p * 4 + 3] >= 128] or [0]
+            for ow, oh, orgba in others:
+                if (ow, oh) == (w, h):
+                    same = sum(1 for p in opaque if orgba[p * 4:p * 4 + 4] == ref[p * 4:p * 4 + 4])
+                    variants += same / len(opaque) >= cf.PAINT_SHARE
+            out.append({"index": i, "key": f"{k + 1}:{i}", "w": w, "h": h, "bits": lay["bits"], "sig": lay["sig"],
+                        "png": base64.b64encode(png(w, h, rgba)).decode(), "palette": pal, "share": cnt,
+                        "variants": variants})
+        self._tex_key, self._tex = key, {"costume": k + 1, "textures": out, "notes": list(f.notes)}
+        return self._tex
 
     def install(self, name):
         spec = json.loads(self.path_of(name).read_text(encoding="utf-8-sig"))
@@ -610,6 +667,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.send(200, a.fx_colours(body["spec"], body["what"]))
                 if act == "/api/colours":
                     return self.send(200, a.colours(body["spec"]))
+                if act == "/api/textures":
+                    return self.send(200, a.textures(body["spec"], int(body.get("costume", 0))))
                 if act == "/api/quit":
                     threading.Thread(target=self.server.shutdown, daemon=True).start()
                     return self.send(200, {"text": "bye"})

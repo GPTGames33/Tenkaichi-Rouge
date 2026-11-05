@@ -676,7 +676,12 @@ static struct {
     int turn;                  // thousandths of a radian, since the game took it
     int sound[16], sounds;
     int testChara, testCostume;
+    float camZoom, camFocus, camPanX, camPanY; // the camera: how close, the point of the model it stays on (0 feet,
+                                               // 1 top), moved (mockup pixels); set on the render thread
 } sSh;
+#define CAM_X 1030.0f    // where the model stands at zoom 1 (mockup pixels: port_creator.c): across, its feet, its height
+#define CAM_FEET 605.0f
+#define CAM_H 390.0f
 
 extern "C" void PortCreator_Open(void) {
     if (sShare == NULL) { sShare = SDL_CreateMutex(); }
@@ -688,6 +693,7 @@ extern "C" void PortCreator_Open(void) {
     sSh.turn = 0;
     sSh.sounds = 0;
     sSh.testChara = -1;
+    if (sSh.camZoom <= 0.0f) { sSh.camZoom = 1.0f; sSh.camFocus = 0.5f; }
     sOpenGen++;
     sActive = 1;
     SDL_UnlockMutex(sShare);
@@ -718,9 +724,17 @@ extern "C" int PortCreator_Get(int what) {
         break;
     case 7: v = sSh.testChara; break;
     case 8: v = sSh.testCostume; break;
-    case 9: v = 10300; break;   // where the model stands (port_creator.c: tenths of the mockup's pixels): across,
-    case 10: v = 6050; break;   // its feet,
-    case 11: v = 3900; break;   // its height
+    case 9: case 10: case 11: { // where the model stands (port_creator.c: tenths of the mockup's pixels): across, its
+        // feet, its height - its zoom and place: the point `camFocus` of it (0 its feet, 1 its face) stays where it is at
+        // zoom 1 (moved by the pan). Measured on the screen: a point t of the model is drawn at feet + 49.5 - height *
+        // (0.042 + 0.669 t) (mockup pixels: Mm_ViewDraw's place is where the feet stand on the platform)
+        float z = sSh.camZoom > 0.1f ? sSh.camZoom : 1.0f, h = CAM_H * z;
+        float feet = CAM_FEET + sSh.camPanY + (h - CAM_H) * (0.042f + 0.669f * sSh.camFocus);
+        float r = what == 9 ? CAM_X + sSh.camPanX : what == 10 ? feet : h;
+        v = (int)(r * 10.0f);
+        break;
+    }
+    case 12: v = sSh.camZoom < 1.6f; break; // (the platform under it: not in a close shot)
     }
     SDL_UnlockMutex(sShare);
     return v;
@@ -941,6 +955,15 @@ struct In {
     bool up, down, left, right, ok, back, sq, tri, l1, r1, l2, r2, start;
     bool enter, esc, backspace;    // the keyboard's own, for the typing screens
     float turn;                     // the right stick, -1..1
+    // the workshop, the camera and the painter
+    bool okHeld;                    // cross (Enter / Space) held down
+    bool fast;                      // left / right held a while: sliders go faster
+    bool view;                      // L3 / V: the camera's next preset (Full, Head)
+    bool r3;                        // R3 held: the right stick moves the camera
+    bool undo, redo;                // Ctrl+Z / Ctrl+Y
+    float zoom;                     // the right stick up / down, + / - keys: > 0 closer
+    float lx, ly;                   // the left stick, -1..1 (the painter's crosshair)
+    bool dup, ddown, dleft, dright; // the d-pad and the arrow keys alone (a texel a press)
 };
 static In sIn;
 static int sScriptAt;              // BT3_CREATOR_SCRIPT=<frame>:<button>,...: presses for tests
@@ -948,7 +971,15 @@ static bool sTyping;               // a screen that takes typed letters is up (t
 
 static bool sMouse;                // the mouse is the screen's (not the settings window's)
 static bool key(ImGuiKey k, bool repeat = true) { return ImGui::IsKeyPressed(k, repeat); }
-static bool click_in(ImVec2 a, ImVec2 b) { return sMouse && click_in(a, b); }
+static bool click_in(ImVec2 a, ImVec2 b) { return sMouse && ImGui::IsMouseClicked(0) && ImGui::IsMouseHoveringRect(a, b, false); }
+static float analog(ImGuiKey k) {
+    ImGuiKeyData *d = ImGui::GetKeyData(ImGui::GetCurrentContext(), k);
+    return d != NULL ? d->AnalogValue : 0.0f;
+}
+static float held_for(ImGuiKey k) {
+    ImGuiKeyData *d = ImGui::GetKeyData(ImGui::GetCurrentContext(), k);
+    return d != NULL && d->Down ? d->DownDuration : 0.0f;
+}
 static void read_input(bool live) {
     In in;
     memset(&in, 0, sizeof(in));
@@ -971,6 +1002,23 @@ static void read_input(bool live) {
         ImGuiKeyData *rl = ImGui::GetKeyData(ImGui::GetCurrentContext(), ImGuiKey_GamepadRStickLeft);
         ImGuiKeyData *rr = ImGui::GetKeyData(ImGui::GetCurrentContext(), ImGuiKey_GamepadRStickRight);
         in.turn = (rr != NULL ? rr->AnalogValue : 0.0f) - (rl != NULL ? rl->AnalogValue : 0.0f);
+        in.zoom = analog(ImGuiKey_GamepadRStickUp) - analog(ImGuiKey_GamepadRStickDown);
+        in.lx = analog(ImGuiKey_GamepadLStickRight) - analog(ImGuiKey_GamepadLStickLeft);
+        in.ly = analog(ImGuiKey_GamepadLStickDown) - analog(ImGuiKey_GamepadLStickUp);
+        in.r3 = ImGui::IsKeyDown(ImGuiKey_GamepadR3);
+        in.view = P(ImGuiKey_GamepadL3, false);
+        in.okHeld = ImGui::IsKeyDown(ImGuiKey_GamepadFaceDown);
+        in.dup = key(ImGuiKey_GamepadDpadUp, true);
+        in.ddown = key(ImGuiKey_GamepadDpadDown, true);
+        in.dleft = key(ImGuiKey_GamepadDpadLeft, true);
+        in.dright = key(ImGuiKey_GamepadDpadRight, true);
+        {
+            static const ImGuiKey kLr[] = {ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadDpadRight, ImGuiKey_GamepadLStickLeft,
+                                           ImGuiKey_GamepadLStickRight, ImGuiKey_LeftArrow, ImGuiKey_RightArrow};
+            float most = 0.0f;
+            for (ImGuiKey k : kLr) { most = std::max(most, held_for(k)); }
+            in.fast = most > 0.7f;
+        }
         bool kb = false;
         auto K = [&](ImGuiKey k, bool repeat) { bool p = key(k, repeat); kb |= p; return p; };
         ImGuiIO &io = ImGui::GetIO();
@@ -988,7 +1036,19 @@ static void read_input(bool live) {
         in.l2 |= K(ImGuiKey_Home, false);
         in.r2 |= K(ImGuiKey_End, false);
         if (io.KeyCtrl && K(ImGuiKey_S, false)) { in.start = true; }
-        if (!sTyping) { // (letters are typed on the typing screens)
+        if (io.KeyCtrl && K(ImGuiKey_Z, true)) { in.undo = true; }
+        if (io.KeyCtrl && K(ImGuiKey_Y, true)) { in.redo = true; }
+        in.dup |= key(ImGuiKey_UpArrow, true);
+        in.ddown |= key(ImGuiKey_DownArrow, true);
+        in.dleft |= key(ImGuiKey_LeftArrow, true);
+        in.dright |= key(ImGuiKey_RightArrow, true);
+        if (!sTyping && !io.KeyCtrl) { // (letters are typed on the typing screens)
+            in.okHeld |= ImGui::IsKeyDown(ImGuiKey_Space) || ImGui::IsKeyDown(ImGuiKey_Enter);
+            in.view |= K(ImGuiKey_V, false);
+            if (ImGui::IsKeyDown(ImGuiKey_Equal) || ImGui::IsKeyDown(ImGuiKey_KeypadAdd)) { in.zoom += 0.6f; kb = true; }
+            if (ImGui::IsKeyDown(ImGuiKey_Minus) || ImGui::IsKeyDown(ImGuiKey_KeypadSubtract)) { in.zoom -= 0.6f; kb = true; }
+        }
+        if (!sTyping && !io.KeyCtrl) {
             in.ok |= in.enter || K(ImGuiKey_Space, false);
             in.back |= in.esc || in.backspace;
             in.sq |= K(ImGuiKey_F, false);
@@ -1023,6 +1083,17 @@ static void read_input(bool live) {
         else if (what == "sq") { in.sq = true; } else if (what == "tri") { in.tri = true; } else if (what == "l1") { in.l1 = true; }
         else if (what == "r1") { in.r1 = true; } else if (what == "l2") { in.l2 = true; } else if (what == "r2") { in.r2 = true; }
         else if (what == "start") { in.start = true; }
+        // (the workshop, the camera, the painter: one frame of each)
+        else if (what == "view") { in.view = true; } else if (what == "zin") { in.zoom = 1.0f; } else if (what == "zout") { in.zoom = -1.0f; }
+        else if (what == "undo") { in.undo = true; } else if (what == "redo") { in.redo = true; }
+        else if (what == "hold") { in.okHeld = true; } else if (what == "press") { in.ok = in.okHeld = true; }
+        else if (what == "lsr") { in.lx = 1.0f; } else if (what == "lsl") { in.lx = -1.0f; }
+        else if (what == "lsu") { in.ly = -1.0f; } else if (what == "lsd") { in.ly = 1.0f; }
+        else if (what == "pan") { in.r3 = true; in.zoom = 1.0f; }
+        else if (what == "fright") { in.right = in.fast = true; } else if (what == "fleft") { in.left = in.fast = true; }
+        else if (what == "dl") { in.dleft = in.left = true; } else if (what == "dr") { in.dright = in.right = true; }
+        else if (what == "du") { in.dup = in.up = true; } else if (what == "dd") { in.ddown = in.down = true; }
+        else if (what == "fdr") { in.dright = in.right = in.fast = true; }
         else if (what.compare(0, 5, "type=") == 0) { for (char c : what.substr(5)) { ImGui::GetIO().AddInputCharacter((unsigned)c); } }
     }
     sIn = in;
@@ -1036,10 +1107,12 @@ struct Row {
     std::function<void()> ok, sq, tri;   // cross, square, triangle
     std::function<void(int)> lr;         // left / right
     const char *sqLabel = NULL, *triLabel = NULL, *lrLabel = NULL;
+    float bar = -1.0f, barDef = -1.0f;   // a slider: where it is and its default (0..1), -1 none
+    std::function<void(float)> setFrac;  // ... set by the mouse (0..1)
 };
 
 // ---- the screens over the list (the grid, the keyboard, lists, the colours): a stack
-enum { OV_GRID, OV_LIST, OV_KEYS, OV_COLOURS, OV_PALETTE, OV_TEXT, OV_FX };
+enum { OV_GRID, OV_LIST, OV_KEYS, OV_COLOURS, OV_PALETTE, OV_TEXT, OV_FX, OV_WORKSHOP, OV_TEXPICK, OV_PAINT, OV_WHEEL };
 struct Overlay {
     int kind = OV_LIST;
     int id = 0;                          // (which one: a choice may close it and open another in its place)
@@ -1070,13 +1143,22 @@ struct Overlay {
     std::string from;
     std::string fx;                      // an attack's colours (OV_FX, and its palette): "blast1_1".."ultimate", "ki_blasts", "charge"
     int cur = 0, top = 0;
+    // the workshop: the piece (kPieces, -1 the body), its layer, the part (-1 the whole layer / the build)
+    int piece = -1, layer = 0, node = -1;
+    J info;                              // /api/layernodes
+    // the colour wheel
+    float hue = 0, sat = 0, val = 1;
+    unsigned startRgb = 0;
+    std::function<void(unsigned)> rgbPicked;
 };
 static std::vector<Overlay> sOv;
 static int sOvIds;
 static void ov_push(Overlay &o) { o.id = ++sOvIds; sOv.push_back(o); }
 
+static void painter_close(void);
 static void ov_close(void) {
     if (!sOv.empty()) {
+        if (sOv.back().kind == OV_PAINT) { painter_close(); } // (its paint into the spec, its picture freed)
         for (SDL_GPUTexture *t : sOv.back().pics) { Ui_TextureFree(t); }
         sOv.pop_back();
     }
@@ -1438,6 +1520,36 @@ static unsigned palette(int i) { // 0xRRGGBB: five rows of twelve hues (light to
 }
 static unsigned hex_rgb(const std::string &h) { return h.size() >= 7 && h[0] == '#' ? (unsigned)strtoul(h.c_str() + 1, NULL, 16) : 0; }
 static ImU32 col32(unsigned rgb, int a = 255) { return IM_COL32((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255, a); }
+static void rgb_hsv(unsigned rgb, float *h, float *s, float *v) {
+    float r = ((rgb >> 16) & 255) / 255.0f, g = ((rgb >> 8) & 255) / 255.0f, b = (rgb & 255) / 255.0f;
+    float mx = std::max(r, std::max(g, b)), mn = std::min(r, std::min(g, b)), d = mx - mn;
+    *v = mx;
+    *s = mx > 0.0f ? d / mx : 0.0f;
+    float hh = 0.0f;
+    if (d > 0.0f) {
+        if (mx == r) { hh = 60.0f * fmodf((g - b) / d, 6.0f); }
+        else if (mx == g) { hh = 60.0f * ((b - r) / d + 2.0f); }
+        else { hh = 60.0f * ((r - g) / d + 4.0f); }
+    }
+    *h = hh < 0.0f ? hh + 360.0f : hh;
+}
+static unsigned hsv_rgb(float h, float s, float v) {
+    int r, g, b;
+    h = fmodf(h, 360.0f);
+    hsv(h < 0.0f ? h + 360.0f : h, s < 0 ? 0 : s > 1 ? 1 : s, v < 0 ? 0 : v > 1 ? 1 : v, &r, &g, &b);
+    return (unsigned)(r << 16 | g << 8 | b);
+}
+static std::string hex_of(unsigned rgb) { char b[16]; snprintf(b, sizeof(b), "#%06x", rgb & 0xFFFFFF); return b; }
+// the colours used last (the painter, the colour wheel, the palette), newest first
+static std::vector<unsigned> sRecent;
+static void add_recent(unsigned rgb) {
+    sRecent.erase(std::remove(sRecent.begin(), sRecent.end(), rgb), sRecent.end());
+    sRecent.insert(sRecent.begin(), rgb);
+    if (sRecent.size() > 12) { sRecent.resize(12); }
+}
+static void open_wheel(const std::string &title, unsigned start, std::function<void(unsigned)> picked);
+static void open_workshop(int piece);
+static void open_texpick(int texture = -1);
 
 // ---- an attack's colours (the web page's 🎨: /api/fxcolours, the spec's attack_colours, as index.html writes them)
 static const char *fx_label(const std::string &what) {
@@ -1779,6 +1891,31 @@ static void rows_parts(std::vector<Row> &rows) {
         }
         rows.push_back(r);
     }
+    // the workshop (the web page's 🔧): move, turn and stretch a piece's layers or the body's own parts, and its build
+    rows.push_back(sec("WORKSHOP: MOVE, TURN, STRETCH"));
+    {
+        Row w;
+        w.label = "Body";
+        int nb = (int)sSpec["body"].size();
+        w.value = nb ? "Build and parts changed" : "Build, and its own parts";
+        w.sub = "build: torso, arms, legs, head";
+        w.tip = "Make your warrior stockier or slimmer, a bigger head... and move, turn or stretch any part of its body.";
+        w.ok = [] { open_workshop(-1); };
+        rows.push_back(w);
+    }
+    for (int i = 0; i < 8; i++) {
+        std::vector<J> ls = layers(kPieces[i][0]);
+        if (ls.empty()) { continue; }
+        Row w;
+        w.label = std::string(kPieces[i][1]);
+        bool changed = false;
+        for (const J &l : ls) { changed |= l["adjust"].size() > 0; }
+        w.value = (changed ? "Changed: " : "Place it: ") + nm(ls.back(), "?") + (ls.size() > 1 ? " (+" + std::to_string(ls.size() - 1) + ")" : "");
+        w.face = chara_id(ls.back());
+        w.tip = "Move it, turn it, stretch it! Your warrior changes as you go.";
+        w.ok = [i] { open_workshop(i); };
+        rows.push_back(w);
+    }
     rows.push_back(sec("COLOURS"));
     int nc = (int)sSpec["colours"].size();
     Row c;
@@ -1791,6 +1928,18 @@ static void rows_parts(std::vector<Row> &rows) {
         c.sq = [] { sSpec.erase("colours"); touch(); sound(2); };
     }
     rows.push_back(c);
+    int np = (int)sSpec["paint"].size();
+    Row p;
+    p.label = "Paint texture...";
+    p.value = np ? std::to_string(np) + (np > 1 ? " textures painted" : " texture painted") : "Paint on a texture";
+    p.sub = "brush, fill, colour wheel";
+    p.tip = "Bring a texture up and paint on it: aim with the crosshair, fill spots, pick colours from it.";
+    p.ok = [] { open_texpick(); };
+    if (np) {
+        p.sqLabel = "Remove all paint";
+        p.sq = [] { confirm("REMOVE ALL THE PAINT?", [] { sSpec.erase("paint"); touch(); sound(2); }); };
+    }
+    rows.push_back(p);
 }
 
 static void rows_moves(std::vector<Row> &rows) {
@@ -2062,9 +2211,9 @@ static void face_at(int id, ImVec2 a, ImVec2 b, float round) {
 }
 
 // a button of the pad: ✕ ○ □ △ in their colours, the shoulder buttons and START as plates; the keyboard's key
-enum { B_CROSS, B_CIRCLE, B_SQUARE, B_TRIANGLE, B_L1R1, B_L2R2, B_START, B_DPAD, B_LR };
+enum { B_CROSS, B_CIRCLE, B_SQUARE, B_TRIANGLE, B_L1R1, B_L2R2, B_START, B_DPAD, B_LR, B_RSTICK, B_R3, B_L3, B_LSTICK };
 static float glyph(int b, ImVec2 c, float r) { // -> its width
-    static const char *const kKeys[] = {"Enter", "Esc", "F", "R", "Q/E", "Z/C", "Ctrl+S", "Arrows", "Left/Right"};
+    static const char *const kKeys[] = {"Enter", "Esc", "F", "R", "Q/E", "Z/C", "Ctrl+S", "Arrows", "Left/Right", "+/- Wheel", "Right drag", "V", "Mouse"};
     if (sKeyboardLast) {
         const char *k = kKeys[b];
         float tw = text_w(sFont, r * 1.1f, k), w = tw + r * 1.2f;
@@ -2074,7 +2223,8 @@ static float glyph(int b, ImVec2 c, float r) { // -> its width
         return w;
     }
     if (b >= B_L1R1) {
-        const char *k = b == B_L1R1 ? "L1 R1" : b == B_L2R2 ? "L2 R2" : b == B_START ? "START" : b == B_DPAD ? "D-PAD" : "< >";
+        const char *k = b == B_L1R1 ? "L1 R1" : b == B_L2R2 ? "L2 R2" : b == B_START ? "START" : b == B_DPAD ? "D-PAD" : b == B_RSTICK ? "R-STICK"
+                        : b == B_R3 ? "R3 + R" : b == B_L3 ? "L3" : b == B_LSTICK ? "L-STICK" : "< >";
         float tw = text_w(sFont, r * 1.0f, k), w = tw + r * 1.2f;
         sDl->AddRectFilled(ImVec2(c.x, c.y - r * 0.85f), ImVec2(c.x + w, c.y + r * 0.85f), IM_COL32(42, 26, 85, 255), r * 0.8f);
         sDl->AddRect(ImVec2(c.x, c.y - r * 0.85f), ImVec2(c.x + w, c.y + r * 0.85f), IM_COL32(205, 189, 255, 255), r * 0.8f, 0, S(1.5f));
@@ -2171,7 +2321,9 @@ static void draw_tabs(int on, const char *const *names, int count) {
 }
 
 // A list of rows in a box: the cursor's row gold. Returns the row under the mouse that was clicked, -1 none.
+static std::vector<std::pair<int, ImRect>> sBars; // the sliders' tracks drawn by the last draw_rows (for the mouse)
 static int draw_rows(ImVec2 a, ImVec2 b, const std::vector<Row> &rows, int cur, int &top, bool active) {
+    sBars.clear();
     float rh = S(40), gap = S(4), pad = S(8);
     int fits = (int)((b.y - a.y - pad * 2) / (rh + gap));
     if (fits < 1) { fits = 1; }
@@ -2211,6 +2363,25 @@ static int draw_rows(ImVec2 a, ImVec2 b, const std::vector<Row> &rows, int cur, 
         }
         text(sFont, size, ImVec2(x, y + (rh - size) * 0.5f), ink, r.label, ra.x + labelW - x);
         float vx = ra.x + labelW + S(8), vmax = rb.x - vx - S(16);
+        if (r.bar >= 0.0f) { // a slider: its track, the default's tick, the knob; the value after it
+            float tx0 = vx + S(6), tx1 = rb.x - S(104), my = y + rh * 0.5f;
+            sDl->AddRectFilled(ImVec2(tx0, my - S(3)), ImVec2(tx1, my + S(3)), sel ? IM_COL32(107, 58, 0, 120) : IM_COL32(0, 0, 0, 110), S(3));
+            float f = r.bar < 0 ? 0 : r.bar > 1 ? 1 : r.bar;
+            if (r.barDef >= 0.0f) {
+                float dx = tx0 + (tx1 - tx0) * r.barDef;
+                sDl->AddRectFilled(ImVec2(dx - S(1), my - S(8)), ImVec2(dx + S(1), my + S(8)), sel ? IM_COL32(107, 58, 0, 200) : IM_COL32(201, 184, 240, 150));
+                float fx = tx0 + (tx1 - tx0) * f;
+                sDl->AddRectFilled(ImVec2(std::min(dx, fx), my - S(3)), ImVec2(std::max(dx, fx), my + S(3)), sel ? IM_COL32(255, 255, 255, 220) : kGold1, S(3));
+            }
+            ImVec2 k(tx0 + (tx1 - tx0) * f, my);
+            sDl->AddCircleFilled(k, S(9), sel ? IM_COL32(255, 255, 255, 255) : kGold1);
+            sDl->AddCircle(k, S(9), sel ? kDark : IM_COL32(107, 58, 0, 255), 0, S(2));
+            text(sBold != NULL ? sBold : sFont, size, ImVec2(tx1 + S(14), y + (rh - size) * 0.5f), sel ? kDark : kInk, r.value, rb.x - tx1 - S(20));
+            sBars.push_back({i, ImRect(ImVec2(tx0 - S(8), y), ImVec2(tx1 + S(8), y + rh))});
+            if (click_in(ra, rb)) { clicked = i; }
+            y += rh + gap;
+            continue;
+        }
         std::string sub = r.sub;
         float subSize = S(13);
         float subW = sub.empty() ? 0 : std::min(text_w(sFont, subSize, sub.c_str()) + S(10), vmax * 0.45f);
@@ -2268,6 +2439,7 @@ static void list_input(std::vector<Row> &rows, int &cur, int clicked) {
 
 // ---- the overlays
 static ImVec2 sBoxA, sBoxB; // the left box the overlays are drawn in (the model stays to be seen beside it)
+static float sOvRight;      // the right edge of the box on top this frame (the mouse beyond it is on the model)
 
 static void ov_title(const Overlay &o) {
     ImFont *big = sBold != NULL ? sBold : sFont;
@@ -2593,10 +2765,16 @@ static void colours_frame(Overlay &o, std::vector<Prompt> &ps) {
     if (clicked >= 0) { o.cur = clicked; row = clicked / 100; col = clicked % 100; sIn.ok = true; }
     ps.push_back({B_CROSS, "Change this colour"});
     ps.push_back({B_SQUARE, "Texture's own colours"});
+    ps.push_back({B_TRIANGLE, "Paint it..."});
     ps.push_back({B_CIRCLE, "Back"});
     if (sIn.back) { ov_close(); sound(2); return; }
     if (n == 0) { return; }
     int texture = (int)o.tex[(size_t)row]["texture"].number(0);
+    if (sIn.tri) { // (the texture painter, on this texture: a secondary way to change its colours)
+        if (sShownCostume != 0) { sShownCostume = 0; } // (these are costume 1's textures)
+        open_texpick(texture);
+        return;
+    }
     if (sIn.ok && col < (int)o.tex[(size_t)row]["colours"].size()) {
         open_palette(texture, o.tex[(size_t)row]["colours"][(size_t)col][(size_t)0].text());
         return;
@@ -2717,37 +2895,59 @@ static void palette_frame(Overlay &o, std::vector<Prompt> &ps) {
         if (i == o.cur) { sDl->AddRect(ImVec2(a.x - S(3), a.y - S(3)), ImVec2(b.x + S(3), b.y + S(3)), IM_COL32(255, 226, 122, 255), S(8), 0, S(3)); }
         if (click_in(a, b)) { clicked = i; }
     }
+    // the colour wheel, for any colour (its button under the swatches)
+    float wy = gy + PAL_ROWS * (chh + S(6)) + S(10);
+    ImVec2 wa(sBoxA.x + S(24), wy), wb(sBoxA.x + S(24) + S(230), wy + S(34));
+    grad(wa, wb, IM_COL32(198, 181, 245, 255), IM_COL32(125, 100, 200, 255), S(17));
+    for (int i = 0; i < 12; i++) { // (a little ring of hues on it)
+        float a0 = i * 0.5236f;
+        sDl->AddCircleFilled(ImVec2(wa.x + S(20) + cosf(a0) * S(9), wy + S(17) + sinf(a0) * S(9)), S(3.2f), col32(hsv_rgb(i * 30.0f, 1, 1)));
+    }
+    glyph(B_TRIANGLE, ImVec2(wa.x + S(38), wy + S(17)), S(10));
+    sDl->AddText(sBold != NULL ? sBold : sFont, S(15), ImVec2(wa.x + S(66), wy + S(8)), IM_COL32(43, 22, 96, 255), "More: the colour wheel");
+    bool wheel = sIn.tri || click_in(wa, wb);
     if (clicked >= 0) { o.cur = clicked; sIn.ok = true; }
     ps.push_back({B_CROSS, "Use this colour"});
+    ps.push_back({B_TRIANGLE, "Colour wheel"});
     ps.push_back({B_CIRCLE, "Back"});
     if (sIn.back) { ov_close(); sound(2); return; }
-    if (sIn.ok && !o.fx.empty()) { // an attack's: {from, to, range 1.5} appended, as the web page does
+    std::string fromHex = o.from, fx = o.fx;
+    int texture = o.texture;
+    // {texture, from, to} appended to "colours"; an attack's {from, to, range 1.5} to its "attack_colours", as the web page does
+    auto use = [fromHex, fx, texture](unsigned rgb) {
+        std::string to = hex_of(rgb);
+        add_recent(rgb);
         J ch = J::obj();
-        ch.set("from", J::str(o.from));
-        ch.set("to", J::str(hex));
-        ch.set("range", J::num(1.5));
-        J &ac = sSpec.at("attack_colours");
-        J list = ac[o.fx.c_str()].isArr() ? ac[o.fx.c_str()] : J::arr();
-        list.push(ch);
-        ac.set(o.fx.c_str(), list);
+        if (fx.empty()) { ch.set("texture", J::num(texture)); }
+        ch.set("from", J::str(fromHex));
+        ch.set("to", J::str(to));
+        if (!fx.empty()) {
+            ch.set("range", J::num(1.5));
+            J &ac = sSpec.at("attack_colours");
+            J list = ac[fx.c_str()].isArr() ? ac[fx.c_str()] : J::arr();
+            list.push(ch);
+            ac.set(fx.c_str(), list);
+        } else {
+            J list = sSpec["colours"].isArr() ? sSpec["colours"] : J::arr();
+            list.push(ch);
+            sSpec.set("colours", list);
+        }
         touch();
-        ov_close();
         sound(1);
         if (!sOv.empty() && sOv.back().kind == OV_FX) { fx_load(&sOv.back()); }
+        if (!sOv.empty() && sOv.back().kind == OV_COLOURS) { colours_load(&sOv.back()); }
+    };
+    if (wheel) {
+        int id = o.id;
+        open_wheel("THE NEW COLOUR: ANY COLOUR", fromHex.empty() ? to : from, [use, id](unsigned rgb) {
+            if (!sOv.empty() && sOv.back().id == id) { ov_close(); } // (the palette under the wheel goes too)
+            use(rgb);
+        });
         return;
     }
     if (sIn.ok) {
-        J ch = J::obj();
-        ch.set("texture", J::num(o.texture));
-        ch.set("from", J::str(o.from));
-        ch.set("to", J::str(hex));
-        J list = sSpec["colours"].isArr() ? sSpec["colours"] : J::arr();
-        list.push(ch);
-        sSpec.set("colours", list);
-        touch();
         ov_close();
-        sound(1);
-        if (!sOv.empty() && sOv.back().kind == OV_COLOURS) { colours_load(&sOv.back()); }
+        use(to);
     }
 }
 
@@ -2755,6 +2955,1138 @@ static void text_frame(Overlay &o, std::vector<Prompt> &ps) {
     sDl->AddText(sFont, S(17), ImVec2(sBoxA.x + S(22), sBoxA.y + S(58)), kInk, o.text.c_str(), NULL, sBoxB.x - sBoxA.x - S(44));
     ps.push_back({B_CROSS, "OK"});
     if (sIn.ok || sIn.back || (sMouse && ImGui::IsMouseClicked(0))) { ov_close(); sound(1); }
+}
+
+// =============================================================================================== the workshop
+// As the web page's (index.html drawWorkshop), writing the same fields: a piece's layer is spec.parts[piece] (or its
+// n-th item).adjust {"scale": [x, y, z], "size", "move": [x, y, z], "turn": [x, y, z] degrees, "nodes": {"<node>":
+// {"stretch", "size", "move", "turn", "shown": false}}}; the body is spec.body {"build": {"torso", "arms", "legs",
+// "head", "hands", "feet": percent}, "nodes": {...}} (custom_fighter.py: mix.py mix(..., opts, adjust)).
+struct WsPath { int piece, layer; std::string node; bool build; };
+static const J &ws_read(const WsPath &w) {
+    static J none;
+    const J *o;
+    if (w.piece < 0) {
+        o = &sSpec["body"];
+        if (w.build) { return (*o)["build"]; }
+    } else {
+        const J &v = sSpec["parts"][kPieces[w.piece][0]];
+        o = &(v.isArr() ? v[(size_t)w.layer] : v)["adjust"];
+    }
+    return w.node.empty() ? *o : (*o)["nodes"][w.node.c_str()];
+}
+static J &ws_write(const WsPath &w) {
+    static J dummy;
+    J *o;
+    if (w.piece < 0) {
+        o = &sSpec.at("body");
+        if (w.build) { return o->at("build"); }
+    } else {
+        J *v = sSpec.at("parts").find(kPieces[w.piece][0]);
+        if (v == NULL) { dummy = J::obj(); return dummy; }
+        if (v->isArr()) {
+            if (v->a.empty()) { dummy = J::obj(); return dummy; }
+            v = &v->a[(size_t)std::min(w.layer, (int)v->a.size() - 1)];
+        }
+        o = &v->at("adjust");
+    }
+    return w.node.empty() ? *o : o->at("nodes").at(w.node.c_str());
+}
+static bool prune_empty(J &o) { // empty objects inside go; true when o is empty itself
+    for (size_t i = o.k.size(); i-- > 0;) {
+        if (o.a[i].isObj() && prune_empty(o.a[i])) { o.k.erase(o.k.begin() + i); o.a.erase(o.a.begin() + i); }
+    }
+    return o.isObj() && o.size() == 0;
+}
+static void ws_prune(void) {
+    J *b = sSpec.find("body");
+    if (b != NULL && b->isObj() && prune_empty(*b)) { sSpec.erase("body"); }
+    J *parts = sSpec.find("parts");
+    for (size_t i = 0; parts != NULL && parts->isObj() && i < parts->a.size(); i++) {
+        J &v = parts->a[i];
+        std::vector<J *> ls;
+        if (v.isArr()) { for (J &l : v.a) { ls.push_back(&l); } } else { ls.push_back(&v); }
+        for (J *l : ls) {
+            J *adj = l->find("adjust");
+            if (adj != NULL && adj->isObj() && prune_empty(*adj)) { l->erase("adjust"); }
+        }
+    }
+}
+static double ws_get(const WsPath &w, const char *k, int axis, double def) {
+    const J &v = ws_read(w)[k];
+    if (axis < 0) { return v.isNum() ? v.n : def; }
+    return v.isArr() && v[(size_t)axis].isNum() ? v[(size_t)axis].n : def;
+}
+static void ws_set(const WsPath &w, const char *k, int axis, double val, double def) {
+    J &o = ws_write(w);
+    if (axis < 0) {
+        if (fabs(val - def) < 1e-6) { o.erase(k); } else { o.set(k, J::num(val)); }
+    } else {
+        J *a = o.find(k);
+        if (a == NULL || !a->isArr() || a->size() < 3) {
+            J arr = J::arr();
+            for (int i = 0; i < 3; i++) { arr.push(J::num(a != NULL && a->isArr() && (*a)[(size_t)i].isNum() ? (*a)[(size_t)i].n : def)); }
+            a = &o.set(k, arr);
+        }
+        a->a[(size_t)axis] = J::num(val);
+        bool all = true;
+        for (int i = 0; i < 3; i++) { all &= fabs((*a)[(size_t)i].number(def) - def) < 1e-6; }
+        if (all) { o.erase(k); }
+    }
+    ws_prune();
+    touch();
+}
+enum { WF_PCT, WF_PCT100, WF_DEG, WF_NUM };
+static std::string ws_fmt(double v, int f) {
+    char b[32];
+    if (f == WF_PCT) { snprintf(b, sizeof(b), "%d%%", (int)lround(v * 100)); }
+    else if (f == WF_PCT100) { snprintf(b, sizeof(b), "%d%%", (int)lround(v)); }
+    else if (f == WF_DEG) { snprintf(b, sizeof(b), "%d\xc2\xb0", (int)lround(v)); }
+    else { snprintf(b, sizeof(b), "%+.2f", v); }
+    return b;
+}
+static Row ws_slider(const WsPath &w, const char *label, const char *k, int axis, double lo, double hi, double step, double def, int fmt, const char *tip) {
+    Row r;
+    double v = ws_get(w, k, axis, def);
+    std::string key = k;
+    r.label = label;
+    r.value = ws_fmt(v, fmt);
+    r.bar = (float)((v - lo) / (hi - lo));
+    r.barDef = (float)((def - lo) / (hi - lo));
+    r.tip = tip;
+    r.lrLabel = "Adjust (hold: faster)";
+    r.lr = [w, key, axis, lo, hi, step, def](int d) {
+        double x = ws_get(w, key.c_str(), axis, def) + d * step * (sIn.fast ? 8 : 1);
+        x = x < lo ? lo : x > hi ? hi : x;
+        x = round(x / step) * step;
+        ws_set(w, key.c_str(), axis, x, def);
+        if (!sIn.fast || sFrames % 4 == 0) { sound(0); }
+    };
+    r.setFrac = [w, key, axis, lo, hi, step, def](float f) {
+        double x = lo + (hi - lo) * (f < 0 ? 0 : f > 1 ? 1 : f);
+        x = round(x / step) * step;
+        if (fabs(x - ws_get(w, key.c_str(), axis, def)) > 1e-9) { ws_set(w, key.c_str(), axis, x, def); }
+    };
+    r.triLabel = "Reset";
+    r.tri = [w, key, axis, def] { ws_set(w, key.c_str(), axis, def, def); sound(2); };
+    return r;
+}
+static void ws_load(Overlay *o) {
+    o->loading = true;
+    J body = J::obj();
+    J spec = sSpec;
+    if (spec["name"].text().empty()) { spec.set("name", J::str("preview")); }
+    body.set("spec", spec);
+    int id = o->id;
+    api("/api/layernodes", &body, [id](int st, const J &r) {
+        Overlay *ov = NULL;
+        for (Overlay &x : sOv) { if (x.id == id) { ov = &x; } }
+        if (ov == NULL) { return; }
+        ov->loading = false;
+        if (st != 200) { toast(error_of(st, r), true); return; }
+        ov->info = r;
+    }, 300000);
+}
+static void open_workshop(int piece) {
+    Overlay o;
+    o.kind = OV_WORKSHOP;
+    o.piece = piece;
+    std::string what = piece < 0 ? "BODY" : kPieces[piece][1];
+    for (char &c : what) { c = (char)SDL_toupper((unsigned char)c); }
+    o.title = "WORKSHOP: " + what;
+    ov_push(o);
+    ws_load(&sOv.back());
+    sound(1);
+}
+static void ws_rows(Overlay &o, std::vector<Row> &rows) {
+    static J none;
+    std::vector<const J *> ls;
+    if (o.piece >= 0) {
+        const J &all = o.info["layers"];
+        for (size_t i = 0; i < all.size(); i++) { if (all[i]["piece"].text() == kPieces[o.piece][0]) { ls.push_back(&all[i]); } }
+        int have = (int)layers(kPieces[o.piece][0]).size();
+        if ((int)ls.size() > have) { ls.resize((size_t)have); }
+        if (ls.empty()) { return; }
+        o.layer = std::min(std::max(o.layer, 0), (int)ls.size() - 1);
+    }
+    const J &nodes = o.piece < 0 ? o.info["body"] : (*ls[(size_t)o.layer])["nodes"];
+    if (o.node >= (int)nodes.size()) { o.node = -1; }
+    WsPath w = {o.piece, o.layer, o.node >= 0 ? std::to_string((int)nodes[(size_t)o.node]["node"].number(0)) : std::string(), false};
+    int id = o.id, nn = (int)nodes.size(), nl = (int)ls.size();
+    auto self = [id]() -> Overlay * { for (Overlay &x : sOv) { if (x.id == id) { return &x; } } return NULL; };
+    rows.push_back(sec("WHICH PART?"));
+    if (nl > 1) {
+        Row r;
+        r.label = "Layer";
+        r.value = (*ls[(size_t)o.layer])["label"].text();
+        r.sub = std::to_string(o.layer + 1) + " / " + std::to_string(nl);
+        r.tip = "This piece has layers on top of each other: which one to change.";
+        r.lrLabel = "Layer";
+        r.lr = [self, nl](int d) { Overlay *x = self(); if (x) { x->layer = (x->layer + d + nl) % nl; x->node = -1; sound(0); } };
+        r.ok = [self, nl] { Overlay *x = self(); if (x) { x->layer = (x->layer + 1) % nl; x->node = -1; } };
+        rows.push_back(r);
+    }
+    {
+        Row r;
+        r.label = "Part";
+        r.value = o.node < 0 ? std::string(o.piece < 0 ? "Build (the whole body)" : "The whole layer") : nodes[(size_t)o.node]["name"].text("?");
+        r.sub = o.node < 0 ? (nn ? std::to_string(nn) + " parts: left / right" : "") : std::to_string(o.node + 1) + " / " + std::to_string(nn);
+        if (o.piece >= 0 && o.node < 0 && nl) { r.sub = (*ls[(size_t)o.layer])["label"].text(); }
+        r.tip = "Left / right: the part to change - the whole piece, or one of its parts (a lock of hair, a sleeve...).";
+        r.lrLabel = "Part";
+        r.lr = [self, nn](int d) { Overlay *x = self(); if (x) { x->node = ((x->node + 1 + d + nn + 1) % (nn + 1)) - 1; sound(0); } };
+        r.ok = [self, nn] { Overlay *x = self(); if (x) { x->node = ((x->node + 2) % (nn + 1)) - 1; } };
+        rows.push_back(r);
+    }
+    if (o.piece < 0 && o.node < 0) {
+        static const char *const kBuild[6][2] = {{"torso", "Torso build"}, {"arms", "Arm build"}, {"legs", "Leg build"},
+                                                 {"head", "Head size"}, {"hands", "Hand size"}, {"feet", "Foot size"}};
+        rows.push_back(sec("BUILD"));
+        WsPath b = w;
+        b.build = true;
+        for (int i = 0; i < 6; i++) {
+            rows.push_back(ws_slider(b, kBuild[i][1], kBuild[i][0], -1, 50, 160, 1, 100, WF_PCT100,
+                                     "Thicker or thinner around the bones (the joints stay where they are). Triangle: back to 100%."));
+        }
+    } else {
+        if (o.node >= 0) {
+            Row r;
+            bool shown = ws_read(w)["shown"].nul() || ws_read(w)["shown"].truthy();
+            r.label = "Shown";
+            r.value = shown ? "On" : "Off (hidden)";
+            r.tip = "Hide this part of the model (a lock of hair, a cape...).";
+            auto flip = [w] {
+                bool on = ws_read(w)["shown"].nul() || ws_read(w)["shown"].truthy();
+                J &t = ws_write(w);
+                if (on) { t.set("shown", J::boolean(false)); } else { t.erase("shown"); }
+                ws_prune();
+                touch();
+                sound(0);
+            };
+            r.ok = flip;
+            r.lr = [flip](int) { flip(); };
+            r.lrLabel = "On / off";
+            rows.push_back(r);
+        }
+        const char *sk = o.node < 0 ? "scale" : "stretch";
+        static const char *const kAx[3] = {"X", "Y", "Z"};
+        rows.push_back(sec("SHAPE"));
+        for (int i = 0; i < 3; i++) {
+            std::string l = std::string("Stretch ") + kAx[i];
+            rows.push_back(ws_slider(w, "", sk, i, 0.25, 3, 0.01, 1, WF_PCT, "Stretch it along one axis: X across, Y up, Z front to back."));
+            rows.back().label = l;
+        }
+        rows.push_back(ws_slider(w, "Size", "size", -1, 0.25, 3, 0.01, 1, WF_PCT, "Bigger or smaller, all ways at once."));
+        rows.push_back(sec("PLACE"));
+        for (int i = 0; i < 3; i++) {
+            rows.push_back(ws_slider(w, "", "move", i, -8, 8, 0.05, 0, WF_NUM, "Move it: X across, Y up, Z towards you (a fighter is about 20 high)."));
+            rows.back().label = std::string("Move ") + kAx[i];
+        }
+        for (int i = 0; i < 3; i++) {
+            rows.push_back(ws_slider(w, "", "turn", i, -180, 180, 1, 0, WF_DEG, "Turn it about an axis: X tips it forward, Y turns it round, Z tilts it."));
+            rows.back().label = std::string("Turn ") + kAx[i];
+        }
+    }
+    rows.push_back(sec("UNDO"));
+    Row z;
+    z.label = "Reset";
+    z.value = "Put this part back as it was";
+    z.tip = "Everything of this part back as it was.";
+    z.ok = [w] {
+        if (!w.node.empty()) {
+            WsPath up = w;
+            up.node.clear();
+            J *n = ws_write(up).find("nodes");
+            if (n != NULL) { n->erase(w.node.c_str()); }
+        } else if (w.piece < 0) {
+            sSpec.at("body").erase("build");
+        } else {
+            J &t = ws_write(w);
+            for (const char *k : {"scale", "size", "move", "turn"}) { t.erase(k); }
+        }
+        ws_prune();
+        touch();
+        sound(2);
+    };
+    rows.push_back(z);
+}
+static int sBarDrag = -1; // the slider the mouse holds (its row)
+static void workshop_frame(Overlay &o, std::vector<Prompt> &ps) {
+    float top0 = sBoxA.y + S(54);
+    ps.push_back({B_CIRCLE, "Done"});
+    if (o.info.nul()) {
+        sDl->AddText(sFont, S(18), ImVec2(sBoxA.x + S(24), top0 + S(10)), kInk, o.loading ? "Reading the parts..." : "The parts could not be read.");
+        if (sIn.back) { ov_close(); sound(2); }
+        return;
+    }
+    std::vector<Row> rows;
+    ws_rows(o, rows);
+    if (rows.empty()) {
+        sDl->AddText(sFont, S(18), ImVec2(sBoxA.x + S(24), top0 + S(10)), kInk, "This piece is the body's own: pick whose it is first.", NULL, sBoxB.x - sBoxA.x - S(48));
+        if (sIn.back) { ov_close(); sound(2); }
+        return;
+    }
+    fix_cursor(rows, o.cur);
+    int clicked = draw_rows(ImVec2(sBoxA.x + S(10), top0), ImVec2(sBoxB.x - S(10), sBoxB.y - S(10)), rows, o.cur, o.top, true);
+    const Row &r = rows[(size_t)o.cur];
+    std::vector<Prompt> mine;
+    if (r.bar >= 0.0f) { mine.push_back({B_LR, "Adjust (hold: fast)"}); mine.push_back({B_TRIANGLE, "Reset"}); }
+    else if (r.lr) { mine.push_back({B_LR, r.lrLabel != NULL ? r.lrLabel : "Change"}); }
+    if (r.ok) { mine.push_back({B_CROSS, "Choose"}); }
+    mine.push_back({B_SQUARE, "Reset part"});
+    for (const Prompt &p : ps) { mine.push_back(p); }
+    ps = mine;
+    if (sIn.back) { sBarDrag = -1; ov_close(); sound(2); return; }
+    // the mouse on a slider: it follows while held
+    if (sMouse && ImGui::IsMouseClicked(0)) {
+        for (const auto &b : sBars) { if (ImGui::IsMouseHoveringRect(b.second.Min, b.second.Max, false)) { sBarDrag = b.first; o.cur = b.first; clicked = -1; } }
+    }
+    if (sBarDrag >= 0 && (!ImGui::IsMouseDown(0) || sBarDrag >= (int)rows.size())) { sBarDrag = -1; }
+    if (sBarDrag >= 0) {
+        for (const auto &b : sBars) {
+            if (b.first == sBarDrag && rows[(size_t)sBarDrag].setFrac) {
+                float f = (ImGui::GetIO().MousePos.x - b.second.Min.x - S(8)) / (b.second.Max.x - b.second.Min.x - S(16));
+                rows[(size_t)sBarDrag].setFrac(f);
+            }
+        }
+        return;
+    }
+    if (sIn.sq) { // (the whole part back)
+        rows.back().ok();
+        return;
+    }
+    int cur = o.cur, id = o.id;
+    list_input(rows, cur, clicked);
+    for (Overlay &x : sOv) { if (x.id == id) { x.cur = cur; } }
+}
+
+// =============================================================================================== the texture painter
+// A secondary way to change the colours (PARTS: "Paint texture..."): a texture of the warrior's built model is brought
+// up large, a crosshair aimed on it with the left stick (or the mouse) paints with a brush, fills a spot, takes a
+// colour from it or rubs the paint out; the colours come from the colour wheel, the recent ones or the texture's own.
+// The paint is kept in the spec as "paint": {"<costume>:<texture>": {w, h, sig, png}} - an RGBA PNG of the texture's
+// size, alpha 255 where painted - which custom_fighter.py paints into the texture's palette when it builds (after the
+// colour changes; also on the face's eye frames / mouth textures and the damaged costume where they are the same
+// picture), so the model beside it shows it once it is built again.
+enum { T_BRUSH, T_FILL, T_PICK, T_ERASE, T_COUNT };
+static const char *const kTools[T_COUNT] = {"BRUSH", "FILL", "PICKER", "ERASER"};
+struct Painter {
+    std::string key, sig;
+    int index = 0, w = 0, h = 0, bits = 4, variants = 0, costume = 1;
+    std::vector<uint8_t> base, ov;             // RGBA: the texture as built (without the paint), the paint (alpha 255)
+    std::vector<std::vector<uint8_t>> undo, redo;
+    std::vector<unsigned> pal;                 // the texture's own colours
+    SDL_GPUTexture *gpu = NULL;
+    bool dirty = true;
+    float cx = 0, cy = 0, zoom = 1, ox = 0, oy = 0; // the crosshair (texels), the zoom (1: it fits), the texel at the view's corner
+    int tool = T_BRUSH, lastTool = T_BRUSH, size = 3, tol = 24;
+    unsigned colour = 0xff3030;
+    bool stroke = false, mouseDown = false, mouseAim = false;
+    float sx = 0, sy = 0;                      // where the stroke was the frame before
+    int edits = 0;                             // paint changed since it was written into the spec
+};
+static Painter sPt;
+static std::vector<SDL_GPUTexture *> sFreeLater; // textures drawn this frame: freed the next one
+
+static std::string b64enc(const uint8_t *d, size_t n) {
+    static const char *t = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string o;
+    o.reserve((n + 2) / 3 * 4);
+    for (size_t i = 0; i < n; i += 3) {
+        unsigned v = (unsigned)d[i] << 16 | (i + 1 < n ? (unsigned)d[i + 1] << 8 : 0) | (i + 2 < n ? d[i + 2] : 0);
+        o += t[(v >> 18) & 63];
+        o += t[(v >> 12) & 63];
+        o += i + 1 < n ? t[(v >> 6) & 63] : '=';
+        o += i + 2 < n ? t[v & 63] : '=';
+    }
+    return o;
+}
+static std::string b64dec(const std::string &b64) {
+    std::string out;
+    unsigned v = 0;
+    int bits = 0;
+    for (unsigned char c : b64) {
+        int d = c >= 'A' && c <= 'Z' ? c - 'A' : c >= 'a' && c <= 'z' ? c - 'a' + 26 : c >= '0' && c <= '9' ? c - '0' + 52 : c == '+' ? 62 : c == '/' ? 63 : -1;
+        if (d < 0) { continue; }
+        v = (v << 6) | (unsigned)d;
+        bits += 6;
+        if (bits >= 8) { bits -= 8; out += (char)((v >> bits) & 0xFF); }
+    }
+    return out;
+}
+static std::string png_b64(const uint8_t *rgba, int w, int h) { // (SDL's PNG writer)
+    std::string out;
+    SDL_Surface *s = SDL_CreateSurfaceFrom(w, h, SDL_PIXELFORMAT_RGBA32, (void *)rgba, w * 4);
+    SDL_IOStream *io = SDL_IOFromDynamicMem();
+    if (s != NULL && io != NULL && SDL_SavePNG_IO(s, io, false)) {
+        Sint64 n = SDL_TellIO(io);
+        void *p = SDL_GetPointerProperty(SDL_GetIOProperties(io), SDL_PROP_IOSTREAM_DYNAMIC_MEMORY_POINTER, NULL);
+        if (p != NULL && n > 0) { out = b64enc((const uint8_t *)p, (size_t)n); }
+    }
+    if (io != NULL) { SDL_CloseIO(io); }
+    if (s != NULL) { SDL_DestroySurface(s); }
+    return out;
+}
+static bool rgba_of_png64(const std::string &b64, std::vector<uint8_t> &out, int *w, int *h) {
+    std::string d = b64dec(b64);
+    uint8_t *pix = d.empty() ? NULL : decode_png(d.data(), d.size(), w, h);
+    if (pix == NULL) { return false; }
+    out.assign(pix, pix + (size_t)*w * *h * 4);
+    free(pix);
+    return true;
+}
+static void pt_release(void) {
+    if (sPt.gpu != NULL) { sFreeLater.push_back(sPt.gpu); sPt.gpu = NULL; }
+    sPt.dirty = true;
+}
+// The paint into the spec (and so into the next build of the model).
+static void pt_commit(void) {
+    Painter &p = sPt;
+    p.edits = 0;
+    bool any = false;
+    for (size_t i = 3; i < p.ov.size(); i += 4) { if (p.ov[i] >= 128) { any = true; break; } }
+    if (!any) {
+        J *pa = sSpec.find("paint");
+        if (pa != NULL) { pa->erase(p.key.c_str()); }
+        clean_empty("paint");
+        touch();
+        return;
+    }
+    J e = J::obj();
+    e.set("w", J::num(p.w));
+    e.set("h", J::num(p.h));
+    e.set("sig", J::str(p.sig));
+    e.set("png", J::str(png_b64(p.ov.data(), p.w, p.h)));
+    sSpec.at("paint").set(p.key.c_str(), e);
+    touch();
+}
+static void pt_snapshot(void) {
+    sPt.undo.push_back(sPt.ov);
+    if (sPt.undo.size() > 40) { sPt.undo.erase(sPt.undo.begin()); }
+    sPt.redo.clear();
+}
+static void pt_composite(std::vector<uint8_t> &out) { // the texture with its paint (a painted pixel keeps its alpha)
+    const Painter &p = sPt;
+    out = p.base;
+    for (size_t i = 0; i + 3 < out.size() && i + 3 < p.ov.size(); i += 4) {
+        if (p.ov[i + 3] >= 128) { out[i] = p.ov[i]; out[i + 1] = p.ov[i + 1]; out[i + 2] = p.ov[i + 2]; }
+    }
+}
+static unsigned pt_pixel(int x, int y, int *alpha) {
+    const Painter &p = sPt;
+    size_t i = ((size_t)y * p.w + x) * 4;
+    const uint8_t *s = p.ov[i + 3] >= 128 ? &p.ov[i] : &p.base[i];
+    if (alpha) { *alpha = p.base[i + 3]; }
+    return (unsigned)(s[0] << 16 | s[1] << 8 | s[2]);
+}
+static void pt_dab(float fx, float fy) { // the brush (or the eraser) at a point
+    Painter &p = sPt;
+    float r = p.size * 0.5f;
+    int x0 = (int)floorf(fx - r), x1 = (int)floorf(fx + r), y0 = (int)floorf(fy - r), y1 = (int)floorf(fy + r);
+    for (int y = y0; y <= y1; y++) {
+        for (int x = x0; x <= x1; x++) {
+            if (x < 0 || y < 0 || x >= p.w || y >= p.h) { continue; }
+            float dx = x + 0.5f - fx, dy = y + 0.5f - fy;
+            if (p.size > 1 && dx * dx + dy * dy > r * r + 0.25f) { continue; }
+            if (p.size <= 1 && (x != (int)floorf(fx) || y != (int)floorf(fy))) { continue; }
+            uint8_t *o = &p.ov[((size_t)y * p.w + x) * 4];
+            if (p.tool == T_ERASE) { o[0] = o[1] = o[2] = o[3] = 0; }
+            else { o[0] = (uint8_t)(p.colour >> 16); o[1] = (uint8_t)(p.colour >> 8); o[2] = (uint8_t)p.colour; o[3] = 255; }
+        }
+    }
+    p.dirty = true;
+    p.edits++;
+}
+static void pt_line(float x0, float y0, float x1, float y1) {
+    float d = std::max(fabsf(x1 - x0), fabsf(y1 - y0));
+    int n = (int)(d * 2.0f) + 1;
+    for (int i = 1; i <= n; i++) { pt_dab(x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n); }
+}
+static void pt_fill(int sx, int sy) { // the spot the crosshair is on: its pixels of about the same colour, joined
+    Painter &p = sPt;
+    if (sx < 0 || sy < 0 || sx >= p.w || sy >= p.h) { return; }
+    int a0;
+    unsigned c0 = pt_pixel(sx, sy, &a0);
+    std::vector<uint8_t> seen((size_t)p.w * p.h, 0);
+    std::vector<int> stack(1, sy * p.w + sx);
+    seen[(size_t)(sy * p.w + sx)] = 1;
+    int n = 0;
+    while (!stack.empty()) {
+        int at = stack.back();
+        stack.pop_back();
+        int x = at % p.w, y = at / p.w;
+        uint8_t *o = &p.ov[(size_t)at * 4];
+        o[0] = (uint8_t)(p.colour >> 16); o[1] = (uint8_t)(p.colour >> 8); o[2] = (uint8_t)p.colour; o[3] = 255;
+        n++;
+        static const int kD[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+        for (const auto &d : kD) {
+            int nx = x + d[0], ny = y + d[1];
+            if (nx < 0 || ny < 0 || nx >= p.w || ny >= p.h || seen[(size_t)(ny * p.w + nx)]) { continue; }
+            int a;
+            unsigned c = pt_pixel(nx, ny, &a);
+            int dr = abs((int)((c >> 16) & 255) - (int)((c0 >> 16) & 255)), dg = abs((int)((c >> 8) & 255) - (int)((c0 >> 8) & 255)), db = abs((int)(c & 255) - (int)(c0 & 255));
+            if (std::max(dr, std::max(dg, db)) <= p.tol && (a >= 128) == (a0 >= 128)) {
+                seen[(size_t)(ny * p.w + nx)] = 1;
+                stack.push_back(ny * p.w + nx);
+            }
+        }
+    }
+    p.dirty = true;
+    p.edits += n;
+}
+static void painter_close(void) {
+    if (sPt.edits) { pt_commit(); }
+    pt_release();
+    sPt.stroke = false;
+}
+static void open_painter(const J &t, int costume) {
+    Painter &p = sPt;
+    painter_close();
+    int w = 0, h = 0;
+    std::vector<uint8_t> base;
+    if (!rgba_of_png64(t["png"].text(), base, &w, &h) || w != (int)t["w"].number(0) || h != (int)t["h"].number(0)) {
+        toast("That texture could not be read.", true);
+        return;
+    }
+    bool same = p.key == t["key"].text() && p.sig == t["sig"].text() && p.w == w && p.h == h;
+    p.key = t["key"].text();
+    p.sig = t["sig"].text();
+    p.index = (int)t["index"].number(0);
+    p.w = w;
+    p.h = h;
+    p.bits = (int)t["bits"].number(4);
+    p.variants = (int)t["variants"].number(0);
+    p.costume = costume;
+    p.base = base;
+    p.ov.assign((size_t)w * h * 4, 0);
+    const J &have = sSpec["paint"][p.key.c_str()];
+    if (have.isObj()) {
+        std::vector<uint8_t> ov;
+        int ow = 0, oh = 0;
+        if (rgba_of_png64(have["png"].text(), ov, &ow, &oh) && ow == w && oh == h) { p.ov = ov; }
+    }
+    if (!same) {
+        p.undo.clear();
+        p.redo.clear();
+        p.cx = w * 0.5f;
+        p.cy = h * 0.5f;
+        p.zoom = 1.0f;
+    }
+    p.pal.clear();
+    for (size_t i = 0; i < t["palette"].size(); i++) { p.pal.push_back(hex_rgb(t["palette"][i].text())); }
+    p.edits = 0;
+    p.dirty = true;
+    p.stroke = false;
+    Overlay o;
+    o.kind = OV_PAINT;
+    o.title = "PAINT: TEXTURE " + std::to_string(p.index) + " (COSTUME " + std::to_string(costume) + ")";
+    ov_push(o);
+    sound(1);
+}
+
+// ---- which texture: the textures the shown costume draws with (/api/textures), most used first
+static void texpick_load(Overlay *o) {
+    o->loading = true;
+    J body = J::obj();
+    J spec = sSpec;
+    if (spec["name"].text().empty()) { spec.set("name", J::str("preview")); }
+    body.set("spec", spec);
+    body.set("costume", J::num(sShownCostume));
+    int id = o->id;
+    api("/api/textures", &body, [id](int st, const J &r) {
+        Overlay *ov = NULL;
+        for (Overlay &x : sOv) { if (x.id == id) { ov = &x; } }
+        if (ov == NULL) { return; }
+        ov->loading = false;
+        if (st != 200) { toast(st == 404 ? "This creator is older than the game: it has no texture painter." : error_of(st, r), true); return; }
+        for (SDL_GPUTexture *t : ov->pics) { Ui_TextureFree(t); }
+        ov->pics.clear();
+        ov->picW.clear();
+        ov->picH.clear();
+        ov->tex = r["textures"];
+        ov->layer = (int)r["costume"].number(1);
+        for (size_t i = 0; i < ov->tex.size(); i++) {
+            int w = 0, h = 0;
+            ov->pics.push_back(png64_tex(ov->tex[i]["png"].text(), &w, &h));
+            ov->picW.push_back(w);
+            ov->picH.push_back(h);
+            if (ov->texture >= 0 && (int)ov->tex[i]["index"].number(-1) == ov->texture) { ov->cur = (int)i; }
+        }
+        if (ov->texture >= 0 && ov->cur < (int)ov->tex.size()) { // (asked for one texture: straight to it)
+            J t = ov->tex[(size_t)ov->cur];
+            int costume = ov->layer;
+            ov->texture = -1;
+            open_painter(t, costume);
+        }
+    }, 300000);
+}
+static void open_texpick(int texture) {
+    Overlay o;
+    o.kind = OV_TEXPICK;
+    o.title = "PAINT: WHICH TEXTURE?";
+    o.texture = texture;
+    ov_push(o);
+    texpick_load(&sOv.back());
+    sound(1);
+}
+static void texpick_frame(Overlay &o, std::vector<Prompt> &ps) {
+    float top0 = sBoxA.y + S(56);
+    int n = (int)o.tex.size();
+    if (o.loading && n == 0) {
+        sDl->AddText(sFont, S(18), ImVec2(sBoxA.x + S(24), top0 + S(10)), kInk, "Bringing up your warrior's textures...");
+    }
+    float rh = S(76), gap = S(6);
+    int fits = (int)((sBoxB.y - top0 - S(12)) / (rh + gap));
+    if (fits < 1) { fits = 1; }
+    int was = o.cur;
+    if (sIn.up && o.cur > 0) { o.cur--; }
+    if (sIn.down && o.cur < n - 1) { o.cur++; }
+    if (o.cur != was) { sound(0); }
+    if (o.cur < o.top) { o.top = o.cur; }
+    if (o.cur >= o.top + fits) { o.top = o.cur - fits + 1; }
+    if (sMouse && ImGui::GetIO().MouseWheel != 0 && ImGui::IsMouseHoveringRect(sBoxA, sBoxB)) {
+        o.top = std::max(0, std::min(n - fits, o.top - (int)ImGui::GetIO().MouseWheel));
+    }
+    int clicked = -1;
+    for (int i = o.top; i < n && i < o.top + fits; i++) {
+        const J &t = o.tex[(size_t)i];
+        float y = top0 + (i - o.top) * (rh + gap);
+        ImVec2 a(sBoxA.x + S(14), y), b(sBoxB.x - S(14), y + rh);
+        bool sel = i == o.cur;
+        if (sel) { grad(a, b, kGold1, kGold2, S(10)); } else { sDl->AddRectFilled(a, b, IM_COL32(255, 255, 255, 16), S(10)); }
+        float ps2 = rh - S(12);
+        ImVec2 pa(a.x + S(6), y + S(6)), pb(a.x + S(6) + ps2, y + S(6) + ps2);
+        for (int cy = 0; cy < 4; cy++) { // (a checkerboard behind it: its clear parts)
+            for (int cx = 0; cx < 4; cx++) {
+                sDl->AddRectFilled(ImVec2(pa.x + cx * ps2 / 4, pa.y + cy * ps2 / 4), ImVec2(pa.x + (cx + 1) * ps2 / 4, pa.y + (cy + 1) * ps2 / 4),
+                                   (cx + cy) & 1 ? IM_COL32(90, 80, 120, 255) : IM_COL32(140, 130, 170, 255));
+            }
+        }
+        if (i < (int)o.pics.size() && o.pics[(size_t)i] != NULL) {
+            float tw = (float)o.picW[(size_t)i], th = (float)o.picH[(size_t)i], k = std::min(ps2 / tw, ps2 / th);
+            ImVec2 c((pa.x + pb.x) * 0.5f, (pa.y + pb.y) * 0.5f);
+            sDl->AddImage(ImTextureRef((ImTextureID)(intptr_t)o.pics[(size_t)i]), ImVec2(c.x - tw * k * 0.5f, c.y - th * k * 0.5f), ImVec2(c.x + tw * k * 0.5f, c.y + th * k * 0.5f));
+        }
+        ImU32 ink = sel ? kDark : kInk;
+        char line[128];
+        snprintf(line, sizeof(line), "Texture %d", (int)t["index"].number(0));
+        sDl->AddText(sBold != NULL ? sBold : sFont, S(18), ImVec2(pb.x + S(14), y + S(8)), ink, line);
+        snprintf(line, sizeof(line), "%d x %d, %d colours%s", (int)t["w"].number(0), (int)t["h"].number(0), (int)t["bits"].number(4) == 4 ? 16 : 256,
+                 t["variants"].number(0) > 0 ? " - with its eye frames / mouth shapes" : "");
+        sDl->AddText(sFont, S(14), ImVec2(pb.x + S(14), y + S(32)), sel ? IM_COL32(107, 58, 0, 255) : kDim, line);
+        const J &pal = t["palette"];
+        for (size_t c = 0; c < pal.size() && c < 16; c++) {
+            ImVec2 ca(pb.x + S(14) + c * S(17), y + S(52));
+            sDl->AddRectFilled(ca, ImVec2(ca.x + S(14), ca.y + S(14)), col32(hex_rgb(pal[c].text())), S(3));
+        }
+        if (sSpec["paint"].has(t["key"].text().c_str())) {
+            const char *pt = "PAINTED";
+            float w = text_w(sFont, S(13), pt) + S(16);
+            ImVec2 ca(b.x - w - S(10), y + S(8));
+            sDl->AddRectFilled(ca, ImVec2(ca.x + w, ca.y + S(22)), sel ? IM_COL32(74, 26, 0, 255) : IM_COL32(245, 197, 66, 255), S(11));
+            sDl->AddText(sFont, S(13), ImVec2(ca.x + S(8), ca.y + S(4)), sel ? kGold1 : kDark, pt);
+        }
+        if (click_in(a, b)) { clicked = i; }
+    }
+    if (clicked >= 0) { o.cur = clicked; sIn.ok = true; }
+    bool painted = n > 0 && sSpec["paint"].has(o.tex[(size_t)o.cur]["key"].text().c_str());
+    ps.push_back({B_CROSS, "Paint on it"});
+    if (painted) { ps.push_back({B_SQUARE, "Remove its paint"}); }
+    ps.push_back({B_CIRCLE, "Back"});
+    if (sIn.back) { ov_close(); sound(2); return; }
+    if (n == 0) { return; }
+    if (sIn.sq && painted) {
+        J *pa = sSpec.find("paint");
+        if (pa != NULL) { pa->erase(o.tex[(size_t)o.cur]["key"].text().c_str()); }
+        clean_empty("paint");
+        touch();
+        sound(2);
+        return;
+    }
+    if (sIn.ok) { J t = o.tex[(size_t)o.cur]; open_painter(t, o.layer); }
+}
+
+// ---- the painter itself
+static void painter_frame(Overlay &o, std::vector<Prompt> &ps) {
+    Painter &p = sPt;
+    ImGuiIO &io = ImGui::GetIO();
+    if (p.w <= 0 || p.base.empty()) { ov_close(); return; }
+    // the view: a square on the left of the box; the tools beside it
+    ImVec2 va(sBoxA.x + S(16), sBoxA.y + S(54));
+    float side = std::min(sBoxB.y - S(14) - va.y, sBoxB.x - sBoxA.x - S(320));
+    ImVec2 vb(va.x + side, va.y + side);
+    float fit = side / (float)std::max(p.w, p.h);
+    bool over = sMouse && ImGui::IsMouseHoveringRect(va, vb, false);
+    // zoom: the right stick up / down, + / -, the wheel over it (about the crosshair, or the mouse)
+    float dz = sIn.zoom != 0.0f && !sIn.r3 ? powf(1.03f, sIn.zoom) : 1.0f;
+    if (over && io.MouseWheel != 0.0f) { dz *= powf(1.25f, io.MouseWheel); }
+    if (dz != 1.0f) {
+        float sc0 = fit * p.zoom;
+        float ax = over ? p.ox + (io.MousePos.x - va.x) / sc0 : p.cx, ay = over ? p.oy + (io.MousePos.y - va.y) / sc0 : p.cy;
+        float sxp = (ax - p.ox) * sc0, syp = (ay - p.oy) * sc0;
+        p.zoom = std::max(1.0f, std::min(16.0f, p.zoom * dz));
+        float sc1 = fit * p.zoom;
+        p.ox = ax - sxp / sc1;
+        p.oy = ay - syp / sc1;
+    }
+    float sc = fit * p.zoom, visW = side / sc, visH = side / sc;
+    // the crosshair: the left stick (faster the further), the d-pad / arrows a texel a press, the mouse
+    bool moved = false;
+    float speed = std::max(p.w, p.h) / 128.0f * 1.6f / sqrtf(p.zoom);
+    if (fabsf(sIn.lx) > 0.05f || fabsf(sIn.ly) > 0.05f) {
+        p.cx += sIn.lx * fabsf(sIn.lx) * speed * 2.0f;
+        p.cy += sIn.ly * fabsf(sIn.ly) * speed * 2.0f;
+        moved = true;
+        p.mouseAim = false;
+    }
+    if (sIn.dleft || sIn.dright || sIn.dup || sIn.ddown) {
+        p.cx = floorf(p.cx) + 0.5f + (sIn.dright ? 1 : 0) - (sIn.dleft ? 1 : 0);
+        p.cy = floorf(p.cy) + 0.5f + (sIn.ddown ? 1 : 0) - (sIn.dup ? 1 : 0);
+        moved = true;
+        p.mouseAim = false;
+    }
+    if (over && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0 || ImGui::IsMouseClicked(0))) {
+        p.cx = p.ox + (io.MousePos.x - va.x) / sc;
+        p.cy = p.oy + (io.MousePos.y - va.y) / sc;
+        p.mouseAim = true;
+    }
+    p.cx = std::max(0.0f, std::min((float)p.w - 0.01f, p.cx));
+    p.cy = std::max(0.0f, std::min((float)p.h - 0.01f, p.cy));
+    // the view follows the crosshair (not the mouse's); the right mouse button drags it
+    if (moved) {
+        float m = visW * 0.12f;
+        if (p.cx < p.ox + m) { p.ox = p.cx - m; }
+        if (p.cx > p.ox + visW - m) { p.ox = p.cx - visW + m; }
+        if (p.cy < p.oy + m) { p.oy = p.cy - m; }
+        if (p.cy > p.oy + visH - m) { p.oy = p.cy - visH + m; }
+    }
+    if (over && ImGui::IsMouseDragging(1)) { p.ox -= io.MouseDelta.x / sc; p.oy -= io.MouseDelta.y / sc; }
+    if (sIn.r3) { p.ox += sIn.turn * visW * 0.02f; p.oy -= sIn.zoom * visH * 0.02f; }
+    p.ox = visW >= p.w ? (p.w - visW) * 0.5f : std::max(0.0f, std::min(p.w - visW, p.ox));
+    p.oy = visH >= p.h ? (p.h - visH) * 0.5f : std::max(0.0f, std::min(p.h - visH, p.oy));
+
+    // ---- the tools (the buttons, and the mouse on the side panel)
+    float x0 = vb.x + S(18), x1 = sBoxB.x - S(16), y = va.y;
+    ImFont *bold = sBold != NULL ? sBold : sFont;
+    int clickTool = -1, clickColour = -1;
+    unsigned clickRgb = 0;
+    bool clickWheel = false, clickUndo = false, clickRedo = false, clickMinus = false, clickPlus = false;
+    sDl->AddText(sFont, S(13), ImVec2(x0, y), kDim, "TOOL");
+    y += S(18);
+    float cw = (x1 - x0 - S(8)) * 0.5f;
+    for (int t = 0; t < T_COUNT; t++) {
+        ImVec2 a(x0 + (t % 2) * (cw + S(8)), y + (t / 2) * S(36)), b(a.x + cw, a.y + S(30));
+        if (t == p.tool) { grad(a, b, kGold1, kGold2, S(15)); } else { grad(a, b, IM_COL32(198, 181, 245, 255), IM_COL32(125, 100, 200, 255), S(15)); }
+        sDl->AddText(bold, S(15), ImVec2(a.x + (cw - text_w(bold, S(15), kTools[t])) * 0.5f, a.y + S(7)), t == p.tool ? IM_COL32(74, 26, 0, 255) : IM_COL32(43, 22, 96, 255), kTools[t]);
+        if (click_in(a, b)) { clickTool = t; }
+    }
+    y += S(78);
+    {
+        char line[64];
+        if (p.tool == T_FILL) { snprintf(line, sizeof(line), "Fill tolerance: %d", p.tol); }
+        else if (p.tool == T_PICK) { snprintf(line, sizeof(line), "Takes the colour it is on"); }
+        else { snprintf(line, sizeof(line), "%s size: %d px", p.tool == T_ERASE ? "Eraser" : "Brush", p.size); }
+        float gx = x0 + glyph(B_L2R2, ImVec2(x0, y + S(10)), S(10)) + S(8);
+        sDl->AddText(sFont, S(15), ImVec2(gx, y + S(1)), kInk, line);
+        if (p.tool != T_PICK) {
+            ImVec2 ma(x1 - S(54), y - S(2)), mb(x1 - S(30), y + S(22)), pa(x1 - S(24), y - S(2)), pb(x1, y + S(22));
+            sDl->AddRectFilled(ma, mb, IM_COL32(42, 26, 85, 255), S(5));
+            sDl->AddRectFilled(pa, pb, IM_COL32(42, 26, 85, 255), S(5));
+            sDl->AddText(bold, S(16), ImVec2(ma.x + S(8), ma.y + S(2)), kInk, "-");
+            sDl->AddText(bold, S(16), ImVec2(pa.x + S(7), pa.y + S(2)), kInk, "+");
+            clickMinus = click_in(ma, mb);
+            clickPlus = click_in(pa, pb);
+        }
+    }
+    y += S(32);
+    sDl->AddText(sFont, S(13), ImVec2(x0, y), kDim, "COLOUR");
+    y += S(18);
+    {
+        ImVec2 a(x0, y), b(x0 + S(56), y + S(56));
+        sDl->AddRectFilled(a, b, col32(p.colour), S(8));
+        sDl->AddRect(a, b, IM_COL32(255, 255, 255, 220), S(8), 0, S(2));
+        sDl->AddText(bold, S(17), ImVec2(b.x + S(12), y + S(2)), kInk, hex_of(p.colour).c_str());
+        ImVec2 wa(b.x + S(12), y + S(26)), wb(x1, y + S(54));
+        grad(wa, wb, IM_COL32(198, 181, 245, 255), IM_COL32(125, 100, 200, 255), S(14));
+        float gx = wa.x + S(6) + glyph(B_TRIANGLE, ImVec2(wa.x + S(6), (wa.y + wb.y) * 0.5f), S(9)) + S(6);
+        sDl->AddText(sFont, S(14), ImVec2(gx, wa.y + S(6)), IM_COL32(43, 22, 96, 255), "Colour wheel");
+        clickWheel = click_in(a, b) || click_in(wa, wb);
+    }
+    y += S(66);
+    auto swatches = [&](const char *label, const std::vector<unsigned> &cols) {
+        if (cols.empty()) { return; }
+        sDl->AddText(sFont, S(13), ImVec2(x0, y), kDim, label);
+        y += S(17);
+        float s0 = S(22), g = S(5);
+        int per = std::max(1, (int)((x1 - x0 + g) / (s0 + g)));
+        for (size_t i = 0; i < cols.size() && i < 32; i++) {
+            ImVec2 a(x0 + (i % per) * (s0 + g), y + (i / per) * (s0 + g)), b(a.x + s0, a.y + s0);
+            sDl->AddRectFilled(a, b, col32(cols[i]), S(4));
+            sDl->AddRect(a, b, cols[i] == p.colour ? IM_COL32(255, 226, 122, 255) : IM_COL32(255, 255, 255, 60), S(4), 0, cols[i] == p.colour ? S(2.5f) : S(1));
+            if (click_in(a, b)) { clickColour = 1; clickRgb = cols[i]; }
+        }
+        y += ((std::min(cols.size(), (size_t)32) + per - 1) / per) * (s0 + g) + S(6);
+    };
+    swatches("RECENT", sRecent);
+    swatches("ITS OWN COLOURS", p.pal);
+    {
+        char line[160];
+        snprintf(line, sizeof(line), "%d x %d, %d colours: new colours share them (close ones are merged).%s", p.w, p.h, p.bits == 4 ? 16 : 256,
+                 p.variants > 0 ? " Its eye frames and mouth shapes get the paint too." : "");
+        sDl->AddText(sFont, S(13), ImVec2(x0, y), kDim, line, NULL, x1 - x0);
+        y += S(56);
+        ImVec2 ua(x0, y), ub(x0 + cw, y + S(26)), ra(x0 + cw + S(8), y), rb(x1, y + S(26));
+        grad(ua, ub, IM_COL32(198, 181, 245, p.undo.empty() ? 110 : 255), IM_COL32(125, 100, 200, p.undo.empty() ? 110 : 255), S(13));
+        grad(ra, rb, IM_COL32(198, 181, 245, p.redo.empty() ? 110 : 255), IM_COL32(125, 100, 200, p.redo.empty() ? 110 : 255), S(13));
+        snprintf(line, sizeof(line), "L1 Undo (%d)", (int)p.undo.size());
+        if (sKeyboardLast) { snprintf(line, sizeof(line), "Ctrl+Z Undo (%d)", (int)p.undo.size()); }
+        sDl->AddText(sFont, S(13), ImVec2(ua.x + S(10), ua.y + S(5)), IM_COL32(43, 22, 96, 255), line);
+        snprintf(line, sizeof(line), sKeyboardLast ? "Ctrl+Y Redo (%d)" : "R1 Redo (%d)", (int)p.redo.size());
+        sDl->AddText(sFont, S(13), ImVec2(ra.x + S(10), ra.y + S(5)), IM_COL32(43, 22, 96, 255), line);
+        clickUndo = click_in(ua, ub);
+        clickRedo = click_in(ra, rb);
+        y += S(34);
+        snprintf(line, sizeof(line), "Zoom %.1fx   crosshair %d, %d", p.zoom, (int)p.cx, (int)p.cy);
+        sDl->AddText(sFont, S(13), ImVec2(x0, y), kDim, line);
+    }
+
+    // ---- what the buttons do
+    ps.push_back({B_CROSS, p.tool == T_FILL ? "Fill" : p.tool == T_PICK ? "Take colour" : p.tool == T_ERASE ? "Rub out" : "Paint (hold)"});
+    ps.push_back({B_SQUARE, "Tool"});
+    ps.push_back({B_TRIANGLE, "Colour wheel"});
+    ps.push_back({B_L1R1, "Undo / redo"});
+    ps.push_back({B_L2R2, p.tool == T_FILL ? "Tolerance" : "Size"});
+    ps.push_back({B_RSTICK, "Zoom"});
+    ps.push_back({B_CIRCLE, "Done"});
+    if (sIn.back) { painter_close(); ov_close(); sound(2); return; }
+    if (clickTool >= 0 || sIn.sq) {
+        int t = clickTool >= 0 ? clickTool : (p.tool + 1) % T_COUNT;
+        if (t == T_PICK && p.tool != T_PICK) { p.lastTool = p.tool; }
+        p.tool = t;
+        sound(0);
+    }
+    if (sIn.l2 || sIn.r2 || clickMinus || clickPlus) {
+        int d = sIn.r2 || clickPlus ? 1 : -1;
+        if (p.tool == T_FILL) { p.tol = std::max(0, std::min(128, p.tol + d * 4)); }
+        else { p.size = std::max(1, std::min(32, p.size + d * (p.size >= 8 ? 2 : 1))); }
+        sound(0);
+    }
+    bool undo = sIn.l1 || sIn.undo || clickUndo, redo = sIn.r1 || sIn.redo || clickRedo;
+    if (undo && !p.undo.empty() && !p.stroke) {
+        p.redo.push_back(p.ov);
+        p.ov = p.undo.back();
+        p.undo.pop_back();
+        p.dirty = true;
+        pt_commit();
+        sound(2);
+    } else if (redo && !p.redo.empty() && !p.stroke) {
+        p.undo.push_back(p.ov);
+        p.ov = p.redo.back();
+        p.redo.pop_back();
+        p.dirty = true;
+        pt_commit();
+        sound(0);
+    }
+    if (clickColour >= 0) { p.colour = clickRgb; sound(0); }
+    if (sIn.tri || clickWheel) {
+        open_wheel("THE BRUSH'S COLOUR", p.colour, [](unsigned rgb) { sPt.colour = rgb; add_recent(rgb); if (sPt.tool == T_PICK || sPt.tool == T_ERASE) { sPt.tool = T_BRUSH; } });
+        return;
+    }
+    // the tool on the texture: cross (held) or the left mouse button pressed on it
+    if (sMouse && ImGui::IsMouseClicked(0) && over) { p.mouseDown = true; }
+    if (!ImGui::IsMouseDown(0)) { p.mouseDown = false; }
+    bool press = sIn.ok || (p.mouseDown && ImGui::IsMouseClicked(0));
+    bool held = sIn.okHeld || p.mouseDown;
+    int tx = (int)floorf(p.cx), ty = (int)floorf(p.cy);
+    if (p.tool == T_BRUSH || p.tool == T_ERASE) {
+        if (held && !p.stroke) {
+            pt_snapshot();
+            p.stroke = true;
+            pt_dab(p.cx, p.cy);
+            p.sx = p.cx;
+            p.sy = p.cy;
+        } else if (held) {
+            if (p.cx != p.sx || p.cy != p.sy) { pt_line(p.sx, p.sy, p.cx, p.cy); }
+            p.sx = p.cx;
+            p.sy = p.cy;
+        } else if (p.stroke) {
+            p.stroke = false;
+            pt_commit();
+            add_recent(p.colour);
+        }
+    } else if (press && p.tool == T_FILL) {
+        pt_snapshot();
+        pt_fill(tx, ty);
+        pt_commit();
+        add_recent(p.colour);
+        sound(1);
+    } else if (press && p.tool == T_PICK) {
+        int a;
+        p.colour = pt_pixel(tx, ty, &a);
+        add_recent(p.colour);
+        p.tool = p.lastTool == T_PICK ? T_BRUSH : p.lastTool;
+        sound(1);
+    }
+
+    // ---- the texture, as painted, on a checkerboard; the crosshair and the brush's outline over it
+    if (p.dirty || p.gpu == NULL) {
+        std::vector<uint8_t> pic;
+        pt_composite(pic);
+        uint8_t *pix = (uint8_t *)malloc(pic.size());
+        if (pix != NULL) {
+            memcpy(pix, pic.data(), pic.size());
+            pt_release();
+            p.gpu = Ui_Texture(pix, (uint32_t)p.w, (uint32_t)p.h);
+        }
+        p.dirty = false;
+    }
+    sDl->AddRectFilled(ImVec2(va.x - S(3), va.y - S(3)), ImVec2(vb.x + S(3), vb.y + S(3)), IM_COL32(20, 10, 40, 255), S(6));
+    sDl->PushClipRect(va, vb, true);
+    float ck = std::max(S(12), sc * 4.0f);
+    for (float cy = va.y; cy < vb.y; cy += ck) {
+        for (float cx = va.x; cx < vb.x; cx += ck) {
+            int k = (int)((cx - va.x) / ck) + (int)((cy - va.y) / ck);
+            sDl->AddRectFilled(ImVec2(cx, cy), ImVec2(cx + ck, cy + ck), k & 1 ? IM_COL32(70, 60, 100, 255) : IM_COL32(110, 100, 140, 255));
+        }
+    }
+    ImVec2 i0(va.x - p.ox * sc, va.y - p.oy * sc), i1(i0.x + p.w * sc, i0.y + p.h * sc);
+    if (p.gpu != NULL) { sDl->AddImage(ImTextureRef((ImTextureID)(intptr_t)p.gpu), i0, i1); }
+    if (p.zoom >= 6.0f) { // (the texel grid, close up)
+        for (int gx = (int)p.ox; gx <= (int)(p.ox + visW) + 1; gx++) { float sx2 = i0.x + gx * sc; sDl->AddLine(ImVec2(sx2, va.y), ImVec2(sx2, vb.y), IM_COL32(0, 0, 0, 40)); }
+        for (int gy = (int)p.oy; gy <= (int)(p.oy + visH) + 1; gy++) { float sy2 = i0.y + gy * sc; sDl->AddLine(ImVec2(va.x, sy2), ImVec2(vb.x, sy2), IM_COL32(0, 0, 0, 40)); }
+    }
+    ImVec2 c(i0.x + p.cx * sc, i0.y + p.cy * sc);
+    if (p.tool == T_BRUSH || p.tool == T_ERASE) {
+        float r = std::max(p.size * 0.5f * sc, S(3));
+        if (p.size <= 1) {
+            ImVec2 a(i0.x + tx * sc, i0.y + ty * sc);
+            sDl->AddRect(a, ImVec2(a.x + sc, a.y + sc), IM_COL32(0, 0, 0, 255), 0, 0, S(3));
+            sDl->AddRect(a, ImVec2(a.x + sc, a.y + sc), IM_COL32(255, 255, 255, 255), 0, 0, S(1.2f));
+        } else {
+            sDl->AddCircle(c, r, IM_COL32(0, 0, 0, 255), 0, S(3));
+            sDl->AddCircle(c, r, p.tool == T_ERASE ? IM_COL32(255, 255, 255, 255) : col32(p.colour), 0, S(1.5f));
+        }
+    }
+    float arm = S(16), gapc = S(5);
+    for (int pass = 0; pass < 2; pass++) { // (the crosshair: dark under light)
+        ImU32 col = pass == 0 ? IM_COL32(0, 0, 0, 230) : IM_COL32(255, 255, 255, 255);
+        float th = pass == 0 ? S(4) : S(2);
+        sDl->AddLine(ImVec2(c.x - arm - gapc, c.y), ImVec2(c.x - gapc, c.y), col, th);
+        sDl->AddLine(ImVec2(c.x + gapc, c.y), ImVec2(c.x + arm + gapc, c.y), col, th);
+        sDl->AddLine(ImVec2(c.x, c.y - arm - gapc), ImVec2(c.x, c.y - gapc), col, th);
+        sDl->AddLine(ImVec2(c.x, c.y + gapc), ImVec2(c.x, c.y + arm + gapc), col, th);
+    }
+    sDl->PopClipRect();
+    sDl->AddRect(ImVec2(va.x - S(3), va.y - S(3)), ImVec2(vb.x + S(3), vb.y + S(3)), IM_COL32(245, 197, 66, 255), S(6), 0, S(2));
+    // what is under the crosshair
+    int ua;
+    unsigned under = pt_pixel(tx, ty, &ua);
+    ImVec2 ua0(vb.x - S(118), vb.y - S(30));
+    sDl->AddRectFilled(ua0, ImVec2(vb.x - S(4), vb.y - S(4)), IM_COL32(20, 10, 40, 200), S(6));
+    sDl->AddRectFilled(ImVec2(ua0.x + S(5), ua0.y + S(5)), ImVec2(ua0.x + S(21), ua0.y + S(21)), col32(under), S(3));
+    sDl->AddText(sFont, S(13), ImVec2(ua0.x + S(27), ua0.y + S(5)), ua >= 128 ? kInk : kDim, ua >= 128 ? hex_of(under).c_str() : "(clear)");
+}
+
+// =============================================================================================== the colour wheel
+// A hue ring around a saturation / brightness square, the colour before and after, its code (typed: square), the recent
+// colours. Left stick: saturation and brightness; d-pad / arrows: the hue (left / right) and the brightness (up /
+// down); L1 / R1 saturation; L2 / R2 the recent colours; the mouse drags on the ring and the square.
+static int sWheelDrag; // 1 the ring, 2 the square (the mouse holds it)
+static void open_wheel(const std::string &title, unsigned start, std::function<void(unsigned)> picked) {
+    Overlay o;
+    o.kind = OV_WHEEL;
+    o.title = title;
+    o.startRgb = start;
+    rgb_hsv(start, &o.hue, &o.sat, &o.val);
+    o.rgbPicked = picked;
+    o.cur = -1;
+    ov_push(o);
+    sWheelDrag = 0;
+    sound(1);
+}
+static void wheel_frame(Overlay &o, std::vector<Prompt> &ps) {
+    ImGuiIO &io = ImGui::GetIO();
+    float top0 = sBoxA.y + S(58);
+    float R = std::min((sBoxB.y - top0 - S(24)) * 0.5f, S(170)), ring = S(26);
+    ImVec2 c(sBoxA.x + S(28) + R, top0 + R + S(4));
+    float inner = R - ring, half = inner * 0.70f;
+    ImVec2 sa(c.x - half, c.y - half), sb(c.x + half, c.y + half);
+    // the input
+    float step = sIn.fast ? 8.0f : 2.0f;
+    if (sIn.dleft) { o.hue -= step; }
+    if (sIn.dright) { o.hue += step; }
+    if (sIn.dup) { o.val += 0.02f; }
+    if (sIn.ddown) { o.val -= 0.02f; }
+    if (sIn.l1) { o.sat -= 0.04f; }
+    if (sIn.r1) { o.sat += 0.04f; }
+    if (fabsf(sIn.lx) > 0.05f) { o.sat += sIn.lx * 0.015f; }
+    if (fabsf(sIn.ly) > 0.05f) { o.val -= sIn.ly * 0.015f; }
+    if (sIn.dleft || sIn.dright || sIn.dup || sIn.ddown || sIn.l1 || sIn.r1) { o.cur = -1; }
+    if (sMouse && ImGui::IsMouseClicked(0)) {
+        float dx = io.MousePos.x - c.x, dy = io.MousePos.y - c.y, d = sqrtf(dx * dx + dy * dy);
+        sWheelDrag = d >= inner - S(2) && d <= R + S(6) ? 1 : ImGui::IsMouseHoveringRect(sa, sb, false) ? 2 : 0;
+    }
+    if (!ImGui::IsMouseDown(0)) { sWheelDrag = 0; }
+    if (sWheelDrag == 1) { o.hue = atan2f(io.MousePos.y - c.y, io.MousePos.x - c.x) * 57.29578f; o.cur = -1; }
+    if (sWheelDrag == 2) {
+        o.sat = (io.MousePos.x - sa.x) / (sb.x - sa.x);
+        o.val = 1.0f - (io.MousePos.y - sa.y) / (sb.y - sa.y);
+        o.cur = -1;
+    }
+    o.hue = fmodf(o.hue + 360.0f, 360.0f);
+    o.sat = o.sat < 0 ? 0 : o.sat > 1 ? 1 : o.sat;
+    o.val = o.val < 0 ? 0 : o.val > 1 ? 1 : o.val;
+    if ((sIn.l2 || sIn.r2) && !sRecent.empty()) {
+        int n = (int)sRecent.size();
+        o.cur = o.cur < 0 ? (sIn.r2 ? 0 : n - 1) : (o.cur + (sIn.r2 ? 1 : n - 1)) % n;
+        rgb_hsv(sRecent[(size_t)o.cur], &o.hue, &o.sat, &o.val);
+        sound(0);
+    }
+    unsigned now = hsv_rgb(o.hue, o.sat, o.val);
+    // the ring
+    const int N = 120;
+    for (int i = 0; i < N; i++) {
+        float a0 = i * 6.2831853f / N, a1 = (i + 1.15f) * 6.2831853f / N;
+        ImVec2 p0(c.x + cosf(a0) * inner, c.y + sinf(a0) * inner), p1(c.x + cosf(a0) * R, c.y + sinf(a0) * R);
+        ImVec2 p2(c.x + cosf(a1) * R, c.y + sinf(a1) * R), p3(c.x + cosf(a1) * inner, c.y + sinf(a1) * inner);
+        sDl->AddQuadFilled(p0, p1, p2, p3, col32(hsv_rgb(i * 360.0f / N, 1, 1)));
+    }
+    sDl->AddCircle(c, R, IM_COL32(255, 255, 255, 120), 0, S(1.5f));
+    sDl->AddCircle(c, inner, IM_COL32(255, 255, 255, 120), 0, S(1.5f));
+    {
+        float a = o.hue / 57.29578f, rm = (inner + R) * 0.5f;
+        ImVec2 m(c.x + cosf(a) * rm, c.y + sinf(a) * rm);
+        sDl->AddCircleFilled(m, ring * 0.42f, col32(hsv_rgb(o.hue, 1, 1)));
+        sDl->AddCircle(m, ring * 0.42f, IM_COL32(0, 0, 0, 255), 0, S(3));
+        sDl->AddCircle(m, ring * 0.42f, IM_COL32(255, 255, 255, 255), 0, S(1.5f));
+    }
+    // the square: white to the hue across, to black down
+    ImU32 hc = col32(hsv_rgb(o.hue, 1, 1));
+    sDl->AddRectFilledMultiColor(sa, sb, IM_COL32_WHITE, hc, hc, IM_COL32_WHITE);
+    sDl->AddRectFilledMultiColor(sa, sb, IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0), IM_COL32_BLACK, IM_COL32_BLACK);
+    sDl->AddRect(sa, sb, IM_COL32(255, 255, 255, 160), 0, 0, S(1.5f));
+    ImVec2 k(sa.x + o.sat * (sb.x - sa.x), sa.y + (1.0f - o.val) * (sb.y - sa.y));
+    sDl->AddCircle(k, S(8), IM_COL32(0, 0, 0, 255), 0, S(3.5f));
+    sDl->AddCircle(k, S(8), IM_COL32(255, 255, 255, 255), 0, S(1.8f));
+    // beside it: before and after, the code, the recent colours
+    float x0 = c.x + R + S(30), x1 = sBoxB.x - S(20), y = top0;
+    ImFont *bold = sBold != NULL ? sBold : sFont;
+    sDl->AddText(sFont, S(13), ImVec2(x0, y), kDim, "WAS");
+    sDl->AddText(sFont, S(13), ImVec2(x0 + S(70), y), kDim, "NEW");
+    y += S(17);
+    sDl->AddRectFilled(ImVec2(x0, y), ImVec2(x0 + S(60), y + S(60)), col32(o.startRgb), S(8));
+    sDl->AddRectFilled(ImVec2(x0 + S(70), y), ImVec2(x0 + S(130), y + S(60)), col32(now), S(8));
+    sDl->AddRect(ImVec2(x0 + S(70), y), ImVec2(x0 + S(130), y + S(60)), IM_COL32(255, 226, 122, 255), S(8), 0, S(2.5f));
+    y += S(72);
+    ImVec2 ha(x0, y), hb(x1, y + S(34));
+    sDl->AddRectFilled(ha, hb, IM_COL32(0, 0, 0, 90), S(8));
+    sDl->AddRect(ha, hb, IM_COL32(169, 147, 255, 255), S(8), 0, S(1.5f));
+    sDl->AddText(bold, S(19), ImVec2(ha.x + S(10), ha.y + S(6)), kInk, hex_of(now).c_str());
+    glyph(B_SQUARE, ImVec2(hb.x - S(30), (ha.y + hb.y) * 0.5f), S(10));
+    bool typeHex = click_in(ha, hb);
+    y += S(44);
+    char line[96];
+    snprintf(line, sizeof(line), "Hue %d  Sat %d%%  Bright %d%%", (int)lround(o.hue), (int)lround(o.sat * 100), (int)lround(o.val * 100));
+    sDl->AddText(sFont, S(14), ImVec2(x0, y), kDim, line);
+    y += S(20);
+    snprintf(line, sizeof(line), "R %d  G %d  B %d", (int)(now >> 16) & 255, (int)(now >> 8) & 255, (int)now & 255);
+    sDl->AddText(sFont, S(14), ImVec2(x0, y), kDim, line);
+    y += S(28);
+    bool pickedRecent = false;
+    if (!sRecent.empty()) {
+        sDl->AddText(sFont, S(13), ImVec2(x0, y), kDim, sKeyboardLast ? "RECENT (Z / C)" : "RECENT (L2 / R2)");
+        y += S(17);
+        float s0 = S(24), g = S(6);
+        int per = std::max(1, (int)((x1 - x0 + g) / (s0 + g)));
+        for (size_t i = 0; i < sRecent.size(); i++) {
+            ImVec2 a(x0 + (i % per) * (s0 + g), y + (i / per) * (s0 + g)), b(a.x + s0, a.y + s0);
+            sDl->AddRectFilled(a, b, col32(sRecent[i]), S(4));
+            bool sel = (int)i == o.cur;
+            sDl->AddRect(a, b, sel ? IM_COL32(255, 226, 122, 255) : IM_COL32(255, 255, 255, 60), S(4), 0, sel ? S(2.5f) : S(1));
+            if (click_in(a, b)) { o.cur = (int)i; rgb_hsv(sRecent[i], &o.hue, &o.sat, &o.val); pickedRecent = true; }
+        }
+    }
+    (void)pickedRecent;
+    ps.push_back({B_CROSS, "Use this colour"});
+    ps.push_back({B_DPAD, "Hue / brightness"});
+    ps.push_back({B_LSTICK, "Saturation"});
+    ps.push_back({B_SQUARE, "Type a code"});
+    ps.push_back({B_CIRCLE, "Back"});
+    if (sIn.back) { ov_close(); sound(2); return; }
+    if (sIn.sq || typeHex) {
+        int id = o.id;
+        open_keys("THE COLOUR'S CODE (#RRGGBB)", hex_of(now), 7, [id](const std::string &t) {
+            std::string s = t;
+            if (!s.empty() && s[0] == '#') { s.erase(0, 1); }
+            if (s.size() == 3) { s = std::string() + s[0] + s[0] + s[1] + s[1] + s[2] + s[2]; }
+            if (s.size() != 6 || strspn(s.c_str(), "0123456789abcdefABCDEF") != 6) { toast("A colour's code is # and six of 0-9, A-F: #ff8800", true); return; }
+            for (Overlay &x : sOv) { if (x.id == id) { rgb_hsv((unsigned)strtoul(s.c_str(), NULL, 16), &x.hue, &x.sat, &x.val); x.cur = -1; } }
+        });
+        return;
+    }
+    if (sIn.ok) {
+        std::function<void(unsigned)> f = o.rgbPicked;
+        ov_close();
+        sound(1);
+        if (f) { f(now); }
+    }
+}
+
+// =============================================================================================== the camera
+// Zoomed in and out (the right stick up / down, + / -, the wheel over the model), moved (R3 + the right stick, the right
+// mouse button dragging it), and two places to go back to (L3 / V, or the chips): the whole warrior and its head.
+static int sCamPreset; // 0 full, 1 head (what L3 goes to next is the other)
+static void cam_set(float zoom, float focus, float px, float py) {
+    SDL_LockMutex(sShare);
+    sSh.camZoom = zoom < 0.6f ? 0.6f : zoom > 4.5f ? 4.5f : zoom;
+    sSh.camFocus = focus;
+    sSh.camPanX = px < -700.0f ? -700.0f : px > 500.0f ? 500.0f : px;
+    sSh.camPanY = py < -900.0f ? -900.0f : py > 900.0f ? 900.0f : py;
+    SDL_UnlockMutex(sShare);
+}
+static void cam_preset(int which) {
+    sCamPreset = which;
+    if (which == 1) { cam_set(3.0f, 1.0f, 0.0f, 240.0f - (CAM_FEET + 49.5f - CAM_H * 0.711f)); } // (the face about the middle of the picture: seen)
+    else { cam_set(1.0f, 0.5f, 0.0f, 0.0f); }
+}
+static void cam_frame(float boxRight, bool padZoom) {
+    ImGuiIO &io = ImGui::GetIO();
+    SDL_LockMutex(sShare);
+    float z = sSh.camZoom, f = sSh.camFocus, px = sSh.camPanX, py = sSh.camPanY;
+    SDL_UnlockMutex(sShare);
+    float k = sW / 1376.0f; // (screen pixels a mockup pixel)
+    bool overModel = sMouse && io.MousePos.x > boxRight && io.MousePos.y > P(0, 60).y && io.MousePos.y < P(0, 660).y;
+    float nz = z, npx = px, npy = py;
+    if (!sTyping) {
+        if (sIn.r3) { npx += sIn.turn * 9.0f; npy -= sIn.zoom * 9.0f; }
+        else if (padZoom && sIn.zoom != 0.0f) { nz *= powf(1.025f, sIn.zoom); }
+        if (sIn.view) { cam_preset(sCamPreset == 1 ? 0 : 1); sound(0); return; }
+    }
+    if (overModel && io.MouseWheel != 0.0f) { nz *= powf(1.15f, io.MouseWheel); }
+    if (overModel && ImGui::IsMouseDragging(1) && k > 0) { npx += io.MouseDelta.x / k; npy += io.MouseDelta.y / k; }
+    if (nz != z || npx != px || npy != py) { cam_set(nz, f, npx, npy); }
+    // the chips: FULL / HEAD, the zoom, the buttons
+    static const char *const kV[2] = {"FULL", "HEAD"};
+    float x = P(1222, 0).x, y = P(0, 150).y, w = S(52), h = S(26);
+    bool atPreset = (sCamPreset == 0 && fabsf(z - 1.0f) < 0.01f && px == 0 && py == 0) || (sCamPreset == 1 && fabsf(z - 3.0f) < 0.01f && px == 0);
+    for (int i = 0; i < 2; i++) {
+        ImVec2 a(x + i * (w + S(6)), y), b(a.x + w, a.y + h);
+        bool on = atPreset && sCamPreset == i;
+        if (on) { grad(a, b, kGold1, kGold2, h * 0.5f); } else { grad(a, b, IM_COL32(198, 181, 245, 230), IM_COL32(125, 100, 200, 230), h * 0.5f); }
+        sDl->AddText(sBold != NULL ? sBold : sFont, S(13), ImVec2(a.x + (w - text_w(sBold != NULL ? sBold : sFont, S(13), kV[i])) * 0.5f, a.y + S(6)),
+                     on ? IM_COL32(74, 26, 0, 255) : IM_COL32(43, 22, 96, 255), kV[i]);
+        if (click_in(a, b)) { cam_preset(i); sound(0); }
+    }
+    char zl[32];
+    snprintf(zl, sizeof(zl), "ZOOM %.1fx", z);
+    outlined(sFont, S(13), ImVec2(x, y + h + S(6)), kInk, IM_COL32(30, 10, 50, 255), zl, S(1));
+    float gy = y + h + S(34), r = S(9);
+    struct { int b; const char *t; } lines[3] = {{B_RSTICK, "Zoom"}, {B_R3, "Move"}, {B_L3, "Full / Head"}};
+    for (auto &l : lines) {
+        float gw = glyph(l.b, ImVec2(x, gy), r);
+        outlined(sFont, S(13), ImVec2(x + gw + S(5), gy - S(8)), kInk, IM_COL32(30, 10, 50, 255), l.t, S(1));
+        gy += S(24);
+    }
 }
 
 // =============================================================================================== the model wanted
@@ -2816,7 +4148,7 @@ static void model_frame(void) {
     // the warrior as it is: built by the creator once its look has rested a moment
     J key = J::arr();
     key.push(look());
-    static const char *const kLook[] = {"costumes", "parts", "colours", "body", "moveset", "moves", "melee", "ki_blasts", "voice", "names"};
+    static const char *const kLook[] = {"costumes", "parts", "colours", "body", "paint", "moveset", "moves", "melee", "ki_blasts", "voice", "names"};
     for (const char *k : kLook) { key.push(sSpec[k]); }
     key.push(J::num(sShownCostume));
     std::string text = js_text(key);
@@ -2917,6 +4249,8 @@ bool Creator_Frame(bool input) {
     if (!sActive) { sTyping = false; return false; }
     if (sSeenGen != sOpenGen) { on_open(); }
     sFrames++;
+    for (SDL_GPUTexture *t : sFreeLater) { Ui_TextureFree(t); } // (drawn by the last frame: done with now)
+    sFreeLater.clear();
     results();
     {
         SDL_LockMutex(sShare);
@@ -2941,6 +4275,7 @@ bool Creator_Frame(bool input) {
     sBold = Ui_FontBold();
     sBoxA = P(40, 138);
     sBoxB = P(720, 650);
+    sOvRight = sBoxB.x;
 
     std::vector<Prompt> ps;
     std::string tipLine = sTipLine;
@@ -3084,9 +4419,11 @@ bool Creator_Frame(bool input) {
             b = P(1076, 560);
             sDl->AddRectFilled(P(0, 0), P(1376, 768), IM_COL32(10, 5, 30, 130));
         }
+        if (kind == OV_PAINT) { b = P(880, 650); } // (the texture large, its tools beside it: the model still to be seen)
         ImVec2 keepA = sBoxA, keepB = sBoxB;
         sBoxA = ImVec2(a.x, P(0, 98).y);
         sBoxB = b;
+        sOvRight = b.x;
         if (kind == OV_TEXT || (kind == OV_LIST && o.rows.size() <= 2)) { sBoxA = a; }
         sDl->AddRectFilled(ImVec2(sBoxA.x, sBoxA.y + S(5)), ImVec2(sBoxB.x, sBoxB.y + S(5)), IM_COL32(0, 0, 0, 90), S(12));
         sDl->AddRectFilled(sBoxA, sBoxB, IM_COL32(40, 22, 82, 255), S(12));
@@ -3097,6 +4434,16 @@ bool Creator_Frame(bool input) {
         else if (kind == OV_COLOURS) { tipLine = "Pick a colour of one of your warrior's textures, then its new colour."; }
         else if (kind == OV_PALETTE) { tipLine = "Pick the new colour."; }
         else if (kind == OV_FX) { tipLine = "Pick a colour of the attack, then its new colour. The picture shows its textures and colours."; }
+        else if (kind == OV_WORKSHOP) {
+            tipLine = "Move it, turn it, stretch it! Your warrior is built again as you go.";
+            std::vector<Row> wr;
+            if (!o.info.nul()) { ws_rows(o, wr); }
+            if (o.cur < (int)wr.size() && !wr[(size_t)o.cur].tip.empty()) { tipLine = wr[(size_t)o.cur].tip; }
+        }
+        else if (kind == OV_TEXPICK) { tipLine = "Which texture? The most used first. Its paint shows on the model once it is built again."; }
+        else if (kind == OV_PAINT) { tipLine = sKeyboardLast ? "Aim with the arrows or the mouse, paint with Enter / the left button. F: tool, R: colour wheel, Z / C: size."
+                                                             : "Aim with the left stick (the d-pad: a texel at a time), cross paints. Square: tool, triangle: colour wheel."; }
+        else if (kind == OV_WHEEL) { tipLine = "Turn the ring for the hue, then pick how strong and how bright in the square."; }
         else if (kind == OV_LIST && o.cur < (int)o.rows.size() && !o.rows[o.cur].tip.empty()) { tipLine = o.rows[o.cur].tip; }
         switch (kind) {
         case OV_GRID: grid_frame(o, ops); break;
@@ -3105,6 +4452,10 @@ bool Creator_Frame(bool input) {
         case OV_COLOURS: colours_frame(o, ops); break;
         case OV_PALETTE: palette_frame(o, ops); break;
         case OV_FX: fx_frame(o, ops); break;
+        case OV_WORKSHOP: workshop_frame(o, ops); break;
+        case OV_TEXPICK: texpick_frame(o, ops); break;
+        case OV_PAINT: painter_frame(o, ops); break;
+        case OV_WHEEL: wheel_frame(o, ops); break;
         default: text_frame(o, ops); break;
         }
         sBoxA = keepA;
@@ -3115,15 +4466,18 @@ bool Creator_Frame(bool input) {
         io.InputQueueCharacters.resize(0); // (the letters were the screen's)
     }
 
-    // ---- the model: turned with the right stick, A / D, or dragged with the mouse
+    // ---- the model: turned with the right stick, A / D, or dragged with the mouse; the camera (cam_frame)
     {
-        float turn = sIn.turn * 0.05f;
-        if (sMouse && ImGui::IsMouseDragging(0) && sOv.empty() && io.MouseClickedPos[0].x > P(740, 0).x) { turn += io.MouseDelta.x * 0.012f; }
+        int top = sOv.empty() ? -1 : sOv.back().kind;
+        bool beside = top < 0 || top == OV_WORKSHOP || top == OV_PAINT || top == OV_TEXPICK || top == OV_COLOURS || top == OV_WHEEL || top == OV_PALETTE;
+        float turn = sIn.r3 ? 0.0f : sIn.turn * 0.05f;
+        if (sMouse && ImGui::IsMouseDragging(0) && beside && io.MouseClickedPos[0].x > std::max(sOvRight, P(740, 0).x)) { turn += io.MouseDelta.x * 0.012f; }
         if (turn != 0.0f) {
             SDL_LockMutex(sShare);
             sSh.turn += (int)(turn * 1000.0f);
             SDL_UnlockMutex(sShare);
         }
+        if ((sScreen == SC_EDIT || sScreen == SC_HOME) && beside) { cam_frame(std::max(sOvRight, P(740, 0).x), top != OV_PAINT); }
     }
     model_frame();
 
