@@ -168,12 +168,17 @@ function toast(text, err) {
 }
 function tip(text) { $("tiptext").textContent = text; }
 function help(items) { $("help").innerHTML = items.map(([b, t]) => `<span><b>${b}</b>${t}</span>`).join(""); }
-function chara(r) { return r ? roster[charaId(r.chara)] : null; }
-function charaId(name) {
-  if (typeof name === "number") return name;
-  const i = roster.findIndex(c => c.name.toLowerCase() === String(name).toLowerCase());
-  return i < 0 ? 0 : i;
+// A roster entry by the game's number (BT3 0..160, BT4 1000 + its own) or by its name. (The list's order is not
+// the numbering: the BT4 characters' numbers start at 1000.)
+function byId(id) { return roster.find(c => c.id === id) || null; }
+function entryOf(name) {
+  if (typeof name === "number") return byId(name);
+  if (/^\d+$/.test(String(name))) return byId(+name);
+  const low = String(name).toLowerCase();
+  return roster.find(c => c.name.toLowerCase() === low) || null;
 }
+function chara(r) { return r ? entryOf(r.chara) : null; }
+function charaId(name) { const c = entryOf(name); return c ? c.id : 0; }
 function nm(r, dflt) { const c = chara(r); return c ? c.name + (r.costume > 1 ? ` (costume ${r.costume})` : "") : dflt; }
 function face(id) { return `/face/${id}.png`; }
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c])); }
@@ -312,7 +317,8 @@ function drawGrid(opts) {
   $("grid").innerHTML = items.join("");
   for (const el of $("grid").children) el.onclick = () => {
     const id = +el.dataset.id;
-    const c = roster[id];
+    const c = byId(id);
+    if (!c) return;
     if (opts.moves) return listMoves(c, opts.moves);
     if (opts.costume && c.costumes.length > 1) return listCostumes(c);
     const f = pickDone; closePick(); f({chara: c.name});
@@ -685,7 +691,7 @@ function drawMoves() {
           openPick(`${SLOT_LABEL[k].toUpperCase()}: WHOSE TECHNIQUE?`, r => {
             spec.moves = spec.moves || {};
             if (r) spec.moves[k] = r; else delete spec.moves[k];
-            touch(); draw(); toast(r ? `${roster[charaId(r.chara)].moves[SLOT_KEYS.indexOf(r.slot)]}! Good choice!` : "Back to the moveset's own.");
+            touch(); draw(); toast(r ? `${(entryOf(r.chara) || {moves: []}).moves[SLOT_KEYS.indexOf(r.slot)] || "That one"}! Good choice!` : "Back to the moveset's own.");
           }, {moves: SLOT_KIND[k], none: "Moveset's own"});
         },
         extra: `<span class="btn ren" title="Rename">✎</span><span class="btn fxc" title="Recolour the attack" style="margin-left:6px">🎨</span>`,
@@ -725,7 +731,7 @@ function drawForms() {
   const rows = [{sec: "TRANSFORMATIONS"}];
   for (const [d, label] of dirs) {
     const t = (spec.forms || {})[d];
-    const shown = !t ? "none" : t.startsWith("disc:") ? roster[+t.slice(5)].name : (fighters.find(f => f.file === t) || {spec: {name: t}}).spec.name;
+    const shown = !t ? "none" : t.startsWith("disc:") ? (byId(+t.slice(5)) || {name: t}).name : (fighters.find(f => f.file === t) || {spec: {name: t}}).spec.name;
     rows.push({label, value: shown, sub: t && d !== "down" ? `costs ${(spec.form_costs || {})[d] || 0} blast stocks` : "",
       tip: "Transform into another of your warriors, or into a roster character. Needs a build with character packages.",
       onclick: () => pickForm(d), extra: `<span class="btn">✕</span>`});
@@ -754,7 +760,7 @@ function pickForm(d) {
     spec.forms = spec.forms || {};
     if (el.dataset.none) { delete spec.forms[d]; closePick(); touch(); draw(); return; }
     if (el.dataset.new) { closePick(); newForm(d); return; }
-    if (el.dataset.disc) { closePick(); openPick("TRANSFORM INTO WHOM?", r => { spec.forms[d] = "disc:" + charaId(r.chara); touch(); draw(); }); return; }
+    if (el.dataset.disc) { closePick(); openPick("TRANSFORM INTO WHOM?", r => { spec.forms[d] = "disc:" + charaId(r.chara); touch(); draw(); }, {bt3only: true}); return; }
     spec.forms[d] = el.dataset.f; closePick(); touch(); draw();
   };
 }

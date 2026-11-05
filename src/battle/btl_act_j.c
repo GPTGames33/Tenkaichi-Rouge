@@ -524,6 +524,19 @@ s32 BtlAct_GetTechniqueAction(BtlActJChr *chr, s32 slot) {
  * cost. A technique with flag 0x2000 is refused while its lock counter is positive, except in modes 5 and 6 and
  * in story mode under flag 0x11F.
  */
+#ifdef PORT
+/* BT3_TEST_TECH=<2..4> (testing, below): the technique a fighter uses whenever it can; 0 without it */
+static s32 PortTestTech(void) {
+    extern char *getenv(const char *name);
+    extern int atoi(const char *s);
+    static s32 test = -1;
+    if (test < 0) {
+        test = getenv("BT3_TEST_TECH") != NULL ? atoi(getenv("BT3_TEST_TECH")) : 0;
+    }
+    return test;
+}
+#endif
+
 s32 BtlAct_CanUseTechnique(BtlActJChr *chr, s32 slot) {
     s32 check;
 
@@ -536,7 +549,11 @@ s32 BtlAct_CanUseTechnique(BtlActJChr *chr, s32 slot) {
     if (!BtlChar_TestFlag(chr, 5)) {
         return 0;
     }
-    if (slot == 4 && !BtlChar_TestFlag(chr, 6)) {
+    if (slot == 4 && !BtlChar_TestFlag(chr, 6)
+#ifdef PORT
+        && PortTestTech() != 4 /* (the test also leaves out the state the Ultimate needs) */
+#endif
+    ) {
         return 0;
     }
     if (!BtlMember_HasKi(chr, BtlSuper_GetKiCost(chr, slot))) {
@@ -585,6 +602,15 @@ s32 BtlAct_CheckTechniqueInput(BtlActJChr *chr) {
     if (BtlInput_TestAction(chr, 0x6E, 1)) {
         slot = 4;
     }
+#ifdef PORT
+    {   /* BT3_TEST_TECH=<2..4> (testing): a fighter that can use that technique uses it, as if its input were pressed
+           (to see a technique play in a fight without a player: the attract demo's computers seldom pick them) */
+        s32 test = PortTestTech();
+        if (slot < 0 && test >= 2 && test <= 4) {
+            slot = test;
+        }
+    }
+#endif
     if (slot < 0) {
         return 0;
     }
