@@ -175,8 +175,10 @@ s32 BtlColl_StartThrow(BtlCollChr *atk, BtlCollChr *def, s32 slot, u32 techFlags
        (btl_char_ctl_b.c). The disc's techniques always have both or neither, and the step within the sequence.
        Moves converted from BT4 had neither in BT3's places (BT4 keeps the partner elsewhere: a partner 0 in every
        technique, with no step), so the request was never let go and the fight froze for good right after the
-       Ultimate connected. A partner without a step to take it in, or a step without a partner, is left out. */
-    if (atk->thr.unk20 < 0 || atk->thr.unk18 < 0 || atk->thr.unk18 >= atk->thr.unk10) {
+       Ultimate connected. A partner without a step to take it in, or a step without a partner, is left out; so is
+       an object past the last one there is (0x12B: file 0xC1C + id ends with the first archive at 0xD47; BT4's
+       partner costumes read as one, 0x808, loaded some other file as a model and crashed). */
+    if (atk->thr.unk20 < 0 || atk->thr.unk20 > 0x12B || atk->thr.unk18 < 0 || atk->thr.unk18 >= atk->thr.unk10) {
         atk->thr.unk20 = -1;
         atk->thr.unk18 = -1;
     }
