@@ -1316,7 +1316,7 @@ static void sim_top(void) {
 static char sNameCache[0x100][64];
 /* A character from outside the disc (plat_charas.c; ids 0xC6..0xFE): its name and its form label are not at line
    `chara` of a select's text but in the lines the port put after the disc's (Port_CharaNamePack). */
-#define A11Y_CHARA_ADDED(c) ((c) >= PORT_CHARA_FIRST && (c) < PORT_CHARA_FIRST + PORT_CHARA_MAX)
+#define A11Y_CHARA_ADDED(c) PORT_CHARA_ADDED(c)
 #define A11Y_CHARA_CACHED(c) (((c) >= 0 && (c) < MCHR_RANDOM) || A11Y_CHARA_ADDED(c))
 extern int Port_CharaFormLine(int chara); /* plat_charas.c */
 

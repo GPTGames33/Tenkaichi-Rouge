@@ -450,7 +450,31 @@ class App:
         (self.state / "bt4_installed.json").write_text(json.dumps(lst, indent=2, ensure_ascii=False), encoding="utf-8")
         return lst
 
-    def bt4_start(self, name, slot):
+    # BT4 places a warrior takes when it has none of its own: BT4's minor fighters, least missed first
+    BT4_FILLERS = (184, 223, 222, 79, 90, 84, 194, 175, 180, 152, 109, 120, 193, 187, 201, 60)
+
+    def bt4_all(self):
+        """Every warrior on the roster into the BT4 disc copy: each in its chosen BT4 place, or the next free
+        minor BT4 fighter. -> starts the job; the places are kept in each warrior's file (bt4_slot)."""
+        names = [n for n in self.roster_list() if self.path_of(n).exists()]
+        if not names:
+            raise cf.Fail("no warrior on the roster yet: press Add to roster on one first")
+        specs = {n: json.loads(self.path_of(n).read_text(encoding="utf-8-sig")) for n in names}
+        taken = {cf.ref(s["bt4_slot"])[0] for s in specs.values() if s.get("bt4_slot")}
+        free = [cf.BT4_BASE + c for c in self.BT4_FILLERS if cf.BT4_BASE + c not in taken]
+        lst = {}
+        for n, s in specs.items():
+            if not s.get("bt4_slot"):
+                if not free:
+                    raise cf.Fail("more warriors than free BT4 places: give some a BT4 place of their own")
+                s["bt4_slot"] = {"chara": cf.name(free.pop(0)), "costume": 1}
+                self.path_of(n).write_text(json.dumps(s, indent=2, ensure_ascii=False), encoding="utf-8")
+            lst[n] = s["bt4_slot"]
+        (self.state / "bt4_installed.json").write_text(json.dumps(lst, indent=2, ensure_ascii=False), encoding="utf-8")
+        places = ", ".join(f"{specs[n].get('name', n).strip()} as {cf.name(cf.chara_id(sl['chara']))[5:]}" for n, sl in lst.items())
+        return self.bt4_start(None, None, places)
+
+    def bt4_start(self, name, slot, places=None):
         job = App.bt4_job
         if job["running"]:
             raise cf.Fail("the BT4 disc is being written already")
@@ -459,7 +483,7 @@ class App:
         for fname, sl in lst.items():
             p = self.fighters / fname
             if p.exists():
-                items.append((json.loads(p.read_text(encoding="utf-8-sig")), cf.ref(sl)))
+                items.append((dict(json.loads(p.read_text(encoding="utf-8-sig")), _dir=str(self.fighters)), cf.ref(sl)))
         if not items:
             raise cf.Fail("no fighter left for BT4")
         job.update(running=True, log=[], error=None)
@@ -472,7 +496,8 @@ class App:
                 job["error"] = str(e)
             job["running"] = False
         threading.Thread(target=run, daemon=True).start()
-        return f"Writing {len(items)} warrior(s) into the BT4 disc copy. This takes a few minutes."
+        return (f"Writing {len(items)} warrior(s) into the BT4 disc copy"
+                + (f" ({places})" if places else "") + ". This takes a few minutes.")
 
 
 # ------------------------------------------------------------------------------------------------------ server
@@ -526,6 +551,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             a = self.app
+            if self.path == "/api/bt4all":
+                return self.send(200, {"text": a.bt4_all()})
             if self.path == "/api/bt4install":
                 return self.send(200, {"text": a.bt4_start(body["file"], body.get("slot"))})
             with a.lock:

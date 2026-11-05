@@ -338,6 +338,8 @@ def rewrite_chain(chain, texmap, rampmap, dA=None, dB=None):
             same = [k for k in texmap if k[1] == key[1]]
             if len(same) == 1:
                 key, stale = same[0], True
+            elif texmap:
+                key, stale = min(texmap, key=lambda k: (abs(k[0] - key[0]), k[0])), True
         if key not in texmap:
             raise MixError("chain uses a texture that is not in its texture file (TBP %d CBP %d)" % key)
         v = texmap[key]
@@ -460,7 +462,12 @@ class Source:
             return None
         # BT4 models: a TEX0 whose TBP was not moved with its texture; the palette block still names it
         same = [t for t in self.texs if self.material(t.old) and t.cbpOfs == cbp and t.clut]
-        return same[0] if len(same) == 1 else None
+        if len(same) == 1:
+            return same[0]
+        # a texture the file does not have at all (BT4 models; the console draws whatever lies in GS memory
+        # there): the nearest one
+        mats = [t for t in self.texs if self.material(t.old)]
+        return min(mats, key=lambda t: (abs(t.tbpOfs - tbp), t.tbpOfs)) if mats else None
 
     def ramp_by_ofs(self, ofs):
         for t in self.texs:
@@ -944,6 +951,26 @@ def halve_texture(t):
     return n
 
 
+def tex0_blocks(tex0):
+    """GS blocks a TEX0's TBW / PSM / TW / TH reach (1 + the highest block of the texture)."""
+    psm, tbw = (tex0 >> 20) & 0x3F, (tex0 >> 14) & 0x3F
+    w, h = 1 << ((tex0 >> 26) & 15), 1 << ((tex0 >> 30) & 15)
+    hi = 0
+    if psm == 0x14:
+        for y in range(0, h, 16):
+            for x in range(0, w, 32):
+                hi = max(hi, mdlx.addr4(tbw, x, y) >> 9)
+    elif psm == 0x13:
+        for y in range(0, h, 16):
+            for x in range(0, w, 16):
+                hi = max(hi, mdlx.addr8(tbw, x, y) >> 8)
+    else:
+        for y in range(0, h, 8):
+            for x in range(0, w, 8):
+                hi = max(hi, mdlx.addr32(tbw, x, y) >> 6)
+    return hi + 1
+
+
 def find_rect(psm, tbw, w, h):
     """(width, height, DBW) of the PSMCT32 upload whose blocks are exactly those of a PSMT4 / PSMT8 texture."""
     want = set()
@@ -997,7 +1024,14 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
     "head" scales the head and what is on it).
     force (default): never refuse for the GS budget, ids or record count: degrade (share / merge palettes and
     ramps, halve donor textures, drop the smallest extras) and say so in report. declip (default): fit hair to the
-    head and push it out of the head, match swapped limbs' cross-sections at the seams, layer hairs outwards."""
+    head and push it out of the head, match swapped limbs' cross-sections at the seams, layer hairs outwards.
+    fit (default): automatic alignment of pieces from characters of another size: each swapped bone's mesh is
+    stretched / shortened to the base's joint-to-joint length (half strength past the joints), a donor head is
+    scaled to the base's face size (dead zone 12 %, damped), feet to the base's ankle / ground / foot size, capes and
+    other hanging extras with the body height, open edges snapped onto the neighbouring piece's open edges, and the
+    base's seam patch left out where a piece it joins is swapped.
+    Models with several records per node (BT4) are accepted as donors and bases: all records of a node move
+    together; extra donor meshes of a swapped node become leaf records in front of the node's own one."""
     notes = report if report is not None else []
     adjust = adjust or {}
     cap = MAX_RECORDS_FORCE if force else MAX_RECORDS
@@ -1155,8 +1189,11 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
                 mats.append(t)
                 alias[(src, i)] = t
     faces = {id(alias[(face_src, face_src.faceTex)])}
-    if base.noAlpha:
+    if base.noAlpha and (base, base.noAlpha) in alias:
         faces.add(id(alias[(base, base.noAlpha)]))
+    for i in [base.fadeTex] + list(range(base.fadeFirst, base.fadeFirst + base.fadeCount)):
+        if (base, i) in alias:   # named by the header: kept, never resized
+            faces.add(id(alias[(base, i)]))
     used_now = {id(alias[(s, i)]) for s, ix in uses.items() for i in ix}
     if sum(t.tbpStep for t in mats) > TEX_BLOCKS or sum(t.cbpStep for t in mats) > CLUT_BLOCKS:
         drop = [t for t in mats if t.src is base and id(t) not in used_now and id(t) not in faces]
@@ -1264,6 +1301,9 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
     for src in donors:
         for i in sorted(ramp_uses.get(src, ())):
             t = src.texs[i]
+            if t.tbpStep != 4 and ramps:   # (BT4) a ramp of another size: the base's first one instead
+                ramp_new[(src, i)] = ramps[0]
+                continue
             same = next((b for b in ramps if b.pix == t.pix and b.tbpStep == t.tbpStep), None)
             if same is None:
                 ramps.append(t)
@@ -1271,6 +1311,8 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
             ramp_new[(src, i)] = same
     if sum(t.tbpStep for t in ramps) > RAMP_BLOCKS:
         required = {id(ramp_new[(src, i)]) for src, ix in ramp_uses.items() for i in ix}
+        required |= {id(ramp_new[(base, i)]) for i in [base.fadeTex] + list(range(base.fadeFirst, base.fadeFirst +
+                     base.fadeCount)) if (base, i) in ramp_new}
         nd = [t for t in ramps if t.src is base and id(t) not in required]
         if nd:
             ramps = [t for t in ramps if t not in nd]
@@ -1289,8 +1331,10 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
                     ramp_new[key] = keep[near]
         ramps = keep
         notes.append(f"{len(extra)} shading ramp(s) (cel shading) mapped to the most similar kept one")
-    if any(t.tbpStep != 4 for t in ramps):
+    if any(t.tbpStep != 4 for t in ramps if t.src is not base):
         fail("a shading ramp CLUT is not 4 blocks (BtlObjLight_FindRes1 assumes 4)")
+    if any(t.tbpStep != 4 for t in ramps):
+        notes.append("the base's shading ramps are not all 4 blocks (as on its own disc); kept as they are")
     others = [t for t in base.texs if not base.material(t.old) and not base.ramp(t.old)]
 
     # ---- positions in the new file
@@ -1468,7 +1512,7 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
 
     def follow(n):
         for c in n.children:
-            if not c.enabled and c.node in hidden:
+            if not c.enabled and c.node in hidden and c.node not in CORE:   # core origins are the base's
                 po = struct.unpack_from("<3f", n.hdr, 0x10)
                 rest = struct.unpack_from("<3f", c.hdr, 0x30)
                 struct.pack_into("<3f", c.hdr, 0x10, po[0] + rest[0], po[1] + rest[1], po[2] + rest[2])
@@ -1571,9 +1615,11 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
                                   for p in meshes[x].P], ax)
             if not (ra0 and da0):
                 continue
-            lo_, hi_ = (0.5, 2.0) if fit else (0.75, 1.33)
-            s0 = max(lo_, min(hi_, ra0 / da0))
-            s1 = max(lo_, min(hi_, ra1 / da1)) if (ra1 and da1) else s0
+            lo_, hi_ = (0.6, 1.6) if fit else (0.75, 1.33)
+            # damped, with a dead zone: the radius samples of a small mesh are noisy
+            soft = lambda x: 1.0 if abs(x - 1) < 0.08 else max(lo_, min(hi_, 1 + (x - 1) * 0.7))
+            s0 = soft(ra0 / da0)
+            s1 = soft(ra1 / da1) if (ra1 and da1) else s0
             if abs(s0 - 1) > 0.02 or abs(s1 - 1) > 0.02:
                 for x in all_of(r.node):
                     if x in meshes and kind.get(x) == "core":
@@ -1814,7 +1860,11 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
     head[0x50] = clut_first
     head[0x51] = len(ramps)
     if base.fadeCount:
-        head[0x52] = new_index(base, base.fadeFirst)
+        v = new_index(base, base.fadeFirst)
+        if v is None:   # the fade range did not survive: no fade-pass uploads
+            head[0x52], head[0x53] = 0, 0
+        else:
+            head[0x52] = v
     if base.fadeTex:
         v = new_index(base, base.fadeTex)
         head[0x4D] = v if v is not None else 0
@@ -1971,6 +2021,11 @@ def _fit(bm, plan, clone, by_node, kind, layer_of, donor_rec, meshes, all_of, or
                 if l > nl:
                     nxt, nl = c, l
         k2 = ratio(best, nxt, dC, dm.by_node.get(nxt.node) if nxt else None) if nxt is not None else k
+        # a dead zone (pieces of similar builds stay as they are) and half strength outside the bone itself
+        # (collars, shoulder pads, knee caps hang past the joints and should not be dragged along)
+        dz = lambda x: 1.0 if abs(x - 1) < 0.1 else x
+        cap = lambda x: max(0.8, min(1.25, x))
+        k, k0, k2 = dz(k), dz(cap(1 + (k0 - 1) * 0.5)), dz(cap(1 + (k2 - 1) * 0.5))
         if max(abs(k - 1), abs(k0 - 1), abs(k2 - 1)) > 0.03:
             for n in ns:
                 if n in meshes:
@@ -2290,10 +2345,25 @@ def merge_chains(base, order, renum, hidden, notes):
 
 
 # ---------------------------------------------------------------------------------------------- checking
-def check(pack_bytes, base=None):
+def check(pack_bytes, base=None, donors=()):
     """Walks what BtlObjMdl_Create / the pose, bounds, chain, draw and bind passes walk; returns a list of problems
     (empty = consistent)."""
     bad = []
+    # what the source packs already do (BT4 models): TEX0 shapes their chains use, eye frames larger than the face
+    src_shapes, src_eyes = set(), set()
+    for sp in ([base] if base is not None else []) + list(donors):
+        try:
+            ss = Source(sp, "source")
+        except MixError:
+            continue
+        for ch in [r.chain for r in ss.model.recs if r.mesh] + [entry(ss.parts, n) for n in E_MOUTH_A]:
+            if ch:
+                b_ = bytearray(ch)
+                walk_chain(b_, on_tex=lambda pos, b_=b_: src_shapes.add(
+                    (struct.unpack_from("<I", b_, pos + 20)[0] | (struct.unpack_from("<I", b_, pos + 24)[0] << 32))
+                    & (0xFFFFF << 14)))
+        if entry(ss.parts, E_EYES):
+            src_eyes.add(entry(ss.parts, E_EYES))
     try:
         s = Source(pack_bytes, "mix")
     except MixError as e:
@@ -2355,8 +2425,9 @@ def check(pack_bytes, base=None):
             elif hits != walk_chain(bytearray(r.chain)):
                 bad.append(f"node 0x{r.node:X}: texture blocks and batches disagree")
         o += ln
+    base_nodes_ = set(Source(base, "base").model.by_node) if base is not None else CORE
     for n in CORE:
-        if n not in m.by_node:
+        if n not in m.by_node and n in base_nodes_:
             bad.append(f"core node 0x{n:X} missing")
     # body volumes
     b = entry(s.parts, E_BODY)
@@ -2397,8 +2468,8 @@ def check(pack_bytes, base=None):
             if t is not None:
                 want = struct.unpack_from("<Q", t.ent, 0x30)[0]
                 got = lo | (hi << 32)
-                if (got ^ want) & (0xFFFFF << 14):
-                    bad.append(f"{what}: TEX0 shape differs from texture {t.old}")
+                if (got ^ want) & (0xFFFFF << 14) and tex0_blocks(got) > max(t.tbpStep, tex0_blocks(want)) and                         (got & (0xFFFFF << 14)) not in src_shapes:
+                    bad.append(f"{what}: TEX0 reads past texture {t.old}")
         walk_chain(buf, on_tex=tex)
     for r in m.recs:
         if r.mesh:
@@ -2423,8 +2494,8 @@ def check(pack_bytes, base=None):
             et, _, _ = parse_texfile(eyes, s)
             ft = s.texs[s.faceTex]
             for t in et:
-                if t.tbpStep > ft.tbpStep or struct.unpack_from("<Q", t.ent, 0x30)[0] != struct.unpack_from("<Q", ft.ent, 0x30)[0]:
-                    bad.append("eye frame not the shape of the face texture")
+                if t.tbpStep > ft.tbpStep and eyes not in src_eyes:   # (BT4 eye frames: other shapes / sizes)
+                    bad.append("eye frame larger than the face texture")
         except MixError as x:
             bad.append(f"eyes: {x}")
     # chains: links per type within the slots

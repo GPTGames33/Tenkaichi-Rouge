@@ -32,6 +32,15 @@ extern void Port_TestSlow(int what, int amount); /* gs/net.c: testing, a machine
 extern size_t Port_FileReadAt(const char *rel, long offset, void *buf, size_t bytes);
 
 static char sPartDir[8][64];
+
+/* The folder of partition ptid. Partition 2 (the second archive) is named by the menus when they load it; a fight
+   started without them (the attract demo, BT3_DEMO) asked for its files with no folder. Its name is the disc's. */
+static const char *part_dir(int ptid) {
+    if (sPartDir[ptid & 7][0] == '\0' && (ptid & 7) == 2) {
+        return "pzs3us2";
+    }
+    return sPartDir[ptid & 7];
+}
 char gPortMoviePath[512]; /* host path of the movie file opened last */
 int Port_FilePath(int ptid, int flid, const char *fname, char *out, int size);
 extern void *Port_LowAlloc(size_t size); /* plat_mem.c */
@@ -114,7 +123,7 @@ int Port_FilePath(int ptid, int flid, const char *fname, char *out, int size) {
         }
         rel[n] = '\0';
     } else {
-        snprintf(rel, sizeof(rel), "%s/%05d.bin", sPartDir[ptid & 7], flid);
+        snprintf(rel, sizeof(rel), "%s/%05d.bin", part_dir(ptid), flid);
     }
     {
         /* The streamed audio (a song added from outside the disc) reads through this path, so the manifest's
@@ -170,7 +179,7 @@ int ADXF_GetPtStat(int ptid) {
 void *ADXF_OpenAfs(int ptid, int flid) {
     char rel[128];
 
-    snprintf(rel, sizeof(rel), "%s/%05d.bin", sPartDir[ptid & 7], flid);
+    snprintf(rel, sizeof(rel), "%s/%05d.bin", part_dir(ptid), flid);
     return open_rel(rel);
 }
 

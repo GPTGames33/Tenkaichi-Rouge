@@ -1015,7 +1015,13 @@ def bt4_stage(disc, spec, folder):
     (folder / "damaged.pak").write_bytes(f.model(f.look, True).bytes())
     (folder / "anim.pak").write_bytes(f.anims().bytes())
     (folder / "effect.pak").write_bytes(f.effects().bytes())
-    (folder / "portrait.bin").write_bytes(disc.portrait(f.portrait[0] if "portrait" in spec else f.look[0]))
+    shot = spec.get("portrait_image")
+    shot = pathlib.Path(spec.get("_dir", ".")) / shot if shot else None
+    if shot is not None and shot.is_file():  # the creator's screenshot portrait
+        b = f.base[0]
+        (folder / "portrait.bin").write_bytes(portrait_module().portrait_bin(shot.read_bytes(), disc.portrait(b)))
+    else:
+        (folder / "portrait.bin").write_bytes(disc.portrait(f.portrait[0] if "portrait" in spec else f.look[0]))
     bank_us, bank_jp, lines_us, lines_jp = disc.voice_files(f.voice[0])
     v = folder / "voice"
     (v / "us").mkdir(parents=True, exist_ok=True)

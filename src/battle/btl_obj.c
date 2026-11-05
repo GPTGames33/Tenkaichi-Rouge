@@ -1196,8 +1196,14 @@ extern int Port_NetSession(void);
 static s32 BtlRes_ModelSize(void) {
     return Port_NetSession() ? BTL_RES_MODEL_SIZE : Port_ModelSize();
 }
+/* the same for the effects files (+9) of the two fighters' slots: BT4's characters have larger ones */
+extern int Port_EffectSize(void);
+static s32 BtlRes_EffSize(void) {
+    return Port_NetSession() ? BTL_RES_ANIM1_SIZE : Port_EffectSize();
+}
 #else
 #define BtlRes_ModelSize() BTL_RES_MODEL_SIZE
+#define BtlRes_EffSize() BTL_RES_ANIM1_SIZE
 #endif
 
 void BtlRes_Init(s32 prealloc) {
@@ -1223,11 +1229,11 @@ void BtlRes_Init(s32 prealloc) {
             slot->file[1].buf = Heap_Alloc(BTL_RES_ANIM0_SIZE, 0x40, 0, HEAP_ANY);
             slot->file[1].size = 0;
             slot->file[1].id = -1;
-            slot->file[2].buf = Heap_Alloc(BTL_RES_ANIM1_SIZE, 0x40, 0, HEAP_ANY);
+            slot->file[2].buf = Heap_Alloc(BtlRes_EffSize(), 0x40, 0, HEAP_ANY);
             slot->file[2].size = 0;
             slot->file[2].id = -1;
             memset(slot->file[1].buf, 0, BTL_RES_ANIM0_SIZE);
-            memset(slot->file[2].buf, 0, BTL_RES_ANIM1_SIZE);
+            memset(slot->file[2].buf, 0, BtlRes_EffSize());
             BtlRes_CopyFile(&slot->file[0], spare);
             slot->number = number++;
         }

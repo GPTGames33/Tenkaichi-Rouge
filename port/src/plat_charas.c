@@ -87,7 +87,7 @@ static int sNameFirst = -1; /* the line of the first added character in sNames *
 static unsigned char sForms[sizeof(sNames)] __attribute__((aligned(64))); /* the same for the forms' labels */
 static int sFormFirst = -1;
 
-static Chara sChara[PORT_CHARA_MAX]; /* the added characters: sChara[n] is character PORT_CHARA_FIRST + n */
+static Chara sChara[PORT_CHARA_MAX]; /* the added characters: sChara[n] is character PORT_CHARA_ID(n) */
 static int sCount;
 static Chara sRepl[DISC_CHARAS];     /* the replacements */
 static int sReplCount;
@@ -132,14 +132,14 @@ static const Chara *repl_of(int id) {
 
 /* the package behind a character id: an added character, or the replacement of a disc character; NULL if none */
 static const Chara *chara_of(int chara) {
-    if (chara >= PORT_CHARA_FIRST && chara < PORT_CHARA_FIRST + live()) {
-        return &sChara[chara - PORT_CHARA_FIRST];
+    if (PORT_CHARA_ADDED(chara) && PORT_CHARA_IDX(chara) < live()) {
+        return &sChara[PORT_CHARA_IDX(chara)];
     }
     return repl_of(chara);
 }
 
 static int id_of(const Chara *c) {
-    return c->replaces >= 0 ? c->replaces : PORT_CHARA_FIRST + (int)(c - sChara);
+    return c->replaces >= 0 ? c->replaces : PORT_CHARA_ID((int)(c - sChara));
 }
 
 /* Changes whenever what the game's file numbers answer may have changed: with a session's start and end, and with
@@ -504,7 +504,7 @@ int PortCharas_ParseTest(const char *bytes, unsigned long len, char *out, unsign
    bank: BTL_BANK_BUF_SIZE (the reload buffer of battle_load.c). Portrait: 0x16800 in every screen. Member block:
    BTL_MEMBER_BUF_SIZE. The spoken lines are streamed and have no buffer. */
 static long limit_of(int kind) {
-    return kind < 8 ? PORT_MODEL_MAX : kind == F_ANM ? 0x160800 : kind == F_EFF ? 0xCE800 : 0x90800;
+    return kind < 8 ? PORT_MODEL_MAX : kind == F_ANM ? 0x160800 : kind == F_EFF ? PORT_EFFECT_MAX : 0x90800;
 }
 enum { PORTRAIT_MAX = 0x16800, MEMBER_MAX = 0x1000 };
 
@@ -992,7 +992,7 @@ static void load(void) {
         fprintf(stderr, "bt3: characters: %d added from %s\n", sCount, root);
         for (i = 0; i < sCount; i++) {
             fprintf(stderr, "bt3: characters:   %s%s%s: id %d, %d costume%s, base character %d\n", sChara[i].owner, sChara[i].owner[0] != '\0' ? "/" : "",
-                    sChara[i].name, PORT_CHARA_FIRST + i, sChara[i].costumes, sChara[i].costumes == 1 ? "" : "s", sChara[i].base);
+                    sChara[i].name, PORT_CHARA_ID(i), sChara[i].costumes, sChara[i].costumes == 1 ? "" : "s", sChara[i].base);
         }
     }
     if (sReplCount > 0) {
@@ -1410,6 +1410,27 @@ int PortCharas_ManifestGet(const char *folder, const char *key, char *out, unsig
    mods/ where there is one, which is the one loaded), which a disc with replaced characters can have. Whole pages;
    not over PORT_MODEL_MAX (a larger file of the data folder is reported once: it would be read past the buffer's
    end). */
+/* The size of the two fighters' effect buffers (BtlRes_Init, btl_obj.c): the original's 0xCE800, or the largest
+   added character's effects file if that is larger (BT4's fighters: seen 865,280 bytes), in whole pages, up to
+   PORT_EFFECT_MAX. */
+int Port_EffectSize(void) {
+    static int size;
+    if (size == 0) {
+        long most = 0xCE800;
+        struct stat st;
+        int i;
+        PortCharas_Init();
+        for (i = 0; i < sCount + sReplCount; i++) {
+            if (entry(i)->file[F_EFF][0] != '\0' && stat(entry(i)->file[F_EFF], &st) == 0 && st.st_size > most &&
+                st.st_size <= PORT_EFFECT_MAX) {
+                most = (long)st.st_size;
+            }
+        }
+        size = (int)((most + 0xFFF) & ~0xFFFL);
+    }
+    return size;
+}
+
 int Port_ModelSize(void) {
     int size = sModelSize;
     if (size == 0) {
@@ -1479,16 +1500,16 @@ const PortCharaPkg *Port_CharaPkg(int index) {
 
 int Port_CharaBase(int chara) {
     PortCharas_Init();
-    if (chara >= PORT_CHARA_FIRST && chara < PORT_CHARA_FIRST + live()) {
-        return sChara[chara - PORT_CHARA_FIRST].base;
+    if (PORT_CHARA_ADDED(chara) && PORT_CHARA_IDX(chara) < live()) {
+        return sChara[PORT_CHARA_IDX(chara)].base;
     }
-    return chara >= PORT_CHARA_FIRST && chara < PORT_CHARA_FIRST + PORT_CHARA_MAX ? 0 : chara; /* (an id nothing is behind) */
+    return PORT_CHARA_ADDED(chara) ? 0 : chara; /* (an id nothing is behind) */
 }
 
 /* An added character: the costumes its folder has; any other id: 0. */
 int Port_CharaCostumes(int chara) {
     PortCharas_Init();
-    return chara >= PORT_CHARA_FIRST && chara < PORT_CHARA_FIRST + live() ? sChara[chara - PORT_CHARA_FIRST].costumes : 0;
+    return PORT_CHARA_ADDED(chara) && PORT_CHARA_IDX(chara) < live() ? sChara[PORT_CHARA_IDX(chara)].costumes : 0;
 }
 
 /* A number of a package's manifest (health, ki, blast) for character `chara`, an added one or a replaced one of
@@ -1879,7 +1900,7 @@ static int reached(int j) {
     int i, k;
     for (i = 0; i < live(); i++) {
         for (k = 0; k < 3; k++) {
-            if (i != j && sChara[i].target[k] == PORT_CHARA_FIRST + j) {
+            if (i != j && sChara[i].target[k] == PORT_CHARA_ID(j)) {
                 return 1;
             }
         }
@@ -1893,7 +1914,7 @@ static int closure(int head, int *out, int max) {
     out[n++] = head;
     for (at = 0; at < n; at++) {
         for (k = 0; k < 4; k++) {
-            int t = sChara[out[at]].target[k] - PORT_CHARA_FIRST;
+            int t = PORT_CHARA_ADDED(sChara[out[at]].target[k]) ? PORT_CHARA_IDX(sChara[out[at]].target[k]) : -1;
             if (t < 0 || t >= live()) {
                 continue;
             }
@@ -1908,7 +1929,7 @@ static int closure(int head, int *out, int max) {
 }
 
 int Port_CharaForms(int chara, int *out, int max) {
-    int index = chara - PORT_CHARA_FIRST, group[PORT_CHARA_MAX], n, i, head = -1, lowest = PORT_CHARA_MAX;
+    int index = PORT_CHARA_ADDED(chara) ? PORT_CHARA_IDX(chara) : -1, group[PORT_CHARA_MAX], n, i, head = -1, lowest = PORT_CHARA_MAX;
     PortCharas_Init();
     if (index < 0 || index >= live() || max < 1) {
         return 0;
@@ -1944,7 +1965,7 @@ int Port_CharaForms(int chara, int *out, int max) {
     }
     n = closure(index, group, max < PORT_CHARA_MAX ? max : PORT_CHARA_MAX);
     for (i = 0; i < n; i++) {
-        out[i] = PORT_CHARA_FIRST + group[i];
+        out[i] = PORT_CHARA_ID(group[i]);
     }
     return n;
 }
@@ -1959,7 +1980,7 @@ void *Port_CharaChipLoad(int index) {
 }
 
 void *Port_CharaChip(int chara) {
-    int index = chara - PORT_CHARA_FIRST;
+    int index = PORT_CHARA_ADDED(chara) ? PORT_CHARA_IDX(chara) : -1;
     return index >= 0 && index < live() && sChipHave[index] ? sChip[index] : NULL;
 }
 
@@ -2053,7 +2074,7 @@ void PortChips_Load(void *pack) {
 }
 
 void *PortChips_Get(int chara) {
-    int index = chara - PORT_CHARA_FIRST;
+    int index = PORT_CHARA_ADDED(chara) ? PORT_CHARA_IDX(chara) : -1;
     return index >= 0 && index < live() ? sChipRes[index] : NULL;
 }
 
@@ -2155,12 +2176,12 @@ void *Port_CharaFormPack(void *pack) {
 }
 
 int Port_CharaFormLine(int chara) {
-    int index = chara - PORT_CHARA_FIRST;
+    int index = PORT_CHARA_ADDED(chara) ? PORT_CHARA_IDX(chara) : -1;
     return sFormFirst >= 0 && index >= 0 && index < live() ? sFormFirst + index : Port_CharaBase(chara);
 }
 
 int Port_CharaNameLine(int chara) {
-    int index = chara - PORT_CHARA_FIRST;
+    int index = PORT_CHARA_ADDED(chara) ? PORT_CHARA_IDX(chara) : -1;
     return sNameFirst >= 0 && index >= 0 && index < live() ? sNameFirst + index : Port_CharaBase(chara);
 }
 
@@ -2191,5 +2212,5 @@ int Port_TestCellIs(int id) {
     if (e != NULL && strncmp(e, "disc:", 5) == 0) {
         return number(e + 5, 0, DISC_CHARAS - 1, &want) && id == want;
     }
-    return id >= PORT_CHARA_FIRST && id < PORT_CHARA_FIRST + PORT_CHARA_MAX;
+    return PORT_CHARA_ADDED(id);
 }

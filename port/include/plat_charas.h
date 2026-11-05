@@ -3,13 +3,22 @@
 #ifndef PORT_PLAT_CHARAS_H
 #define PORT_PLAT_CHARAS_H
 
-#define PORT_CHARA_FIRST 0xC6 /* the same numbers as include/port_chara.h */
-#define PORT_CHARA_MAX 57
+/* the same numbers as include/port_chara.h: 57 ids from 0xC6, then 28 from 0xA5 (the Custom Character build) */
+#define PORT_CHARA_FIRST 0xC6
+#define PORT_CHARA_COUNT1 57
+#define PORT_CHARA_FIRST2 0xA5
+#define PORT_CHARA_COUNT2 28
+#define PORT_CHARA_MAX (PORT_CHARA_COUNT1 + PORT_CHARA_COUNT2)
+#define PORT_CHARA_ID(n) ((int)(n) < PORT_CHARA_COUNT1 ? PORT_CHARA_FIRST + (int)(n) : PORT_CHARA_FIRST2 + ((int)(n) - PORT_CHARA_COUNT1))
+#define PORT_CHARA_IDX(c) ((int)(c) >= PORT_CHARA_FIRST ? (int)(c) - PORT_CHARA_FIRST : (int)(c) - PORT_CHARA_FIRST2 + PORT_CHARA_COUNT1)
+#define PORT_CHARA_ADDED(c) (((int)(c) >= PORT_CHARA_FIRST && (int)(c) < PORT_CHARA_FIRST + PORT_CHARA_COUNT1) || \
+                             ((int)(c) >= PORT_CHARA_FIRST2 && (int)(c) < PORT_CHARA_FIRST2 + PORT_CHARA_COUNT2))
 #define PORT_CHARA_FILE_INDEX 71000  /* in the second archive: ten files per added character */
 #define PORT_CHARA_VOICE_INDEX 72000 /* two per added character */
 #define PORT_MODEL_MAX 0x180000 /* the largest model file taken (the original's buffer is 0xCE000) */
-#define PORT_CHARA_MEMBER_INDEX 91000 /* two per added character: the fight's member block, a side each */
-#define PORT_CHARA_FACE_INDEX 90000  /* one per added character: the large picture of the menus */
+#define PORT_EFFECT_MAX 0x100000 /* the largest effects file taken (the original's buffer is 0xCE800) */
+#define PORT_CHARA_MEMBER_INDEX 93000 /* two per added character: the fight's member block, a side each */
+#define PORT_CHARA_FACE_INDEX 92000  /* one per added character: the large picture of the menus */
 #define PORT_CHARA_LINE_INDEX 74000  /* two hundred per added character: its spoken lines, a hundred in each language */
 
 void PortCharas_Init(void); /* reads the folder; once */

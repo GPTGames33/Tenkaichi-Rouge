@@ -373,6 +373,10 @@ function drawHome() {
   if (roster.some(c => c.game === "BT4"))
     rows.push({label: "Add a BT4 fighter", value: "A BT4 character with a cell of its own", onclick: addBt4,
       tip: "Brings a whole BT4 character (look, moves, voice, portrait) into this game as a new roster character.", extra: `<span class="btn">✕</span>`});
+  if (roster.some(c => c.game === "BT4"))
+    rows.push({label: "Into BT4", value: "Put all my roster warriors into my BT4 disc copy", onclick: bt4All,
+      tip: "Each warrior takes its chosen BT4 place, or a minor BT4 fighter's (Saibamen, Frieza Soldier, Appule...). Your BT4 disc itself is never changed.",
+      extra: `<span class="btn">✕</span>`});
   rows.push({label: "New forms", value: "Give a roster character new transformations", onclick: rosterForms,
     tip: "Goku can transform into one of your warriors: pick the character, the direction and the warrior.", extra: `<span class="btn">✕</span>`});
   if (fighters.length) rows.push({sec: "MY FIGHTERS (✓ = on the roster)"});
@@ -785,6 +789,7 @@ function drawFinish() {
       tip: "Makes SLUS_219.78.DBZBT4B14REV2ENG.custom.iso next to your BT4 disc (the original is never changed). Pick it in the BT4 launcher or in PCSX2.",
       extra: `<span class="btn">✕</span>`},
     {label: "Take out of BT4", value: "Remove my warrior from the BT4 copy", onclick: () => bt4Install(true), extra: `<span class="btn">✕</span>`},
+    {label: "All into BT4", value: "Every roster warrior into the BT4 copy", onclick: bt4All, extra: `<span class="btn">✕</span>`},
     {sec: "MORE"},
     {label: "Summary", value: "What your warrior is made of", onclick: summary, extra: `<span class="btn">✕</span>`},
     {label: "Delete", value: "Delete this warrior's file", onclick: del, extra: `<span class="btn">✕</span>`},
@@ -837,6 +842,22 @@ async function portraitShot() {
     const t = $("toast"); t.innerHTML = `Portrait made from your view! ${onRoster() ? "Press Add to roster to update the game." : ""}<br>` +
       (r.preview ? `<img src="data:image/png;base64,${r.preview}" style="width:128px;height:128px;margin-top:6px;background:#fff3;border-radius:6px">` : "");
     t.className = ""; t.style.display = "block"; clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = "none", 6000);
+  } catch (e) { toast(e.message, true); }
+}
+async function bt4All() {
+  if (spec && (dirty || !file) && spec.name) await save();
+  try {
+    const r = await api("/api/bt4all", {});
+    toast(r.text);
+    const poll = async () => {
+      const s = await api("/api/bt4status");
+      tip(s.log.length ? s.log[s.log.length - 1] : "Working on the BT4 disc...");
+      if (s.running) return setTimeout(poll, 1500);
+      fighters = await api("/api/fighters");
+      if (s.error) toast(s.error, true);
+      else toast("BT4 disc copy ready: SLUS_219.78.DBZBT4B14REV2ENG.custom.iso, next to your BT4 disc. Open it in the BT4 launcher (Seleccionar ISO) or PCSX2.");
+    };
+    setTimeout(poll, 1500);
   } catch (e) { toast(e.message, true); }
 }
 async function summary() { try { const r = await api("/api/describe", {spec}); toast(r.text); } catch (e) { toast(e.message, true); } }

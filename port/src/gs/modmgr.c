@@ -958,8 +958,9 @@ void Port_ModCharaName(s32 chara, char *out, s32 size) {
     }
     if (chara >= 0 && chara < DISC) {
         name = PortTbo_FighterName(chara);
-    } else if (chara >= 0xC6) {
-        name = Port_CharaName(chara - 0xC6);
+    } else if ((chara >= 0xC6 && chara <= 0xFE) || (chara >= 0xA5 && chara <= 0xC0)) {
+        /* (an added character: 0xC6.. for the first 57, 0xA5..0xC0 for the next 28, include/port_chara.h) */
+        name = Port_CharaName(chara >= 0xC6 ? chara - 0xC6 : chara - 0xA5 + 57);
     }
     snprintf(out, (size_t)size, "%s", name != NULL && name[0] != '\0' ? name : "?");
 }
