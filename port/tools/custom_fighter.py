@@ -308,6 +308,14 @@ def node_keys(opts):
     return out
 
 
+def fx_module():
+    here = pathlib.Path(__file__).resolve().parent / "creator"
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
+    import fxcolour
+    return fxcolour
+
+
 def mix_module():
     here = pathlib.Path(__file__).resolve().parent / "creator"
     if str(here) not in sys.path:
@@ -691,6 +699,11 @@ class Fighter:
                       for k in order if parts.get(k)
                       for v in (parts[k] if isinstance(parts[k], list) else [parts[k]]) if v]
         self.body = node_keys(spec.get("body") or {})
+        # attack colours: {"blast1_1".."ultimate" | "ki_blasts" | "charge": [{"from", "to", "range"}]}
+        self.fx = {k: v for k, v in (spec.get("attack_colours") or {}).items() if v}
+        for k in self.fx:
+            if k not in SLOTS and k not in ("ki_blasts", "charge"):
+                raise Fail(f"attack_colours: unknown {k!r}")
         self.parts = [(p_, w, node_keys(o)) for p_, w, o in self.parts]
         self.notes, self.mix_notes = [], []
         self.colours = []
@@ -813,6 +826,17 @@ class Fighter:
         e = self.disc.effects(self.moveset[0])
         for dst, (who, s) in self.moves.items():
             e[dst + 1] = self.disc.effects(who[0])[s + 1]
+        if self.fx:
+            fx = fx_module()
+            data = e.bytes()
+            for k, changes in self.fx.items():
+                if k in SLOTS:
+                    data = fx.recolour_attack(data, SLOTS[k], changes)
+                elif k == "ki_blasts":
+                    data = fx.recolour_kiblast(data, changes)
+                else:
+                    data = fx.recolour_aura(data, changes)
+            e = Pack(data)
         return e
 
     def changes_motions(self):

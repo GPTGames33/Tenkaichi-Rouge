@@ -407,6 +407,19 @@ void Port_Trace(unsigned vblanks) {
     if (Port_NetWarp() && sNetEntered && gProgress != NULL && !(gProgress->flags & 0x40)) {
         Port_NetArrived(); /* the logos and the card check are over: the character select is next, with picture and sound */
     }
+    {   /* the setting unlock_all=1 (the Custom Character build's default): everything unlocked once, the first time the
+           game reaches the main menu with its save (not in an online session, whose saves are the session's) */
+        extern int Port_Setting(const char *name, int def);
+        extern void Port_SettingSave(const char *name, int value);
+        extern int Port_NetSession(void);
+        static int asked;
+        if (!asked && gProgress != NULL && gSaveData != NULL && gProgress->mode == 4 && !Port_NetSession()) {
+            asked = 1;
+            if (Port_Setting("unlock_all", 1) != 0) { /* (every start: the card keeps it only once the game saves) */
+                gPortUnlockAll = 1;
+            }
+        }
+    }
     if (gPortUnlockAll) {
         gPortUnlockAll = 0;
         if (gSaveData != NULL) {

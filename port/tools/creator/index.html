@@ -285,6 +285,7 @@ function hero() {
 let pickDone = null, pickGame = "All";
 function openPick(title, onPick, opts = {}) {
   $("pick").classList.remove("side");
+  pickGame = opts.game || "All";
   $("picktitle").textContent = title; $("pick").style.display = "block"; $("pickfilter").value = "";
   $("grid").style.display = "grid"; $("picklist").style.display = "none";
   pickDone = onPick; drawGrid(opts); $("pickfilter").oninput = () => drawGrid(opts); $("pickfilter").focus();
@@ -388,13 +389,12 @@ function drawHome() {
 }
 
 function addBt4() {
-  pickGame = "BT4";
   openPick("WHICH BT4 FIGHTER?", async r => {
     toast("Bringing " + r.chara.slice(5) + " over... (a few seconds)");
     try { await api("/api/addbt4", {chara: r.chara}); fighters = await api("/api/fighters"); await refreshRoster(); draw();
       toast(r.chara.slice(5) + " is on the roster! Restart Tenkaichi3Decomp-Custom.exe to fight with it."); }
     catch (e) { toast(e.message, true); }
-  });
+  }, {game: "BT4"});
 }
 function rosterForms() {
   openPick("NEW FORMS FOR WHOM?", r => {
@@ -592,6 +592,33 @@ function drawWorkshop() {
   };
   tip("Stretch it, move it, turn it! Your warrior changes as you go. Esc when done.");
 }
+async function openFx(what, label) {
+  $("pick").classList.add("side");
+  $("picktitle").textContent = "ATTACK COLOURS"; $("pick").style.display = "block"; $("grid").style.display = "none";
+  $("picknone").style.display = "none"; $("pickgames").innerHTML = "";
+  const L = $("picklist"); L.style.display = "block";
+  L.innerHTML = `<div class="sec">${esc(label.toUpperCase())}: READING ITS EFFECTS...</div>`;
+  let r;
+  try { r = await api("/api/fxcolours", {spec, what}); } catch (e) { L.innerHTML = `<div class="sec">${esc(e.message)}</div>`; return; }
+  const changes = (spec.attack_colours || {})[what] || [];
+  L.innerHTML = `<div class="sec">${esc(label.toUpperCase())}</div>` +
+    (r.png ? `<img src="data:image/png;base64,${r.png}" style="max-width:100%;border-radius:6px;margin:6px 0;display:block">` : "") +
+    `<div class="sec">PICK A COLOUR, THEN ITS NEW COLOUR</div><div>` +
+    (r.colours.length ? r.colours.map(c => `<label title="${c.rgb} (${c.where})" style="display:inline-block;margin:4px;cursor:pointer">
+      <span style="display:inline-block;width:38px;height:38px;border-radius:50%;border:3px solid #fff;background:${c.rgb};vertical-align:middle"></span>
+      <input type="color" value="${c.rgb}" data-from="${c.rgb}" style="width:0;height:0;opacity:0;position:absolute"></label>`).join("")
+      : `<span class="sub">this attack has no colours of its own (its effect is the game's shared one)</span>`) + `</div>` +
+    (changes.length ? `<div class="sub" style="margin:6px">changed: ${changes.map(ch => ch.from + " → " + ch.to).join(", ")}</div>` : "") +
+    `<div class="row" id="fxreset"><span>Original</span><span class="val">Undo this attack's colour changes</span><span class="btn">↺</span></div>`;
+  for (const inp of L.querySelectorAll("input[type=color]")) inp.onchange = () => {
+    spec.attack_colours = spec.attack_colours || {};
+    spec.attack_colours[what] = (spec.attack_colours[what] || []).concat([{from: inp.dataset.from, to: inp.value, range: 1.5}]);
+    touch(); openFx(what, label);
+  };
+  $("fxreset").onclick = () => { if (spec.attack_colours) { delete spec.attack_colours[what];
+    if (!Object.keys(spec.attack_colours).length) delete spec.attack_colours; } touch(); openFx(what, label); };
+  tip("Pick a colour of the attack, then its new colour. The picture shows its textures and colours.");
+}
 async function openColours() {
   $("pick").classList.add("side");
   $("picktitle").textContent = "COLOURS"; $("pick").style.display = "block"; $("grid").style.display = "none";
@@ -642,18 +669,26 @@ function drawMoves() {
         tip: "Whose technique should your warrior learn? Triangle (the ✎ button) renames it.",
         onclick: (ev, d) => {
           if (ev.target.classList.contains("ren")) return rename(k, m);
+          if (ev.target.classList.contains("fxc")) return openFx(k, SLOT_LABEL[k] + ": " + m.shown);
           openPick(`${SLOT_LABEL[k].toUpperCase()}: WHOSE TECHNIQUE?`, r => {
             spec.moves = spec.moves || {};
             if (r) spec.moves[k] = r; else delete spec.moves[k];
             touch(); draw(); toast(r ? `${roster[charaId(r.chara)].moves[SLOT_KEYS.indexOf(r.slot)]}! Good choice!` : "Back to the moveset's own.");
           }, {moves: SLOT_KIND[k], none: "Moveset's own"});
         },
-        extra: `<span class="btn ren" title="Rename">✎</span>`,
+        extra: `<span class="btn ren" title="Rename">✎</span><span class="btn fxc" title="Recolour the attack" style="margin-left:6px">🎨</span>`,
         after: d => d.onmouseenter = () => { tip("Whose technique should your warrior learn? ✎ renames it."); card(m); }});
     }
   }
+  rows.push({sec: "ATTACK COLOURS"});
+  for (const [k, label, about] of [["ki_blasts", "Ki blasts", "The ki blasts and their charge glow."],
+                                   ["charge", "Ki charge", "The glow and sparks when charging ki (the aura flames are the game's own)."]]) {
+    const n = ((spec.attack_colours || {})[k] || []).length;
+    rows.push({label, value: n ? `${n} colour change${n > 1 ? "s" : ""}` : "Original colours", tip: about,
+      onclick: () => openFx(k, label), extra: `<span class="btn">🎨</span>`});
+  }
   render(rows);
-  tip("Learn techniques from the whole roster!");
+  tip("Learn techniques from the whole roster! 🎨 recolours an attack.");
   help([["✕", "Pick technique"], ["✎", "Rename"], ["Ctrl+S", "Save"]]);
 }
 function card(m) {
@@ -744,7 +779,7 @@ function drawFinish() {
     {sec: "BT4 (a copy of your BT4 disc)"},
     {label: "BT4 place", value: nm(spec.bt4_slot, "pick a BT4 character"), sub: "your warrior takes this place in BT4",
       tip: "Which BT4 character your warrior replaces in the copy of the BT4 disc.",
-      onclick: () => { pickGame = "BT4"; openPick("WHOSE PLACE IN BT4?", r => { spec.bt4_slot = {chara: r.chara, costume: r.costume || 1}; touch(); draw(); }, {costume: true}); },
+      onclick: () => openPick("WHOSE PLACE IN BT4?", r => { spec.bt4_slot = {chara: r.chara, costume: r.costume || 1}; touch(); draw(); }, {costume: true, game: "BT4"}),
       extra: `<span class="btn">✕</span>`},
     {label: "Put in BT4", value: "Write my warrior into the BT4 disc copy", onclick: bt4Install,
       tip: "Makes SLUS_219.78.DBZBT4B14REV2ENG.custom.iso next to your BT4 disc (the original is never changed). Pick it in the BT4 launcher or in PCSX2.",

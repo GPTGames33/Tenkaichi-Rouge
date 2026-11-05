@@ -986,6 +986,15 @@ void EftCam_Clear(void) {
 
 /* Starts a camera cut: plays arg->anim on the demo camera, timed by fighter arg->objId's technique timer if any. */
 void EftCam_Start(EftCamArg *arg) {
+#ifdef PORT
+    /* PC build: a technique's effects can name a camera cut its fighter's files do not have (a custom character's
+       move taken from another character, a rush whose cut lives elsewhere): the original read through the empty
+       pointer and crashed in DemoCam_FixupAnim. Without an animation the cut is left out and the fight's own
+       camera goes on. */
+    if (arg->anim == NULL) {
+        return;
+    }
+#endif
     gEftCam->arg = *arg;
     DemoCam_SetAnim(arg->anim);
     if (arg->objId != -1) {

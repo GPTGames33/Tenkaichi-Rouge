@@ -257,6 +257,20 @@ class App:
                 layers.append({"piece": piece.rstrip("+"), "label": f"{piece.rstrip('+')} from {cf.name(who[0])}", "nodes": nodes})
         return {"layers": layers, "body": body}
 
+    def fx_colours(self, spec, what):
+        """An attack's colours and a picture of its textures: what = a move slot, "ki_blasts" or "charge"."""
+        import base64
+        import fxcolour as fx
+        spec = dict(spec, name=spec.get("name") or "preview")
+        eff = cf.Fighter(self.disc, spec, "preview").effects().bytes()
+        if what in cf.SLOTS:
+            cols, png = fx.attack_colours(eff, cf.SLOTS[what]), fx.attack_preview_png(eff, cf.SLOTS[what])
+        elif what == "ki_blasts":
+            cols, png = fx.kiblast_colours(eff), fx.kiblast_preview_png(eff)
+        else:
+            cols, png = fx.aura_colours(eff), fx.aura_preview_png(eff)
+        return {"colours": cols, "png": base64.b64encode(png).decode() if png else ""}
+
     def colours(self, spec):
         """The textures the warrior's look draws with (costume 1, pieces and colour changes applied): their picture
         and main colours, for the Colours screen."""
@@ -530,6 +544,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.send(200, {"text": a.package(body["file"])})
                 if act == "/api/layernodes":
                     return self.send(200, a.layer_nodes(body["spec"]))
+                if act == "/api/fxcolours":
+                    return self.send(200, a.fx_colours(body["spec"], body["what"]))
                 if act == "/api/colours":
                     return self.send(200, a.colours(body["spec"]))
                 if act == "/api/quit":
