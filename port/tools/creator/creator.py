@@ -12,6 +12,7 @@ import argparse, http.server, json, pathlib, re, struct, sys, threading, traceba
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
+sys.path.insert(0, str(HERE))
 import custom_fighter as cf  # noqa: E402
 
 
@@ -204,6 +205,19 @@ class App:
     def describe(self, spec):
         return cf.Fighter(self.disc, spec, "fighter").describe()
 
+    def model(self, spec, costume=0):
+        """The 3D model of a costume of the fighter, for the preview (port/tools/creator/model.py)."""
+        import model as mdl
+        spec = dict(spec, name=spec.get("name") or "preview")
+        f = cf.Fighter(self.disc, spec, "preview")
+        look = f.costumes[min(costume, len(f.costumes) - 1)]
+        key = json.dumps([look, spec.get("parts")], sort_keys=True)
+        if getattr(self, "_model_key", None) != key:
+            self._model = mdl.extract(f.model(look, False).bytes(), pose="relaxed", hide_optional=True)
+            self._model_key = key
+        m = self._model
+        return {k: m[k] for k in ("positions", "normals", "uvs", "indices", "groups", "textures", "bbox")}
+
     def install(self, name):
         spec = json.loads(self.path_of(name).read_text(encoding="utf-8-sig"))
         f, slot, files = cf.replace_files(self.disc, spec)
@@ -255,7 +269,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store" if ctype == "application/json" else "max-age=86400")
+        self.send_header("Cache-Control", "max-age=86400" if ctype == "image/png" else "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -289,6 +303,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 act = self.path
                 if act == "/api/save":
                     return self.send(200, {"file": a.save(body.get("file"), body["spec"])})
+                if act == "/api/model":
+                    return self.send(200, a.model(body["spec"], int(body.get("costume", 0))))
                 if act == "/api/describe":
                     return self.send(200, {"text": a.describe(body["spec"])})
                 if act == "/api/install":
@@ -327,7 +343,15 @@ def main():
                 with app.lock:
                     app.portrait(c["id"])
     threading.Thread(target=warm, daemon=True).start()
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    http.server.ThreadingHTTPServer.allow_reuse_address = False  # (Windows lets a second server take a used port)
+    try:
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    except OSError:
+        url = f"http://127.0.0.1:{args.port}/"
+        print(f"The creator is already open: {url}", flush=True)
+        if not args.no_browser:
+            webbrowser.open(url)
+        return
     url = f"http://127.0.0.1:{args.port}/"
     print(f"Custom Character creator: {url}  (Ctrl+C to stop)", flush=True)
     if not args.no_browser:

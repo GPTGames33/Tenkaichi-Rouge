@@ -65,6 +65,10 @@
   #hero { position: absolute; left: 70px; top: 60px; width: 380px; height: 380px; border-radius: 50%;
     background: radial-gradient(circle, rgba(255,255,255,0.8), rgba(255,255,255,0) 70%); display: grid; place-items: center; }
   #hero img { width: 300px; height: 300px; image-rendering: auto; filter: drop-shadow(0 8px 10px rgba(0,0,0,0.45)); }
+  #view3d { position: absolute; left: 0; top: 20px; width: 520px; height: 470px; cursor: grab; display: none; }
+  #view3d.on { display: block; }
+  #view3d.on ~ #viewhint { display: block; }
+  #viewhint { display: none; position: absolute; left: 0; width: 520px; top: 470px; text-align: center; font-size: 12px; color: #3a1660; font-weight: 700; }
   #heroname { position: absolute; left: 30px; right: 30px; top: 445px; text-align: center; }
   #heroname .n { font-family: Impact, "Arial Black", sans-serif; font-size: 34px; color: #fff; -webkit-text-stroke: 1.5px #3a1660;
     text-shadow: 0 3px 0 #3a1660; }
@@ -112,6 +116,8 @@
   <div id="right">
     <div id="saved">NOT SAVED</div><div id="savedsub"></div>
     <div id="hero"><img id="heroimg" alt=""></div>
+    <canvas id="view3d" width="520" height="470" title="Drag to turn, wheel to zoom"></canvas>
+    <div id="viewhint">drag to turn · wheel to zoom</div>
     <div id="heroname"><div class="n" id="hn"></div><div class="t" id="ht"></div></div>
     <div id="movecard"></div>
   </div>
@@ -172,8 +178,89 @@ function moveOf(key) {
   return {who, slot, name, shown: (spec.names || {})[key] || name};
 }
 
+// -------------------------------------------------------------------------------------------- 3D preview
+const V = {gl: null, yaw: 0.5, pitch: 0.08, zoom: 1, model: null, key: "", loading: false};
+function initView() {
+  const cv = $("view3d"); const gl = cv.getContext("webgl2", {antialias: true, premultipliedAlpha: false});
+  if (!gl) return;
+  const vs = `#version 300 es
+    in vec3 p; in vec3 n; in vec2 uv; uniform mat4 mvp; uniform mat3 nm; out vec3 vn; out vec2 vuv;
+    void main() { gl_Position = mvp * vec4(p, 1.0); vn = nm * n; vuv = uv; }`;
+  const fs = `#version 300 es
+    precision mediump float; in vec3 vn; in vec2 vuv; uniform sampler2D tex; out vec4 o;
+    void main() { vec4 c = texture(tex, vuv); if (c.a < 0.3) discard;
+      float l = dot(normalize(vn), normalize(vec3(0.4, 0.7, 0.6)));
+      float shade = l > 0.05 ? 1.0 : 0.72;            /* two tones, as the game's cel shading */
+      o = vec4(c.rgb * shade, 1.0); }`;
+  const sh = (t, s) => { const x = gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x); return x; };
+  const pr = gl.createProgram(); gl.attachShader(pr, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(pr);
+  if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) return;
+  V.gl = gl; V.pr = pr;
+  let drag = null;
+  cv.onpointerdown = e => { drag = [e.clientX, e.clientY, V.yaw, V.pitch]; cv.setPointerCapture(e.pointerId); cv.style.cursor = "grabbing"; };
+  cv.onpointermove = e => { if (!drag) return; V.yaw = drag[2] + (e.clientX - drag[0]) * 0.01;
+    V.pitch = Math.max(-0.8, Math.min(0.8, drag[3] + (e.clientY - drag[1]) * 0.006)); };
+  cv.onpointerup = () => { drag = null; cv.style.cursor = "grab"; };
+  cv.onwheel = e => { e.preventDefault(); V.zoom = Math.max(0.5, Math.min(4, V.zoom * (e.deltaY > 0 ? 0.9 : 1.1))); };
+  requestAnimationFrame(frame);
+}
+async function loadModel() {
+  if (!V.gl || !spec) return;
+  const key = JSON.stringify([look(), spec.parts || null]);
+  if (key === V.key || V.loading) return;
+  V.loading = true; V.key = key;
+  try {
+    const m = await api("/api/model", {spec});
+    const gl = V.gl, buf = (data, T) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, new T(data), gl.STATIC_DRAW); return b; };
+    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+    for (const [name, data, size] of [["p", m.positions, 3], ["n", m.normals, 3], ["uv", m.uvs, 2]]) {
+      buf(data, Float32Array); const loc = gl.getAttribLocation(V.pr, name);
+      if (loc >= 0) { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0); }
+    }
+    const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(m.indices), gl.STATIC_DRAW);
+    const texs = {};
+    await Promise.all(m.textures.map(t => new Promise(res => {
+      const img = new Image(); img.onload = () => {
+        const tx = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tx);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        texs[t.index] = tx; res(); }; img.onerror = res; img.src = "data:image/png;base64," + t.png; })));
+    if (V.model) V.gl.deleteVertexArray(V.model.vao);
+    V.model = {vao, groups: m.groups, texs, bbox: m.bbox};
+    $("view3d").classList.add("on"); $("hero").style.display = "none";
+  } catch (e) { V.key = ""; $("view3d").classList.remove("on"); $("hero").style.display = ""; }
+  V.loading = false;
+  if (JSON.stringify([look(), spec.parts || null]) !== V.key) loadModel();
+}
+function mat4mul(a, b) { const o = new Array(16).fill(0);
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) for (let k = 0; k < 4; k++) o[j * 4 + i] += a[k * 4 + i] * b[j * 4 + k]; return o; }
+function frame() {
+  requestAnimationFrame(frame);
+  const gl = V.gl, M = V.model; if (!gl || !M || !$("view3d").classList.contains("on")) return;
+  const cv = $("view3d"); gl.viewport(0, 0, cv.width, cv.height);
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST);
+  gl.useProgram(V.pr); gl.bindVertexArray(M.vao);
+  const lo = M.bbox.min, hi = M.bbox.max, cx = (lo[0] + hi[0]) / 2, cy = (lo[1] + hi[1]) / 2, cz = (lo[2] + hi[2]) / 2;
+  const h = Math.max(hi[1] - lo[1], hi[0] - lo[0]) * 0.62 / V.zoom, asp = cv.width / cv.height;
+  const cyw = Math.cos(V.yaw), syw = Math.sin(V.yaw), cp = Math.cos(V.pitch), sp = Math.sin(V.pitch);
+  const T = [1,0,0,0, 0,1,0,0, 0,0,1,0, -cx,-cy,-cz,1];
+  const RY = [cyw,0,-syw,0, 0,1,0,0, syw,0,cyw,0, 0,0,0,1];
+  const RX = [1,0,0,0, 0,cp,sp,0, 0,-sp,cp,0, 0,0,0,1];
+  const P = [1 / (h * asp),0,0,0, 0,1 / h,0,0, 0,0,-1 / 100,0, 0,0,0,1];
+  const R = mat4mul(RX, RY), mvp = mat4mul(P, mat4mul(R, T));
+  gl.uniformMatrix4fv(gl.getUniformLocation(V.pr, "mvp"), false, mvp);
+  gl.uniformMatrix3fv(gl.getUniformLocation(V.pr, "nm"), false, [R[0],R[1],R[2], R[4],R[5],R[6], R[8],R[9],R[10]]);
+  for (const g of M.groups) {
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, M.texs[g.texture] || null);
+    gl.drawElements(gl.TRIANGLES, g.count, gl.UNSIGNED_INT, g.start * 4);
+  }
+}
+
 function hero() {
   if (!spec) return;
+  loadModel();
   const c = chara(spec.portrait || look());
   $("heroimg").src = c ? face(c.id) : "";
   $("hn").textContent = spec.name || "New Warrior";
@@ -258,6 +345,7 @@ function draw() {
 
 function drawHome() {
   tab = "home"; $("tabs").innerHTML = `<div class="tab on">MY FIGHTERS</div>`;
+  $("view3d").classList.remove("on"); $("hero").style.display = ""; V.key = "";
   $("heading").textContent = "CUSTOM CHARACTER"; $("hn").textContent = ""; $("ht").textContent = ""; $("heroimg").src = face(3);
   $("saved").textContent = `${fighters.length} SAVED`; $("savedsub").textContent = "";
   const rows = [{sec: "NEW"}, {label: "New Warrior", value: "Start from any fighter in the roster", onclick: newFighter,
@@ -472,7 +560,7 @@ async function del() {
 }
 
 (async function () {
-  fit(); tip("Reading the roster from your disc...");
+  fit(); initView(); tip("Reading the roster from your disc...");
   try { roster = await api("/api/roster"); fighters = await api("/api/fighters"); draw(); }
   catch (e) { toast(e.message, true); }
 })();
