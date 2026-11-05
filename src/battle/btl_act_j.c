@@ -526,6 +526,8 @@ s32 BtlAct_GetTechniqueAction(BtlActJChr *chr, s32 slot) {
  */
 #ifdef PORT
 /* BT3_TEST_TECH=<2..4> (testing, below): the technique a fighter uses whenever it can; 0 without it */
+extern int Port_TestSpark(void); /* port/src/headless.c: BT3_TEST_SPARK (below) */
+extern void BtlChar_SetHeldFlag(BtlActJChr *chr, s32 bit);
 static s32 PortTestTech(void) {
     extern char *getenv(const char *name);
     extern int atoi(const char *s);
@@ -549,9 +551,22 @@ s32 BtlAct_CanUseTechnique(BtlActJChr *chr, s32 slot) {
     if (!BtlChar_TestFlag(chr, 5)) {
         return 0;
     }
+#ifdef PORT
+    {   /* BT3_TEST_SPARK=1 (testing, with BT3_TEST_TECH=4): the fighter is put in the max power mode the Ultimate
+           needs (as ability 0x43 does at a member's entry: held flag 6, the gauge full, ki full), so the Ultimate
+           is used as a player uses it, and the mode's end after it is tested too */
+        if (slot == 4 && PortTestTech() == 4 && Port_TestSpark() && !BtlChar_TestFlag(chr, 6)) {
+            u8 *g = (u8 *)BtlMember_GetActiveGauge(chr);
+            BtlChar_SetHeldFlag(chr, 6);
+            *(s32 *)(g + 0x1C) = 30000;
+            *(s32 *)(g + 0x0C) = *(s32 *)(g + 0x10);
+            return 0;
+        }
+    }
+#endif
     if (slot == 4 && !BtlChar_TestFlag(chr, 6)
 #ifdef PORT
-        && PortTestTech() != 4 /* (the test also leaves out the state the Ultimate needs) */
+        && (PortTestTech() != 4 || Port_TestSpark()) /* (the test also leaves out the state the Ultimate needs) */
 #endif
     ) {
         return 0;

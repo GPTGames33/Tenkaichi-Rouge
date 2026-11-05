@@ -213,6 +213,9 @@ int __wrap_Progress_Main(int arg) {
                 if (!modeEntered && getenv("BT3_MENU_MODE") != NULL && !Port_NetSession() && gProgress != NULL && gSaveData != NULL) {
                     modeEntered = 1;
                     gProgress->mode = atoi(getenv("BT3_MENU_MODE"));
+                    if (getenv("BT3_TEST_VERSUS") != NULL) { /* (=2: the versus mode's COM vs COM, with mode 39) */
+                        *(int *)((char *)gProgress + 0x620) = atoi(getenv("BT3_TEST_VERSUS"));
+                    }
                 }
             }
             {   /* BT3_TBO=1 (testing): the first menu is Tenkaichi Budokai Online's (src/menu/port_tbo.c), not the
@@ -316,6 +319,16 @@ int Port_TestIdle(void) {
         idle = getenv("BT3_TEST_IDLE") != NULL && !Port_NetSession();
     }
     return idle;
+}
+
+/* BT3_TEST_SPARK=1 (testing, with BT3_TEST_TECH=4): the Ultimate is used from the max power mode, which the test
+   otherwise leaves out (src/battle/btl_act_j.c) */
+int Port_TestSpark(void) {
+    PORT_HOST static int spark = -1; /* (not the game's state) */
+    if (spark < 0) {
+        spark = getenv("BT3_TEST_SPARK") != NULL && !Port_NetSession();
+    }
+    return spark;
 }
 
 /* Main-menu item 4, Dragon Net Battle, was confirmed (src/menu/menu_a.c): the settings code opens the online
@@ -528,7 +541,12 @@ void Port_Trace(unsigned vblanks) {
             last = gBtlSeq->state;
         }
     }
-    if (every <= 0 || vblanks % (unsigned)every != 0 || sBattles == 0 || gBtlSeq == NULL || gBtlSeq->state < 2) {
+    if (every > 0 && vblanks % (unsigned)every == 0 && sFromMenu && gProgress != NULL && (gBtlSeq == NULL || gBtlSeq->state < 2)) {
+        /* (between the fights of a session played through the menus: the menus' mode, so a stop shows there too) */
+        printf("menu vb %7u mode %d\n", vblanks, gProgress->mode);
+        fflush(stdout);
+    }
+    if (every <= 0 || vblanks % (unsigned)every != 0 || (sBattles == 0 && !sFromMenu) || gBtlSeq == NULL || gBtlSeq->state < 2) {
         return;
     }
     clock = BtlSeq_GetClock();
