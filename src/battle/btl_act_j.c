@@ -605,7 +605,11 @@ s32 BtlAct_CheckTechniqueInput(BtlActJChr *chr) {
 #ifdef PORT
     {   /* BT3_TEST_TECH=<2..4> (testing): a fighter that can use that technique uses it, as if its input were pressed
            (to see a technique play in a fight without a player: the attract demo's computers seldom pick them) */
+        extern int Port_TestIdle(void); /* port/src/headless.c */
         s32 test = PortTestTech();
+        if (chr->player == 1 && Port_TestIdle()) {
+            test = 0; /* (BT3_TEST_IDLE: the second player's fighter is the target and does nothing) */
+        }
         if (slot < 0 && test >= 2 && test <= 4) {
             slot = test;
         }

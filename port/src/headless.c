@@ -302,6 +302,16 @@ int Port_BattleOutcome(int *winner) {
     return gBtlSeq->state;
 }
 
+/* BT3_TEST_IDLE=1 (testing, with BT3_TEST_TECH): the second player's fighter takes no input and uses no technique
+   (src/battle/btl_input.c, btl_act_j.c), so the first one's techniques land on it */
+int Port_TestIdle(void) {
+    PORT_HOST static int idle = -1; /* (not the game's state) */
+    if (idle < 0) {
+        idle = getenv("BT3_TEST_IDLE") != NULL && !Port_NetSession();
+    }
+    return idle;
+}
+
 /* Main-menu item 4, Dragon Net Battle, was confirmed (src/menu/menu_a.c): the settings code opens the online
    screen when it sees the request (port/src/gs/ui.cpp). Without a window nothing does. */
 volatile int gPortNetMenuRequest;
@@ -577,9 +587,20 @@ void Port_Trace(unsigned vblanks) {
             printf("cam tick %u eye %08x %08x %08x ground %08x\n", (unsigned)clock[0], ue[0], ue[1], ue[2], ug);
         }
     }
-    printf("vb %7u seq %d clock %08x %08x %08x %08x | hp %6d %6d | p0 %08x %08x %08x | p1 %08x %08x %08x\n", vblanks,
-           gBtlSeq->state, clock[0], clock[1], clock[2], clock[3], BtlCharApi_GetHp(0), BtlCharApi_GetHp(1),
-           u[0][0], u[0][1], u[0][2], u[1][0], u[1][1], u[1][2]);
+    {   /* (and each fighter's action and animation: a fight that stops going on shows where) */
+        extern void *BtlChar_FindByObjId(int objId);
+        extern int BtlAct_GetCurrent(void *chr);
+        extern int BtlAnim_GetId(void *chr);
+        extern int BtlChars_IsTimeStopped(void);
+        extern int BtlChange_GetPlayer(void);
+        void *c0 = BtlChar_FindByObjId(0), *c1 = BtlChar_FindByObjId(1);
+        printf("vb %7u seq %d clock %08x %08x %08x %08x | hp %6d %6d | p0 %08x %08x %08x | p1 %08x %08x %08x | act %x %x anim %x %x"
+               " | time stop %d (change request of player %d)\n",
+               vblanks, gBtlSeq->state, clock[0], clock[1], clock[2], clock[3], BtlCharApi_GetHp(0), BtlCharApi_GetHp(1),
+               u[0][0], u[0][1], u[0][2], u[1][0], u[1][1], u[1][2], c0 != NULL ? BtlAct_GetCurrent(c0) : -1,
+               c1 != NULL ? BtlAct_GetCurrent(c1) : -1, c0 != NULL ? BtlAnim_GetId(c0) : -1, c1 != NULL ? BtlAnim_GetId(c1) : -1,
+               BtlChars_IsTimeStopped(), BtlChange_GetPlayer());
+    }
     fflush(stdout);
 }
 

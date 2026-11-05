@@ -470,6 +470,15 @@ void BtlInput_Fetch(BtlInputChr *chr, u32 *outButtons, u32 *outCommands, u8 *sti
         BtlChar_TestFlag(chr, 0xB1)) {
         block = 1;
     }
+#ifdef PORT
+    {   /* BT3_TEST_IDLE=1 (testing, with BT3_TEST_TECH): the second player's fighter takes no input at all (no guard,
+           no dodge, no move), so a technique of the first lands on it */
+        extern int Port_TestIdle(void); /* port/src/headless.c */
+        if (chr->player == 1 && Port_TestIdle()) {
+            block = 1;
+        }
+    }
+#endif
     if (filter) {
         buttons &= BTLB_FILTER_MASK;
         commands &= BTLC_FILTER_MASK;

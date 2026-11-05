@@ -168,6 +168,19 @@ s32 BtlColl_StartThrow(BtlCollChr *atk, BtlCollChr *def, s32 slot, u32 techFlags
     atk->thr.unk2C = BtlSuper_GetUnk226(atk, slot);
     atk->thr.unk18 = BtlSuper_GetUnk220(atk, slot);
     atk->thr.unk1C = BtlSuper_GetLastStep(atk, slot);
+#ifdef PORT
+    /* PC build: the partner a rush sequence brings in (unk20, a character or an object) is asked for when the
+       sequence starts and let go in its step unk18 + 1, after step unk18 waited for it (src/battle/btl_act_f.c
+       BtlAct_SuperRushSequenceHandler); while the request is open the change queue stops time for everyone
+       (btl_char_ctl_b.c). The disc's techniques always have both or neither, and the step within the sequence.
+       Moves converted from BT4 had neither in BT3's places (BT4 keeps the partner elsewhere: a partner 0 in every
+       technique, with no step), so the request was never let go and the fight froze for good right after the
+       Ultimate connected. A partner without a step to take it in, or a step without a partner, is left out. */
+    if (atk->thr.unk20 < 0 || atk->thr.unk18 < 0 || atk->thr.unk18 >= atk->thr.unk10) {
+        atk->thr.unk20 = -1;
+        atk->thr.unk18 = -1;
+    }
+#endif
     BtlChar_SetFlag(atk, 0x94);
     atk->react.faceYaw = BtlChar_GetPos(atk)->yaw;
     atk->react.unk24 = 0.0f;
