@@ -2027,6 +2027,48 @@ int Port_CharaFormTarget(int chara, int slot) {
     return c != NULL && slot >= 0 && slot < SLOTS ? c->target[slot] : -1;
 }
 
+/* Whether a package is behind character `chara` (an added character, or a disc character a folder replaces): the
+   fight's way back of a transformation (src/battle/btl_char_mgr.c, BtlChar_PortFormBack) follows the chain of
+   characters a fighter went through when one of them is. Always 0 in a session (nothing of a package is read). */
+int Port_CharaPackaged(int chara) {
+    PortCharas_Init();
+    return chara_of(chara) != NULL;
+}
+
+/* BT3_FORM_LOG=1 or BT3_TEST_FORM (testing): each change of character of a fighter, with the chain it now goes back
+   through, into the log ("bt3: form: ..."). */
+static const char *form_name(int chara) {
+    const char *n = Port_CharaShownName(chara);
+    static char buf[4][200];
+    static int at;
+    char *out = buf[at++ & 3];
+    if (n == NULL) {
+        n = Port_DiscCharaName(chara);
+    }
+    snprintf(out, sizeof(buf[0]), "%d %s", chara, n != NULL ? n : "");
+    return out;
+}
+void Port_CharaFormLog(int side, int member, int from, int to, const short *chain, int depth, int fusion) {
+    static int on = -1;
+    char line[1024];
+    int o, i;
+    if (on < 0) {
+        on = getenv("BT3_FORM_LOG") != NULL || getenv("BT3_TEST_FORM") != NULL;
+    }
+    if (!on || (from == to && !fusion)) {
+        return;
+    }
+    o = snprintf(line, sizeof(line), "bt3: form: side %d member %d: %s -> %s%s; back through:", side, member, form_name(from),
+                 form_name(to), fusion ? " (fusion)" : "");
+    for (i = depth - 1; i >= 0 && o > 0 && o < (int)sizeof(line) - 80; i--) {
+        o += snprintf(line + o, sizeof(line) - o, " [%s]", form_name(chain[i]));
+    }
+    if (depth == 0 && o > 0 && o < (int)sizeof(line) - 16) {
+        snprintf(line + o, sizeof(line) - o, " (none)");
+    }
+    fprintf(stderr, "%s\n", line);
+}
+
 /* whether added character j is reached by a transformation (left, up, right) of another added one */
 static int reached(int j) {
     int i, k;

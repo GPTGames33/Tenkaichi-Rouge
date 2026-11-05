@@ -1154,7 +1154,54 @@ s32 BtlAct_CheckRecoveryInput(BtlActJChr *chr, s32 held) {
  * Outside a damage action: 0x116..0x119 transformation 0..3, 0x11A..0x11C fusion 0..2, 0x11D member switch (no
  * cost or availability check). Always: 0x110..0x115 queue actions 5..10. The flag is consumed (except 0xFA).
  */
+#ifdef PORT
+/* BT3_TEST_FORM=up,down,... (testing, port/src/headless.c): the first player's fighter takes the next of these inputs
+   every so many frames it is free, with the blast stocks it costs, as the story mode's script forces them (below) */
+static s32 PortTestForm(BtlActJChr *chr) {
+    extern int Port_TestForm(int step, int *gap);
+    extern void Port_TestFormStep(int step, int input, int chara, int target, int ok);
+    static s32 sTestStep;
+    static s32 sTestWait;
+    s32 gap;
+    s32 d;
+    s32 partner;
+    s32 cost;
+    s32 ok = 0;
+    s32 target = -1;
+    s32 *g;
+
+    if (chr->player != 0 || (d = Port_TestForm(sTestStep, &gap)) < 0) {
+        return 0;
+    }
+    if (!BtlChar_IsFree(chr) || BtlAct_IsTechniqueId(BtlAct_GetCurrent(chr)) || ++sTestWait < gap) {
+        return 0;
+    }
+    sTestWait = 0;
+    sTestStep++;
+    g = (s32 *)BtlMember_GetActiveGauge(chr); /* (+0x14 blast stocks, +0x18 their most) */
+    if (d < 4) {
+        target = BtlParam_GetSlotId(chr, d);
+        cost = BtlParam_GetSlotCost(chr, d);
+        g[5] = g[5] > cost ? g[5] : cost < g[6] ? cost : g[6];
+        ok = BtlAct_CanTransform(chr, d, 0, 0) && BtlAct_QueueTransform(chr, d);
+    } else if (d < 7) {
+        target = BtlParam_GetUnkB4(chr, d - 4);
+        g[5] = g[6];
+        ok = BtlAct_CanFuse(chr, d - 4, 0, 0, &partner) && BtlAct_QueueFusion(chr, d - 4, partner);
+    } else {
+        ok = BtlAct_CanSwitch(chr, 0, 0) && BtlAct_QueueSwitch(chr);
+    }
+    Port_TestFormStep(sTestStep - 1, d, BtlMember_GetActive(chr)->chara, target, ok);
+    return ok;
+}
+#endif
+
 s32 BtlAct_CheckStoryForced(BtlActJChr *chr) {
+#ifdef PORT
+    if (PortTestForm(chr)) {
+        return 1;
+    }
+#endif
     if (Battle_GetMode() != 1) {
         return 0;
     }

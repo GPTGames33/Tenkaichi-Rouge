@@ -321,6 +321,53 @@ int Port_TestIdle(void) {
     return idle;
 }
 
+/* BT3_TEST_FORM=up,down,... (testing): the first player's fighter takes these transformation inputs (R3 with left,
+   up, right, down; "fuse1".."fuse3" for the fusions, "switch" a member switch), one every BT3_TEST_FORM_GAP frames
+   it is free to (default 150), as if they were pressed and the blast stocks were there (src/battle/btl_act_j.c);
+   with BT3_FORM_LOG the changes are logged (port/src/plat_charas.c). Port_TestForm(step): 0..3 a transformation,
+   4..6 a fusion, 7 a switch, -1 after the last step, -2 without the switch; *gap the frames between two. */
+int Port_TestForm(int step, int *gap) {
+    PORT_HOST static int n = -1, gapFrames = 150; /* (not the game's state) */
+    PORT_HOST static signed char steps[64];
+    if (n < 0) {
+        const char *s = Port_NetSession() ? NULL : getenv("BT3_TEST_FORM");
+        static const char *names[] = {"left", "up", "right", "down", "fuse1", "fuse2", "fuse3", "switch"};
+        n = 0;
+        while (s != NULL && *s != '\0' && n < 64) {
+            int k, len = (int)strcspn(s, ",");
+            for (k = 0; k < 8; k++) {
+                if ((int)strlen(names[k]) == len && strncmp(s, names[k], (size_t)len) == 0) {
+                    steps[n++] = (signed char)k;
+                }
+            }
+            s += len + (s[len] == ',');
+        }
+        if (getenv("BT3_TEST_FORM_GAP") != NULL && atoi(getenv("BT3_TEST_FORM_GAP")) > 0) {
+            gapFrames = atoi(getenv("BT3_TEST_FORM_GAP"));
+        }
+        if (n > 0) {
+            fprintf(stderr, "bt3: test form: %d steps, %d frames apart\n", n, gapFrames);
+        }
+    }
+    *gap = gapFrames;
+    if (n == 0) {
+        return -2;
+    }
+    return step >= 0 && step < n ? steps[step] : -1;
+}
+/* BT3_TEST_BLINK=1 (testing): every face keeps its eyes shut (src/battle/bobj_a.c), the picture a blink shows */
+int Port_TestBlink(void) {
+    PORT_HOST static int blink = -1; /* (not the game's state) */
+    if (blink < 0) {
+        blink = getenv("BT3_TEST_BLINK") != NULL && !Port_NetSession();
+    }
+    return blink;
+}
+void Port_TestFormStep(int step, int input, int chara, int target, int ok) {
+    fprintf(stderr, "bt3: test form: step %d (input %d): character %d, target %d: %s\n", step, input, chara, target,
+            ok ? "taken" : "refused");
+}
+
 /* BT3_TEST_SPARK=1 (testing, with BT3_TEST_TECH=4): the Ultimate is used from the max power mode, which the test
    otherwise leaves out (src/battle/btl_act_j.c) */
 int Port_TestSpark(void) {

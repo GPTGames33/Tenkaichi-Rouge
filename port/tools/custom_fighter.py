@@ -33,6 +33,8 @@ A fighter file (JSON). Every part is optional except "name"; a character is {"ch
       "portrait": {"chara": "Goku (End)"},       the menus' picture and the team picture (default: base)
       "health": 50000, "ki": 20000, "blast": 5,  10000 a bar; 100000 a full ki gauge; stocks 0..7
       "forms": {"up": "my_other_fighter.json"},  left / up / right: transformations (R3 + direction), down: back
+                                                 (another fighter file, "disc:<chara>", or none: a direction not
+                                                 named leads nowhere; a form not naming down goes back to its owner)
       "form_costs": {"up": 2},                   blast stocks a transformation costs
       "slot": {"chara": "Goku (End)", "costume": 1}   `replace` only: whose place it takes
     }
@@ -255,16 +257,76 @@ def texture_cluts(t):
 
 
 def recolour(texfile, changes):
+    """The texture file with its palettes changed: changes [(texture index, or None for every texture, from, to,
+    range)]."""
     t = bytearray(texfile)
     for index, off, n in texture_cluts(t):
         for tex, ref, to, rng in changes:
-            if tex != index:
+            if tex is not None and tex != index:
                 continue
             for k in range(n):
                 a = off + k * 4
                 if colour_near(bytes(t[a:a + 3]), ref, rng):
                     t[a:a + 3] = colour_shift(bytes(t[a:a + 3]), ref, to)
     return bytes(t)
+
+
+E_EYES, E_FACE_MOUTH = 0xD, (0xE, 0xF, 0x10, 0x11)
+
+
+def face_texture(m):
+    """The face texture's index (model header +0x4C) of a model pack, None if it has no model."""
+    model = m[3]
+    return model[0x4C] if model and model[:4] == b"pmdl" and len(model) > 0x4C else None
+
+
+def texture_map(src, dst, src_face, dst_face):
+    """{texture index of texture file src: the index of the same texture in texture file dst}: the one with the same
+    pixels (and palette, where several have them), else the same palette; the face texture is the face texture. A
+    costume's damaged model often has its textures in another order (36 of the disc's 349: Piccolo's face is 5,
+    damaged 6), so a colour change named by the costume's texture is put on the damaged model's through this."""
+    def keys(t):
+        count, eo = struct.unpack_from("<II", t, 0)
+        out = {}
+        for i in range(min(count, 255)):
+            o = eo * 4 + i * 0x40
+            if o + 0x40 > len(t):
+                break
+            pix, clut, psize, csize = struct.unpack_from("<IIii", t, o)
+            out[i] = (bytes(t[pix * 4:pix * 4 + max(psize, 0)]) if pix else b"",
+                      bytes(t[clut * 4:clut * 4 + max(csize, 0)]) if clut else b"")
+        return out
+    a, b = keys(src), keys(dst)
+    out = {}
+    for i, (pix, clut) in a.items():
+        same = [j for j, (p, _) in b.items() if p == pix and pix]
+        pick = next((j for j in same if b[j][1] == clut), same[0] if same else None)
+        if pick is None:
+            pick = next((j for j, (_, c) in b.items() if c == clut and clut), None)
+        if pick is not None:
+            out[i] = pick
+    if src_face is not None and dst_face is not None:
+        out[src_face] = dst_face
+    return out
+
+
+def recolour_model(m, changes):
+    """A model pack (Pack) recoloured: its textures (entry 0xC), and the face's other pictures with the changes of
+    the face texture. The game does not draw the face texture (model header +0x4C) itself all the time: while the
+    eyes blink it uploads one of the eye frames of entry 0xD in its place, and for mouth shapes 5..8 one of the
+    mouth pictures of entries 0xE..0x11 (BtlObj_GetFaceTexture, src/battle/bobj_a.c; ObjDraw_UploadTextures,
+    src/sys/gfxm_d_c.c), each a texture file with a palette of its own: changed in 0xC alone, the face shows its
+    old colours whenever it blinks or talks."""
+    if not changes:
+        return m
+    m[0xC] = recolour(m[0xC], changes)
+    model = m[3]
+    if model and model[:4] == b"pmdl" and len(model) > 0x4C:
+        face = [(None, ref, to, rng) for tex, ref, to, rng in changes if tex == model[0x4C]]
+        for e in (E_EYES,) + E_FACE_MOUTH:
+            if face and m[e] and len(m[e]) >= 8:
+                m[e] = recolour(m[e], face)
+    return m
 
 
 def texture_colours(model_pack, limit=8):
@@ -492,6 +554,28 @@ def chara_id(name):
     if not 0 <= c < len(NAMES):
         raise Fail(f"character id {c} out of range (0..{len(NAMES) - 1})")
     return c
+
+
+def disc_link(c):
+    """A link of character.txt to roster character c: disc:<id> for a BT3 one; for a BT4 one (BT4_BASE + its id), the
+    BT3 character both games have (port/tools/bt4/bt3_to_bt4_chara.json), else the folder
+    port/tools/bt4/import_bt4_roster.py makes for it ("<name> <form> (BT4)"; the game reads disc: ids of BT3 only)."""
+    if not is_bt4(c):
+        return f"disc:{c}"
+    k = c - BT4_BASE
+    here = pathlib.Path(__file__).resolve().parent / "bt4"
+    for p in (here / "bt3_to_bt4_chara.json", here.parents[3] / "research" / "bt3_to_bt4_chara.json"):
+        if p.is_file():
+            pair = {int(v): int(b) for b, v in json.loads(p.read_text(encoding="utf-8")).items()}
+            if k in pair and 0 <= pair[k] < len(NAMES):
+                return f"disc:{pair[k]}"
+            break
+    import unicodedata
+    nm, form = bt4().ch.names()[k]
+    nm = (nm or name(c)[5:]).strip()
+    form = (form or "").strip()
+    plain = unicodedata.normalize("NFKD", f"{nm}{' ' + form if form else ''} (BT4)").encode("ascii", "ignore").decode()
+    return folder_name(plain)
 
 
 def ref(obj, default=None):
@@ -760,7 +844,24 @@ class Fighter:
         if self.parts or self.body:  # pieces of other characters' models, workshop (port/tools/creator/mix.py)
             m = self.mixed(m, damaged)
         if self.colours:
-            m[0xC] = recolour(m[0xC], self.colours)
+            # (the colour changes name the textures of the costume's model, as the creator shows it; the damaged
+            # model gets them on its own textures that are the same)
+            plain = getattr(self, "_plain", None)
+            if plain is None:
+                plain = self._plain = {}
+            changes = self.colours
+            if not damaged:
+                plain[tuple(costume)] = (m[0xC], face_texture(m))
+            else:
+                if tuple(costume) not in plain:
+                    p = d.model(*costume, False)
+                    if self.parts or self.body:
+                        p = self.mixed(p, False)
+                    plain[tuple(costume)] = (p[0xC], face_texture(p))
+                tex, face = plain[tuple(costume)]
+                tmap = texture_map(tex, m[0xC], face, face_texture(m))
+                changes = [(tmap[t], ref, to, rng) for t, ref, to, rng in changes if t in tmap]
+            m = recolour_model(m, changes)
         ms = d.model(*self.moveset, damaged)
         for e in MOVESET_ENTRIES + tuple(TEXT_ENTRIES):
             m[e] = ms[e]
@@ -972,18 +1073,37 @@ def write_package(disc, spec_path, chars_dir, done):
             if not lo <= val <= hi:
                 raise Fail(f"{key} must be {lo}..{hi}")
             manifest.append(f"{key}={val}")
-    for direction, target in spec.get("forms", {}).items():
+    # The four transformation inputs, every one written: a direction the fighter file does not name leads nowhere.
+    # (Left out, the game would take the number of the model's own table: the transformations of whoever the
+    # moves come from, Super Vegeta's "back" to Vegeta for a warrior made of Super Vegeta, or for a BT4 donor a
+    # BT4 number that is another character here.)
+    forms = spec.get("forms") or {}
+    for direction in forms:
         if direction not in ("left", "up", "right", "down"):
             raise Fail(f"forms: {direction!r} is not left, up, right or down")
-        if target in (None, "none"):
+    ahead = []  # the warriors of this file's own that left / up / right lead to
+    for direction in ("left", "up", "right", "down"):
+        target = forms.get(direction)
+        if target in (None, "none", ""):
             manifest.append(f"{direction}=none")
         elif isinstance(target, str) and target.startswith("disc:"):
-            manifest.append(f"{direction}=disc:{chara_id(target[5:])}")
+            manifest.append(f"{direction}={disc_link(chara_id(target[5:]))}")
         else:
-            manifest.append(f"{direction}={write_package(disc, spec_path.parent / target, chars_dir, done)}")
+            linked = write_package(disc, spec_path.parent / target, chars_dir, done)
+            manifest.append(f"{direction}={linked}")
+            if direction != "down" and linked != folder:
+                ahead.append(linked)
     for direction, cost in spec.get("form_costs", {}).items():
         manifest.append(f"{direction}_cost={int(cost)}")
-    (out / "character.txt").write_text("\n".join(manifest) + "\n", encoding="utf-8")
+    (out / "character.txt").write_bytes(("\n".join(manifest) + "\n").encode("utf-8"))
+    # A form of this warrior whose own file names no way back goes back to this warrior (R3 + Down). (The game also
+    # remembers who a fighter transformed from, whatever the files say: src/battle/btl_char_mgr.c.)
+    for linked in ahead:
+        txt = chars_dir / linked / "character.txt"
+        if txt.is_file():
+            t = txt.read_bytes().decode("utf-8")
+            if re.search(r"^down=none$", t, re.M):
+                txt.write_bytes(re.sub(r"^down=none$", lambda _m: f"down={folder}", t, count=1, flags=re.M).encode("utf-8"))
     for n in f.notes + f.mix_notes:
         BUILD_NOTES.append(f"{spec['name']}: {n}")
     print(f.describe())

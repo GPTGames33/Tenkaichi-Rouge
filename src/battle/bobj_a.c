@@ -1995,6 +1995,15 @@ s32 BtlObj_UpdateFace(BObj *obj) {
     if (face != NULL) {
         if (face->flags & BOBJ_FACE_EYES) {
             BtlObjFace_StepBlink(obj, face);
+#ifdef PORT
+            {   /* BT3_TEST_BLINK=1 (testing, port/src/headless.c): the eyes stay on their first frame (shut), so a
+                   screenshot shows the picture the face texture is replaced by when the eyes blink */
+                extern int Port_TestBlink(void);
+                if (Port_TestBlink()) {
+                    face->eye = 1;
+                }
+            }
+#endif
         }
         if (face->flags & BOBJ_FACE_MOUTH) {
             BObjFace_UpdateMouth(obj, face);

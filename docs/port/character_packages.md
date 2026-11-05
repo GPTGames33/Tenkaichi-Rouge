@@ -251,6 +251,16 @@ A link is one of:
   disc character transforms into keeps a cell of its own.
 - The fusion input is R3 held with left, up or right, in a team battle with the partner on the team.
 - A link may be `none`: that transformation or fusion (or partner) is switched off, with no remark.
+- **The way back (`down`) remembers where a fighter came from.** In a fight each team member keeps the chain of
+  characters it transformed through. When a character of a package is in that chain (or is the fighter now),
+  R3 + Down goes back to the character the fighter came from, unless the table's own way back (or the `down`
+  link) leads to a character earlier in the chain, which is then taken (Super Saiyan 3 back to the base form, as on
+  the disc): a custom warrior that becomes a disc character or a Team BT4 form goes back to the warrior, not to the
+  base form that character's table names. Changing to a character that is already in the chain cuts the chain
+  there; a fusion starts a new one; every fight (and a retry) starts with the character picked. An added
+  character that is where its fighter started goes back nowhere unless its own `down` names a link (its model's
+  table is the one of the character it was made from). Without packages (and in every online session) the
+  game's own table decides, as on the disc. (src/battle/btl_char_mgr.c, `BtlChar_PortFormBack`.)
 
 **The other numbers of a form.** What a transformation or a fusion costs and what it looks like are numbers of the
 character's own table too. These keys set them; a key that is not written leaves the table's own (the Mod Manager's
@@ -425,6 +435,9 @@ Environment variables for testing:
 | `BT3_CHARA_LOG=1` | print, once for each, every file the game is given from a package (`file pzs3us1/01423.bin is characters/Blue Gi/x_1p.pak`), the names, labels and chips put on a select screen, and the cells made for added characters |
 | `BT3_TEST_CHARA=<id>[,<id>]` | the first fighter of side 1 (and side 2) of every fight the menus set up is this character, whatever is chosen: `198` the first added one, `0`..`160` a disc character |
 | `BT3_TEST_CELL=1` | the character select opens with the cursor on the first added character; `BT3_TEST_CELL=disc:<id>` on that disc character |
+| `BT3_TEST_FORM=up,down,...` | the first player's fighter takes these inputs one after the other, one every `BT3_TEST_FORM_GAP` frames it is free (default 150), with the blast stocks they cost: `left`, `up`, `right`, `down` (R3 with a direction), `fuse1`..`fuse3`, `switch`; with `BT3_DEMO=1 BT3_TEST_CHARA=<id>` a fight without a window that goes through a package's forms |
+| `BT3_TEST_BLINK=1` | every face keeps its eyes shut: a screenshot shows the eye frame (model entry 0xD) that replaces the face texture when a fighter blinks, to check a recoloured face |
+| `BT3_FORM_LOG=1` | print every change of character of a fighter and the chain it goes back through (`bt3: form: side 0 member 0: 198 Supa Satan -> 199 SUPER SATAN 2; back through: [198 Supa Satan]`); on with `BT3_TEST_FORM` |
 
 A check list before passing a package on:
 

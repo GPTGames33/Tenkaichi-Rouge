@@ -1357,12 +1357,16 @@ s32 BtlParam_GetUnkAC(BtlTechChr *chr) {
    character). The fighter's character is the object's (+0xC), taken from its model file. `slot`: 0..3 the
    transformations, 4..6 the fusion results. */
 extern int Port_CharaFormTarget(int chara, int slot);
+extern s32 BtlChar_PortFormBack(BtlTechChr *chr, s32 chara, s32 own); /* btl_char_mgr.c: the way back (slot 3) */
 static s32 BtlParam_PortTarget(BtlTechChr *chr, s32 slot, s32 own) {
     s32 chara = *(s32 *)((u8 *)BtlChar_GetObj(chr) + 0xC);
     s32 t;
 
     if ((t = Port_CharaFormTarget(chara, slot)) >= 0) {
-        return t;
+        own = t;
+    }
+    if (slot == 3) { /* back to the character the fighter came from, not to one it never was */
+        own = BtlChar_PortFormBack(chr, chara, own);
     }
     return own;
 }

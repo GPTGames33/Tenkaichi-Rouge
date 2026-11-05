@@ -246,6 +246,120 @@ extern void BtlObj_UpdateChains(BtlMgrObj *obj);
 /* A table inside a data file: the header word gives its byte offset. */
 #define FILE_TABLE(file, word) ((u32 *)(file) + ((u32 *)(file))[word] / 4)
 
+#ifdef PORT
+/* PC build: the way back of a transformation. The game's "back" (R3 + Down, transformation slot 3) is a number of
+   the character's own table (parameter +0x9B), so a fighter that became a character through someone else's link goes
+   back to whoever that character's table names: a custom warrior transformed into Super Saiyan God Goku "goes back"
+   to Goku (End), a form whose package names no way back to the table of the model it was made of (Super Vegeta's:
+   Vegeta). Here every team member keeps the chain of characters it went through: a change of character pushes the
+   one it came from (a change to a character already in the chain goes back to it: the chain is cut there), and the
+   way back (BtlChar_PortFormBack, from BtlParam_GetSlotId) is the table's own when it leads into the chain, else
+   the last character of the chain, when a character of a package is in it (the table is the game's when none is,
+   as on the disc and in every online session, where no package is read). A fusion starts a new chain. The arrays
+   are game variables (a static of a game file), so a rollback and a replay restore them with the rest. */
+enum { PORT_FORM_DEPTH = 16 };
+static s16 sPortFormChain[2][BTL_CHR_MEMBER_MAX][PORT_FORM_DEPTH]; /* the characters it came from, oldest first */
+static s8 sPortFormDepth[2][BTL_CHR_MEMBER_MAX];
+static s16 sPortFormCur[2][BTL_CHR_MEMBER_MAX];                    /* the character the chain is of */
+extern int Port_CharaPackaged(int chara);           /* port/src/plat_charas.c */
+extern int Port_CharaFormTarget(int chara, int slot);
+extern void Port_CharaFormLog(int side, int member, int from, int to, const short *chain, int depth, int fusion);
+
+static s32 PortForm_Ok(BtlMgrChr *chr, s32 member) {
+    return chr != NULL && (u32)chr->side < 2 && (u32)member < BTL_CHR_MEMBER_MAX;
+}
+
+/* the length of the chain of `member`, which is now `chara`: none if the chain is of another character (one that
+   changed some other way) */
+static s32 PortForm_Depth(BtlMgrChr *chr, s32 member, s32 chara) {
+    if (sPortFormCur[chr->side][member] != chara) {
+        return 0;
+    }
+    return sPortFormDepth[chr->side][member];
+}
+
+static void PortForm_Reset(BtlMgrChr *chr) {
+    s32 i;
+
+    if (chr == NULL || (u32)chr->side >= 2) {
+        return;
+    }
+    for (i = 0; i < BTL_CHR_MEMBER_MAX; i++) {
+        sPortFormDepth[chr->side][i] = 0;
+        sPortFormCur[chr->side][i] = (s16)(i < chr->memberCount ? chr->members[i].chara : -1);
+    }
+}
+
+/* member `member` changed from character `from` to `to` (fusion: it is a new fighter, with a chain of its own) */
+static void PortForm_Changed(BtlMgrChr *chr, s32 member, s32 from, s32 to, s32 fusion) {
+    s16 *chain;
+    s32 n;
+    s32 i;
+
+    if (!PortForm_Ok(chr, member)) {
+        return;
+    }
+    chain = sPortFormChain[chr->side][member];
+    n = PortForm_Depth(chr, member, from);
+    if (fusion) {
+        n = 0;
+    } else if (from != to) {
+        for (i = 0; i < n && chain[i] != to; i++) {
+        }
+        if (i < n) {
+            n = i; /* back to a character it was: the chain from there on is undone */
+        } else {
+            if (n == PORT_FORM_DEPTH) { /* (full: the oldest after the first goes) */
+                for (i = 1; i < n - 1; i++) {
+                    chain[i] = chain[i + 1];
+                }
+                n--;
+            }
+            chain[n++] = (s16)from;
+        }
+    }
+    sPortFormDepth[chr->side][member] = (s8)n;
+    sPortFormCur[chr->side][member] = (s16)to;
+    Port_CharaFormLog(chr->side, member, from, to, chain, n, fusion);
+}
+
+/* The way back (transformation slot 3) of the fighter, now character `chara`, whose table (or package) says `own`
+   (0xFF: none). See above. */
+s32 BtlChar_PortFormBack(BtlMgrChr *chr, s32 chara, s32 own) {
+    s32 member;
+    s32 n;
+    s32 i;
+    s32 pkg;
+    s16 *chain;
+
+    if (chr == NULL || (u32)chr->side >= 2) {
+        return own;
+    }
+    member = BtlMember_GetActiveIndex(chr);
+    if (!PortForm_Ok(chr, member)) {
+        return own;
+    }
+    chain = sPortFormChain[chr->side][member];
+    n = PortForm_Depth(chr, member, chr->members[member].chara);
+    pkg = Port_CharaPackaged(chara);
+    for (i = 0; i < n; i++) {
+        if (own != 0xFF && chain[i] == own) {
+            return own; /* (the game's own way back, to a character it was: Super Saiyan 3 Goku to Goku) */
+        }
+        pkg |= Port_CharaPackaged(chain[i]);
+    }
+    if (n > 0) {
+        return pkg ? chain[n - 1] : own;
+    }
+    /* the character it started as: an added character goes back nowhere unless its own package says where (its
+       table is the one of the model it was made of, whose way back is a character it never was) */
+    if (PORT_CHARA_ADDED(chara) && Port_CharaFormTarget(chara, 3) < 0) {
+        return 0xFF;
+    }
+    return own;
+}
+#endif
+
 /* Binds the fighter to its side's object and clears the state that belongs to the old object. */
 void BtlChar_BindObject(BtlMgrChr *chr) {
     BtlMgrObj *obj;
@@ -352,6 +466,9 @@ void BtlChar_Reset(BtlMgrChr *chr) {
         m = BattleSide_GetMember(side, i);
         BtlMember_LoadParams(chr, i, 1, m->health, BattleSide_GetMemberVariant(side, i));
     }
+#ifdef PORT
+    PortForm_Reset(chr); /* (each member starts a chain of forms of its own: the character it was picked as) */
+#endif
     chr->unk99C = 0;
     if (BtlMember_HasAbility(chr, 0x1B)) {
         chr->unk99C = 100000;
@@ -389,6 +506,9 @@ void BtlChar_OnModelLoaded(BtlMgrChr *chr) {
     case 0xF0:
         /* transformation: keep the health ratio */
         m = BtlMember_GetActive(chr);
+#ifdef PORT
+        PortForm_Changed(chr, BtlMember_GetActiveIndex(chr), m->chara, chr->newChara, 0);
+#endif
         m->chara = chr->newChara;
         g = &m->gauge;
         m->costume = chr->newCostume;
@@ -475,6 +595,9 @@ void BtlChar_OnModelLoaded(BtlMgrChr *chr) {
             og->health = 0;
         }
         g->unk34 = 1;
+#ifdef PORT
+        PortForm_Changed(chr, BtlMember_GetActiveIndex(chr), m->chara, chr->newChara, 1);
+#endif
         m->chara = chr->newChara;
         m->costume = chr->newCostume;
         g->unk20 = chr->new20;
@@ -490,6 +613,9 @@ void BtlChar_OnModelLoaded(BtlMgrChr *chr) {
     case 0x13A:
     case 0x13B:
         m = BtlMember_GetActive(chr);
+#ifdef PORT
+        PortForm_Changed(chr, BtlMember_GetActiveIndex(chr), m->chara, chr->newChara, 0);
+#endif
         m->chara = chr->newChara;
         g = &m->gauge;
         m->costume = chr->newCostume;
