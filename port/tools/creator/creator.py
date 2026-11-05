@@ -314,7 +314,8 @@ class App:
         cf.BUILD_NOTES.clear()
         self.rebuild_roster()
         spec = json.loads(self.path_of(name).read_text(encoding="utf-8-sig"))
-        notes = "".join(f"\n  - {n}" for n in dict.fromkeys(cf.BUILD_NOTES))
+        keep = ("left out", "mapped", "halved", "merged", "hang still", "dropped")  # (what changes how it looks)
+        notes = "".join(f"\n  - {n}" for n in dict.fromkeys(cf.BUILD_NOTES) if any(k in n for k in keep))
         return (f"{spec.get('name')} is on the roster with a cell of its own. Start Tenkaichi3Decomp-Custom.exe "
                 f"(restart it if it is open) and look at the end of the character select."
                 + (f"\nTo make it fit, the builder:{notes}" if notes else ""))
