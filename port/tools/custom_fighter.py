@@ -573,14 +573,19 @@ class Disc:
         return self.raw(PORTRAIT_FILE + c)
 
     def chip(self, c):
-        """The character select's chip of a BT3 character (menu archive 0x1C1, screen 2, section 45, entry id + 1)."""
-        if is_bt4(c):
-            return None
+        """The character select's chip (menu archive 0x1C1, screen 2, section 45, entry id + 1): BT3's, or for a
+        BT4 character the BT4 disc's own (the same format)."""
         try:
             here = pathlib.Path(__file__).resolve().parent
             if str(here) not in sys.path:
                 sys.path.insert(0, str(here))
             import import_chara as ic
+            if is_bt4(c):
+                arc = bt4().raw(0x1C1)
+                res = ic.bpe(ic.section(arc, ic.table(arc), 2))
+                chips = ic.section(res, ic.table(res), 45)
+                e = ic.section(chips, ic.table(chips), c - BT4_BASE + 1)
+                return e if len(e) == 5504 else None
             arc = self.raw(0x1C1)
             res = ic.bpe(ic.section(arc, ic.table(arc), 2))
             chips = ic.section(res, ic.table(res), 45)
@@ -589,8 +594,12 @@ class Disc:
             return None
 
     def member(self, c, side):
-        """The fight's team picture; a BT4 character's has another size: None (the base's is used)."""
-        return None if is_bt4(c) else self.raw(MEMBER_FILE + c * 2 + side)
+        """The fight's team picture (64 x 32): BT3's, or the BT4 disc's own for a BT4 character."""
+        if is_bt4(c):
+            d = bt4()
+            m = d.raw(d.ch.file_id("tex2", c - BT4_BASE, side))
+            return m if 16 <= len(m) <= 0x1000 else None
+        return self.raw(MEMBER_FILE + c * 2 + side)
 
 
 # ------------------------------------------------------------------------------------------------ move list text
@@ -931,6 +940,10 @@ def write_package(disc, spec_path, chars_dir, done):
         for side in (0, 1):
             m = disc.member(p, side) or disc.member(f.base[0], side)
             (out / f"member_{side + 1}p.bin").write_bytes(m)
+        if p != f.base[0]:  # the roster chip of the same character as the portrait
+            chip = disc.chip(p)
+            if chip:
+                (out / "chip.bin").write_bytes(chip)
     manifest = ["# made by port/tools/custom_fighter.py from " + spec_path.name, "format=1",
                 f"name={spec['name'][:63]}", f"form={spec.get('title', '')[:95]}", f"base={f.base[0]}",
                 "author=Custom Character", "about=" + " / ".join(

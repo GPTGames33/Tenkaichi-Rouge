@@ -101,18 +101,7 @@ def main():
         if dest.exists():
             shutil.rmtree(dest)
         shutil.move(str(tmp / built), str(dest))
-        # the roster chip and the team pictures, from the BT4 portrait
-        try:
-            stored = P.tex_rgba(P._unpack_template(disc.portrait(cid)))[2]  # (the BT4 portrait as it is stored)
-            chip = disc.chip(base)
-            if chip and stored:
-                (dest / "chip.bin").write_bytes(P.chip_bin(None, chip, stored=stored))
-            if stored:
-                m1, m2 = P.member_bins(None, disc.member(base, 0), disc.member(base, 1), stored=stored)
-                (dest / "member_1p.bin").write_bytes(m1)
-                (dest / "member_2p.bin").write_bytes(m2)
-        except Exception as e:
-            print(f"  ({nm}: chip not made: {e})")
+        # the roster chip and the team pictures: the BT4 disc's own (write_package already took them)
         # transformations and fusions: the BT4 ids of its table, as links here
         par = disc.model(cid, 0)[0x12]
 
