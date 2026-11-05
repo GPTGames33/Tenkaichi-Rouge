@@ -581,6 +581,12 @@ static s32 PortStoryCmd_Line(u32 phase, void *work) {
         if (!PortStoryUi_Line(w->line, li)) {
             return 1;
         }
+        for (i = 0; i < 2; i++) { /* (back on their marks: a pose before may have carried a fighter off them) */
+            Vec4 rot = V(0.0f, sScene.yaw[i], 0.0f);
+
+            BtlFacade_SetCharPos(i, &sScene.pos[i]);
+            BtlFacade_SetCharRot(i, &rot);
+        }
         PortStory_LineCamera(li);
         if (li[PL_SIDE] >= 0 && li[PL_POSE] >= 0) {
             BtlFacade_PlayCharMotion(li[PL_SIDE], li[PL_POSE], li[PL_POSE_LOOP] != 0, 0.0f);

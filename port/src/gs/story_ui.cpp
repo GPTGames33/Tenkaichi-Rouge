@@ -362,13 +362,15 @@ const char *const kSongNames[20] = { // by music-list value 0x00..0x13 (gs/namef
     "Shootout In Meteor", "Dynamite Battle", "Burnin' Up", "Wild Rush", "Evolution",
 };
 struct Pose { const char *name; int motion; bool loop; };
-// The scripted moves (motions of the fighters' own animation lists) the game's story scenes use, by what they show.
+// The scripted moves (motions of the fighters' own animation lists) the game's story scenes use. 0..54 are the
+// stances every fighter has; 384.. are each character's own story gestures (what Dragon History's scenes play: they
+// differ from one character to the next), looked at on Goku (End).
 const Pose kPoses[] = {
-    {"As it is", -1, false}, {"Stand", 0, true}, {"Fighting stance", 1, true}, {"Talk (calm)", 384, true},
-    {"Talk (firm)", 385, true}, {"Talk (strong)", 386, true}, {"Point / taunt", 387, false}, {"Shout", 388, false},
-    {"Surprised", 389, false}, {"Power up", 38, true}, {"Charge ki", 39, true}, {"Flex", 52, false},
-    {"Battle cry", 53, false}, {"Ready", 54, false}, {"Hurt", 406, true}, {"Laugh", 413, true},
-    {"Turn away", 212, false}, {"Step forward", 214, false},
+    {"As it is", -1, false}, {"Battle stance", 0, true}, {"Stance, turned", 1, true}, {"Lean in", 38, true},
+    {"Crouch", 39, true}, {"Brace", 52, true}, {"Lean forward", 53, true}, {"Arms open", 54, false},
+    {"Story gesture 1", 384, false}, {"Story gesture 2", 385, false}, {"Story gesture 3", 386, false},
+    {"Story gesture 4", 387, false}, {"Story gesture 5", 388, false}, {"Story gesture 6", 389, false},
+    {"Story gesture 7", 406, false}, {"Story gesture 8", 413, false},
 };
 const int kPoseCount = (int)(sizeof(kPoses) / sizeof(kPoses[0]));
 const char *const kCamNames[CAM_COUNT] = {"Keep the last", "Automatic", "Close-up", "Medium shot", "Over the shoulder",
@@ -2506,7 +2508,7 @@ std::string voice_text(const J &l, int ep) {
     if (v.nul()) { return "None"; }
     int sc = speaker_chara(l, ep);
     if (v.isObj() && v.has("story")) {
-        story_lines_read();
+        if (!story_lines_ready()) { return "Dragon History, story " + std::to_string((int)v["story"].number(0)); }
         for (const StoryLine &s : sStoryLines) {
             if (s.story == (int)v["story"].number(0) && s.line == (int)v["line"].number(0)) { return "Dragon History: \"" + s.text + "\""; }
         }
@@ -2547,9 +2549,9 @@ void open_voice_list(int ep, const std::string &key, int idx, int chara) {
         open_grid("WHOSE VOICE?", -1, [ep, key, idx](int c) { open_voice_list(ep, key, idx, c); });
     };
     rs.push_back(other);
-    story_lines_read();
+    if (!story_lines_ready()) { Row w; w.label = "(Dragon History's lines are still being read: open this again in a moment)"; w.locked = true; rs.push_back(w); }
     bool any = false;
-    for (const StoryLine &s : sStoryLines) {
+    for (const StoryLine &s : story_lines_ready() ? sStoryLines : std::vector<StoryLine>()) {
         if (s.chara != chara) { continue; }
         if (!any) { rs.push_back(sec("WHAT " + short_name(chara) + " SAYS IN DRAGON HISTORY")); any = true; }
         Row r;
@@ -2951,6 +2953,7 @@ void on_open(void) {
     SDL_CreateDirectory(sDir.c_str());
     bool first = sSagas.empty();
     if (first) { sagas_read(); }
+    story_lines_start(); // (Dragon History's voiced lines, for the voice lists: read in the background)
     charas_read();
     SDL_LockMutex(sMx);
     int gen = sSh.resultGen, result = sSh.result;

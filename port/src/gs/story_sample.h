@@ -16,11 +16,11 @@ static const char kStorySample[] = R"SAGA({
       "intro": {
         "distance": 2,
         "lines": [
-          {"speaker": "enemy", "text": "Kakarot! I've waited a long time for this.", "pose": "Point / taunt"},
+          {"speaker": "enemy", "text": "Kakarot! I've waited a long time for this.", "pose": "Story gesture 4"},
           {"speaker": "player", "text": "Vegeta? What are you doing all the way out here?", "camera": "shoulder"},
-          {"speaker": "enemy", "text": "Hahaha... You should be pleased. A low-class warrior like you...", "voice": {"story": 2, "line": 2}, "camera": "low", "move": "push", "pose": "Laugh"},
+          {"speaker": "enemy", "text": "Hahaha... You should be pleased. A low-class warrior like you...", "voice": {"story": 2, "line": 2}, "camera": "low", "move": "push", "pose": "Story gesture 8"},
           {"speaker": "enemy", "text": "...seldom gets to play with an elite like me.", "voice": {"story": 2, "line": 3}, "camera": "medium", "effects": ["aura_on", "shake"]},
-          {"speaker": "player", "text": "Heh... you never change. Alright, let's go!", "camera": "close", "pose": "Fighting stance", "effects": ["aura_on"]}
+          {"speaker": "player", "text": "Heh... you never change. Alright, let's go!", "camera": "close", "pose": "Battle stance", "effects": ["aura_on"]}
         ]
       },
       "battle": {
@@ -37,12 +37,12 @@ static const char kStorySample[] = R"SAGA({
         "distance": 2,
         "lines": [
           {"speaker": "player", "text": "You've gotten stronger, Vegeta. That was a great fight!", "camera": "two"},
-          {"speaker": "enemy", "text": "Hmph. Next time, I'll be the one left standing.", "pose": "Turn away"}
+          {"speaker": "enemy", "text": "Hmph. Next time, I'll be the one left standing.", "pose": "Story gesture 1"}
         ]
       },
       "lose": {
         "lines": [
-          {"speaker": "enemy", "text": "Looks like you picked the wrong fight! With the greatest of all Saiyans, none can surpass me!", "pose": "Laugh", "voice": {"story": 2, "line": 23}},
+          {"speaker": "enemy", "text": "Looks like you picked the wrong fight! With the greatest of all Saiyans, none can surpass me!", "pose": "Story gesture 8", "voice": {"story": 2, "line": 23}},
           {"speaker": "player", "text": "Ugh... I'm not done yet!", "camera": "low"}
         ]
       },
@@ -60,7 +60,7 @@ static const char kStorySample[] = R"SAGA({
         "distance": 3,
         "lines": [
           {"speaker": "narrator", "text": "As the two Saiyans catch their breath, a terrible power rises from the mountains...", "camera": "wide", "move": "from_wide", "move_time": 4, "effects": ["fade_in"]},
-          {"speaker": "enemy", "text": "Kakarot...", "camera": "low", "move": "rise", "pose": "Laugh", "effects": ["aura_on", "big_shake"]},
+          {"speaker": "enemy", "text": "Kakarot...", "camera": "low", "move": "rise", "pose": "Story gesture 8", "effects": ["aura_on", "big_shake"]},
           {"speaker": "player2", "text": "That power... it can't be! The Legendary Super Saiyan!"},
           {"speaker": "player", "text": "We can't beat him alone, Vegeta. Hold him off with me!", "camera": "close", "effects": ["aura_on"]}
         ]
@@ -86,7 +86,7 @@ static const char kStorySample[] = R"SAGA({
       },
       "lose": {
         "lines": [
-          {"speaker": "enemy", "text": "Kakarot... this is the end!", "camera": "low", "pose": "Laugh", "effects": ["flash", "big_shake"]}
+          {"speaker": "enemy", "text": "Kakarot... this is the end!", "camera": "low", "pose": "Story gesture 8", "effects": ["flash", "big_shake"]}
         ]
       },
       "next_win": "next",
@@ -102,9 +102,9 @@ static const char kStorySample[] = R"SAGA({
       "intro": {
         "distance": 2,
         "lines": [
-          {"speaker": "enemy", "text": "KAKAROT!!", "camera": "low", "pose": "Shout", "effects": ["flash", "big_shake", "aura_on"]},
+          {"speaker": "enemy", "text": "KAKAROT!!", "camera": "low", "pose": "Story gesture 2", "effects": ["flash", "big_shake", "aura_on"]},
           {"speaker": "player", "text": "This ends now, Broly. No more running!", "camera": "close", "move": "push", "effects": ["charge_on"]},
-          {"speaker": "player", "text": "HAAAAAAAH!", "camera": "low", "move": "rise", "pose": "Power up", "effects": ["burst", "shake", "charge_off", "aura_on"], "wait": 2}
+          {"speaker": "player", "text": "HAAAAAAAH!", "camera": "low", "move": "rise", "pose": "Brace", "effects": ["burst", "shake", "charge_off", "aura_on"], "wait": 2}
         ]
       },
       "battle": {
@@ -125,7 +125,7 @@ static const char kStorySample[] = R"SAGA({
       },
       "lose": {
         "lines": [
-          {"speaker": "enemy", "text": "Hahaha! You're nothing but trash!", "pose": "Laugh"}
+          {"speaker": "enemy", "text": "Hahaha! You're nothing but trash!", "pose": "Story gesture 8"}
         ]
       },
       "next_win": "end",
@@ -143,7 +143,7 @@ static const char kStorySample[] = R"SAGA({
         "lines": [
           {"speaker": "narrator", "text": "Goku has fallen. And now, only the Prince of all Saiyans stands against the Legendary Super Saiyan.", "camera": "wide", "move": "from_wide", "effects": ["fade_in"]},
           {"speaker": "player", "text": "Kakarot, you fool... Fine. I'll finish this myself!", "camera": "close", "effects": ["aura_on"]},
-          {"speaker": "enemy", "text": "A monster? No... I am the Devil!", "camera": "low", "pose": "Laugh", "effects": ["big_shake"]},
+          {"speaker": "enemy", "text": "A monster? No... I am the Devil!", "camera": "low", "pose": "Story gesture 8", "effects": ["big_shake"]},
           {"speaker": "narrator", "text": "A darker story begins... Will fate be different the second time?", "camera": "two", "move": "pull"}
         ]
       },

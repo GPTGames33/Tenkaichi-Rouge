@@ -130,8 +130,8 @@ are; `//` comments are read but not written back).
   and how tall they are, on any stage.
 - `move`: `"cut"`, `"push"` (closing in), `"pull"` (moving back), `"orbit"`, `"from_wide"`, `"rise"`; over `move_time`
   seconds.
-- `pose`, `listener_pose`: a pose by name (as the editor lists them: Stand, Fighting stance, Talk (calm), Point / taunt,
-  Shout, Power up, Laugh ...) or a motion number of the character's own animation list. `pose_loop`: whether it repeats.
+- `pose`, `listener_pose`: a pose by name (as the editor lists them: Battle stance, Lean in, Crouch, Arms open, Story gesture 1..8
+  ...) or a motion number of the character's own animation list. `pose_loop`: whether it repeats.
 - `effects`: `"shake"`, `"big_shake"`, `"flash"` (white), `"aura_on"`, `"aura_off"`, `"charge_on"`, `"charge_off"`,
   `"burst"` (a ki burst), `"fade_in"` (from black), `"hide"`, `"show"` (the speaker leaves / appears); on the speaker.
 - `wait`: 0 the line waits for Cross; else it goes on by itself that many seconds after its text is out (and its voice).

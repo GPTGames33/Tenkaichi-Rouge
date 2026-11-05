@@ -90,3 +90,19 @@ void story_lines_read(void) {
     }
     fprintf(stderr, "bt3: story: %d voiced lines of Dragon History found\n", (int)sStoryLines.size());
 }
+// (read on a thread of its own when the screens open: a few seconds of files; the lists use it once it is there)
+SDL_AtomicInt sStoryLinesDone;
+int SDLCALL story_lines_thread(void *) {
+    story_lines_read();
+    SDL_SetAtomicInt(&sStoryLinesDone, 1);
+    return 0;
+}
+void story_lines_start(void) {
+    static bool started;
+    if (!started) {
+        started = true;
+        SDL_Thread *t = SDL_CreateThread(story_lines_thread, "story lines", NULL);
+        if (t != NULL) { SDL_DetachThread(t); } else { story_lines_thread(NULL); }
+    }
+}
+bool story_lines_ready(void) { return SDL_GetAtomicInt(&sStoryLinesDone) != 0; }
