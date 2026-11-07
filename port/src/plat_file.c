@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "plat_stages.h"
 #include "plat_songs.h"
 
@@ -95,6 +96,54 @@ static const char *alias_target(const char *rel) {
     return NULL;
 }
 
+/* The title screen's call ("Dragon Ball Z Budokai Tenkaichi 3!", one of seven lines in each voice set: the game picks
+   one, src/menu/menu_a_c.c Title_Update): when the folder `title` next to the game has clips of its own, call1 ..
+   call16 (.mp3, .wav or .flac), one of them at random is played in its place, whichever line the game picked. */
+static const char *title_call(const char *rel) {
+    static char clips[16][64];
+    static int count = -1;
+    static const char *const ext[] = {"mp3", "wav", "flac"};
+    int n, id, k, e;
+
+    if (count < 0) {
+        count = 0;
+        for (k = 1; k <= 16; k++) {
+            for (e = 0; e < 3; e++) {
+                char path[64];
+                FILE *fp;
+                snprintf(path, sizeof(path), "title/call%d.%s", k, ext[e]);
+                if ((fp = fopen(path, "rb")) != NULL) {
+                    fclose(fp);
+                    snprintf(clips[count++], sizeof(clips[0]), "%s", path);
+                    break;
+                }
+            }
+        }
+        if (count > 0) {
+            fprintf(stderr, "bt3: title: %d call(s) of its own in title/\n", count);
+        }
+    }
+    if (count == 0 || strncmp(rel, "pzs3us2/", 8) != 0 || sscanf(rel + 8, "%d.bin", &n) != 1) {
+        return NULL;
+    }
+    id = n + 0xD48;                        /* (the game's voice id: TITLE_VOICE_BASE + line, + 0x55C in the second set) */
+    if (id >= 0x8C55 && id <= 0x8C95) {
+        id -= 0x55C;
+    }
+    if (!((id >= 0x86F9 && id <= 0x86FE) || id == 0x86F9 + 0x40)) {
+        return NULL;
+    }
+    {
+        static uint32_t seed; /* (its own generator, from the clock: a new pick each time the game starts, and the
+                                 C library's rand(), which other code may count on, left alone) */
+        if (seed == 0) {
+            seed = (uint32_t)time(NULL) * 2654435761u ^ (uint32_t)clock() ^ 1u;
+        }
+        seed = seed * 1664525u + 1013904223u;
+        return clips[(seed >> 16) % (uint32_t)count];
+    }
+}
+
 static PortFile *open_rel(const char *rel) {
     PortFile *f;
     long size = Port_FileSize(rel); /* (says so itself when the file is missing) */
@@ -128,7 +177,10 @@ int Port_FilePath(int ptid, int flid, const char *fname, char *out, int size) {
     {
         /* The streamed audio (a song added from outside the disc) reads through this path, so the manifest's
            aliases must apply here too, not only in open_rel. */
-        const char *a = alias_target(rel);
+        const char *a = title_call(rel);
+        if (a == NULL) {
+            a = alias_target(rel);
+        }
         if (a != NULL) {
             fp = fopen(a, "rb"); /* as it is (the songs folder next to the game) */
             if (fp != NULL) {

@@ -56,6 +56,7 @@ static uint32_t *sHeld, sHeldCount;          /* the entries in memory (state 2) 
 static size_t sHeldBytes, sBudget;
 static unsigned sTick;
 static int sSync = -1;
+char gTexPackLastName[64]; /* the pack name the last paletted texture looked up would have */
 
 static uint32_t bucket_of(uint64_t tex, uint64_t clut, uint32_t bits) {
     uint64_t h = (tex ^ (clut * 0x9E3779B97F4A7C15ull) ^ bits) * 0x9FB21C651E98DF25ull;
@@ -251,6 +252,8 @@ int TexPack_Lookup(uint32_t tbp, uint32_t tbw, uint32_t psm, uint32_t tw, uint32
         if (id < 0) {
             id = find(tex, XXH3_64bits(clut, count * 4), bits, 1);
         }
+        snprintf(gTexPackLastName, sizeof(gTexPackLastName), "%llx-%llx-%08x", (unsigned long long)tex,
+                 (unsigned long long)XXH3_64bits(&clut[lo], (hi - lo + 1) * 4), bits); /* (BT3_TEX_DUMP names its files so) */
         if (getenv("BT3_TEX_LOG") != NULL) { /* which textures a pack has and which it has not, by the name it would need */
             fprintf(stderr, "texpack: %s %ux%u %u-bit %llx-%llx-%08x%s%s\n", id >= 0 ? "found  " : "missing", tw, th, psm == 0x13 ? 8u : 4u,
                     (unsigned long long)tex, (unsigned long long)XXH3_64bits(&clut[lo], (hi - lo + 1) * 4), bits, id >= 0 ? " " : "",

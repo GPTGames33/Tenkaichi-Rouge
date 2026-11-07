@@ -1003,7 +1003,10 @@ static GsTex texture_get(int ctx) {
             static unsigned n;
             char name[600];
             FILE *df;
-            snprintf(name, sizeof(name), "%s/tex_%05u_f%06u_%ux%u.rgba", getenv("BT3_TEX_DUMP"), n++, gGsFrame, (unsigned)rw, (unsigned)rh);
+            extern char gTexPackLastName[64];
+            snprintf(name, sizeof(name), "%s/tex_%05u_f%06u_%ux%u_%s.rgba", getenv("BT3_TEX_DUMP"), n++, gGsFrame, (unsigned)rw, (unsigned)rh,
+                     bits <= 8 && gTexPackLastName[0] ? gTexPackLastName : "x");
+            gTexPackLastName[0] = 0;
             df = fopen(name, "wb");
             if (df != NULL) {
                 fwrite(px, 1, (size_t)rw * rh * 4, df);
