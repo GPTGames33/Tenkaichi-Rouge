@@ -1156,7 +1156,7 @@ struct Overlay {
     std::function<void(bool, float, float, float)> hslChanged;
     std::function<void()> hslMore;
     // the technique grid (creator_moves.inc): what the choice is for, the creator's word on the fighter's techniques
-    std::string forWhat, fitSlot, fitWhat;
+    std::string forWhat, fitSlot, fitWhat, warrior; // (warrior: the file of the user's warrior chosen, "" a fighter)
     int fitChara = -1, fitAsked = -1;
     J fit;
 };
@@ -1181,6 +1181,8 @@ static float grid_side_width(const Overlay &o);
 static void grid_side(Overlay &o, const J *c, ImVec2 a, ImVec2 b);
 static void grid_pill(const Overlay &o);
 static void grid_tech_rows(Overlay &o, const J *c, std::vector<Row> &rows);
+static void grid_add_warriors(const Overlay &o, std::vector<const J *> &out);
+static const J *grid_warrior(const std::string &file);
 static void open_hsl(const std::string &title, const std::string &name, bool own, float hue, float strength, float light,
                      std::function<void(bool, float, float, float)> changed, std::function<void()> more);
 
@@ -1199,6 +1201,7 @@ static std::vector<const J *> grid_items(const Overlay &o) {
         }
         out.push_back(&c);
     }
+    grid_add_warriors(o, out); // (choosing a technique: the user's own warriors too)
     return out;
 }
 
@@ -2425,6 +2428,7 @@ static void grid_frame(Overlay &o, std::vector<Prompt> &ps) {
         if (sIn.ok && n > 0) {
             const J &c = *items[o.cur];
             o.chosen = (int)c["id"].number(0);
+            o.warrior = c["warrior"].text();
             if (!o.moveKinds.empty()) { o.stage = 2; o.cur = 0; o.top = 0; sound(1); return; }
             if (o.costume && c["costumes"].size() > 1) { o.stage = 1; o.cur = 0; o.top = 0; sound(1); return; }
             J r = ref_of(c);
@@ -2437,7 +2441,7 @@ static void grid_frame(Overlay &o, std::vector<Prompt> &ps) {
     }
     // the costumes or the techniques of the one chosen
     J idj = J::num(o.chosen);
-    const J *c = entry_of(idj);
+    const J *c = o.warrior.empty() ? entry_of(idj) : grid_warrior(o.warrior);
     if (c == NULL) { ov_close(); return; }
     std::vector<Row> rows;
     if (o.stage == 1) {

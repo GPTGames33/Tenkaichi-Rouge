@@ -84,6 +84,7 @@ static void hsl_frame(Overlay &o, std::vector<Prompt> &ps) {
         }
         sDl->AddCircle(c, r + S(1), IM_COL32(255, 255, 255, 220), 0, S(2));
         sDl->AddText(sFont, S(18), ImVec2(c.x + r + S(16), c.y - S(10)), kInk, o.hslOwn ? "Its own colours" : "Your colour");
+        if (o.loading) { sDl->AddText(sFont, S(14), ImVec2(x1 - S(170), c.y - S(8)), kDim, "reading its colours..."); }
     }
     // the sliders
     static const char *const kLabel[3] = {"Hue", "Strength", "Light"};

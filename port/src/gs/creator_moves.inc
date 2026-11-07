@@ -7,7 +7,8 @@
 // (port/tools/custom_fighter.py, "Mixed moves"): "moves": {"blast2_1": {"chara", "slot", "effects": {...},
 // "camera": {...}}, "ultimate": {..., "camera_in", "camera_loop", "camera_finish"}}. The creator says which moves fit
 // (/api/techfit for the grid, /api/mixinfo for the tab): a move's effects that cannot drive it leave it its own effects
-// in their colours.
+// in their colours. The grid offers every BT3 and BT4 fighter and, under ALL, the user's own warriors ("Mine: ..."):
+// a warrior's technique is the move its spec names, with what it took from other moves.
 // FORMS: up to three transformations (Form 1..3: whom it turns into, its buttons, its cost in blast stocks, its kind, its
 // burst colour) and the way back: the spec's forms, form_costs, form_kinds, form_bursts, form_default.
 
@@ -36,7 +37,8 @@ static const char *part_label(const std::string &part, int k) {
     return "camera (finish)";
 }
 static std::vector<int> part_kinds(const std::string &part, int k) {
-    if (part == "move" || part == "effects") { return k < 2 ? std::vector<int>{0, 1} : k < 4 ? std::vector<int>{2, 3} : std::vector<int>{4}; }
+    if (part == "move") { return k < 2 ? std::vector<int>{0, 1} : k < 4 ? std::vector<int>{2, 3} : std::vector<int>{4}; }
+    if (part == "effects" && k < 2) { return std::vector<int>{0, 1}; } // (a Blast 2's or an Ultimate's effects: from any of the three)
     if (part == "camera_in") { return std::vector<int>{4}; }
     return std::vector<int>{2, 3, 4};
 }
@@ -90,7 +92,9 @@ static void learn(int k, const std::string &part) {
                 if (ms["costume"].isNum()) { n.set("costume", ms["costume"]); }
                 n.set("slot", J::str(kSlots[k]));
             }
-            for (int p = 1; p < 6; p++) { if (old.has(kParts[p])) { n.set(kParts[p], old[kParts[p]]); } }
+            bool brings = false; // (a warrior's technique comes with what it took from others; else this slot's stay)
+            for (int p = 1; p < 6; p++) { brings |= n.has(kParts[p]); }
+            for (int p = 1; p < 6 && !brings; p++) { if (old.has(kParts[p])) { n.set(kParts[p], old[kParts[p]]); } }
             if (old.has("camera_finish") && same_move(old["camera_finish"], old, k)) { n.erase("camera_finish"); } // (its own: goes with it)
             if (k >= 2 && r != NULL && fit["finish"].truthy() && !n.has("camera_finish")) { n.set("camera_finish", *r); } // (a rush: its own finish)
             set_move_entry(k, n);
@@ -175,7 +179,8 @@ static void grid_side(Overlay &o, const J *c, ImVec2 a, ImVec2 b) {
     sDl->AddRectFilled(a, b, IM_COL32(255, 255, 255, 12), S(10));
     if (c == NULL) { return; }
     int id = (int)(*c)["id"].number(0);
-    if (o.rest > 8) { grid_fit_ask(o, id, (*c)["name"].text()); }
+    bool mine = c->has("warrior"); // (a warrior of the user's: its techniques by name, no word on whether they fit)
+    if (o.rest > 8 && !mine) { grid_fit_ask(o, id, (*c)["name"].text()); }
     ImFont *bold = sBold != NULL ? sBold : sFont;
     float y = a.y + S(12), w = b.x - a.x;
     std::string name = (*c)["name"].text();
@@ -189,7 +194,7 @@ static void grid_side(Overlay &o, const J *c, ImVec2 a, ImVec2 b) {
     y += fs + S(18);
     for (int k : o.moveKinds) {
         std::string m = (*c)["moves"][(size_t)k].text("-");
-        const J *f = grid_fit_of(o, id, k);
+        const J *f = mine ? NULL : grid_fit_of(o, id, k);
         bool bad = f != NULL && !(*f)["fits"].truthy();
         ImVec2 pa(a.x + S(12), y), pb(b.x - S(12), y + S(30));
         grad(pa, pb, bad ? IM_COL32(150, 130, 190, 255) : IM_COL32(198, 181, 245, 255), bad ? IM_COL32(90, 70, 140, 255) : IM_COL32(125, 100, 200, 255), S(15));
@@ -213,10 +218,89 @@ static void grid_side(Overlay &o, const J *c, ImVec2 a, ImVec2 b) {
     const char *t = "Cross: choose from its techniques";
     sDl->AddText(sFont, S(13), ImVec2((a.x + b.x - text_w(sFont, S(13), t)) * 0.5f, y), kGold1, t);
 }
+// ---- the user's own warriors in the technique grid: each a grid item {"id": its look's (for the face), "name",
+// "costumes", "moves": its five techniques' names, "game": "MINE", "warrior": its file, "refs": [the move each slot
+// is, as the spec names it: {chara, slot} with its effects and cameras]}
+static std::vector<J> sWarriorItems;
+static std::string sWarriorKey;
+static void warriors_refresh(void) {
+    std::string key = js_text(sFighters) + sFile;
+    if (key == sWarriorKey) { return; }
+    sWarriorKey = key;
+    sWarriorItems.clear();
+    for (size_t i = 0; i < sFighters.size(); i++) {
+        const J &f = sFighters[i];
+        const J &sp = f["spec"];
+        if (!sp.isObj() || f["file"].text() == sFile) { continue; }
+        J lk = sp.has("look") ? sp["look"] : sp["costumes"].size() ? sp["costumes"][0] : sp["base"];
+        J ms = sp.has("moveset") ? sp["moveset"] : lk;
+        int face = chara_id(sp.has("portrait") ? sp["portrait"] : lk);
+        J it = J::obj(), moves = J::arr(), refs = J::arr(), cos = J::arr();
+        for (int k = 0; k < 5; k++) {
+            const J &mv = sp["moves"][kSlots[k]];
+            J r = J::obj();
+            const J &who = mv.isObj() && mv.has("chara") ? mv : ms;
+            r.set("chara", who.isObj() ? who["chara"] : who);
+            if (who["costume"].isNum()) { r.set("costume", who["costume"]); }
+            r.set("slot", J::str(mv.isObj() && mv.has("slot") ? mv["slot"].text() : std::string(kSlots[k])));
+            if (mv.isObj()) { for (int p = 1; p < 6; p++) { if (mv.has(kParts[p])) { r.set(kParts[p], mv[kParts[p]]); } } }
+            moves.push(J::str(sp["names"][kSlots[k]].isStr() ? sp["names"][kSlots[k]].s : move_name(r, slot_index(r["slot"].text()))));
+            refs.push(r);
+        }
+        cos.push(J::num(1));
+        it.set("id", J::num(face < 0 ? 0 : face));
+        it.set("name", J::str("Mine: " + sp["name"].text(f["file"].text().c_str())));
+        it.set("costumes", cos);
+        it.set("moves", moves);
+        it.set("game", J::str("MINE"));
+        it.set("warrior", f["file"]);
+        it.set("refs", refs);
+        sWarriorItems.push_back(it);
+    }
+}
+static void grid_add_warriors(const Overlay &o, std::vector<const J *> &out) {
+    if (o.moveKinds.empty() || o.game != 0) { return; }
+    warriors_refresh();
+    for (const J &w : sWarriorItems) {
+        if (!o.search.empty()) {
+            std::string n = w["name"].text(), q = o.search;
+            for (char &ch : n) { ch = (char)SDL_tolower((unsigned char)ch); }
+            for (char &ch : q) { ch = (char)SDL_tolower((unsigned char)ch); }
+            if (n.find(q) == std::string::npos) { continue; }
+        }
+        out.push_back(&w);
+    }
+}
+static const J *grid_warrior(const std::string &file) {
+    warriors_refresh();
+    for (const J &w : sWarriorItems) { if (w["warrior"].text() == file) { return &w; } }
+    return NULL;
+}
+
 // The grid's second step: the techniques of the fighter chosen, as rows (with the creator's word on each).
 static void grid_tech_rows(Overlay &o, const J *c, std::vector<Row> &rows) {
     rows.push_back(sec(((*c)["name"].text() + ": WHICH TECHNIQUE?").c_str()));
     int id = (int)(*c)["id"].number(0);
+    if ((*c).has("warrior")) { // a warrior of the user's: the move its spec names
+        for (int k : o.moveKinds) {
+            Row r;
+            r.label = kSlotLabel[k];
+            r.value = (*c)["moves"][(size_t)k].text("-");
+            J ref = (*c)["refs"][(size_t)k];
+            r.sub = "from " + nm(ref, "?");
+            std::string part = o.fitWhat;
+            r.ok = [ref, &o, part] {
+                J pick = ref;
+                if (part != "move") { for (int p = 1; p < 6; p++) { pick.erase(kParts[p]); } } // (its move, not what it took)
+                std::function<void(const J *)> fn = o.picked;
+                ov_close();
+                sPickedFit = J();
+                fn(&pick);
+            };
+            rows.push_back(r);
+        }
+        return;
+    }
     grid_fit_ask(o, id, (*c)["name"].text());
     for (int k : o.moveKinds) {
         Row r;
