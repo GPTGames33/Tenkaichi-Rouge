@@ -11,6 +11,9 @@ Standard library only.
 import argparse, http.server, json, pathlib, re, struct, sys, threading, traceback, urllib.parse, webbrowser, zlib
 
 HERE = pathlib.Path(__file__).resolve().parent
+# what the game's Custom Character screen needs of the API (port/src/gs/creator_ui.cpp CREATOR_API): 2 = the Z Warriors
+# screens (/api/shading, /api/techfit, /api/mixinfo, /api/portraitshot, costumes built on their own...)
+API = 2
 # this creator's version: its files' times (a creator that is already open answers it; an older one is replaced)
 VERSION = "-".join(str(int((HERE / n).stat().st_mtime)) for n in ("creator.py", "model.py", "mix.py", "portrait.py",
                                                                    "../custom_fighter.py") if (HERE / n).exists())
@@ -804,7 +807,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if u.path == "/api/roster":
                 return self.send(200, self.app.roster())
             if u.path == "/api/version":
-                return self.send(200, {"version": VERSION})
+                return self.send(200, {"version": VERSION, "api": API})
             if u.path == "/api/rosterinfo":
                 return self.send(200, {"roster": self.app.roster_list(), "forms": self.app.roster_forms()})
             if u.path == "/api/bt4status":

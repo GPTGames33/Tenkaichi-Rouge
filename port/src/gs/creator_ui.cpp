@@ -502,9 +502,18 @@ static std::string log_tail(void) {
 }
 
 // Worker thread: a creator answers, or one is started and waited for. True when one answers.
+#define CREATOR_API 2 // (creator.py API: what these screens need of it)
 static bool connect_creator(void) {
     std::string out;
-    if (http("GET", "/api/version", "", out, 2500) == 200) { return true; }
+    if (http("GET", "/api/version", "", out, 2500) == 200) {
+        J v;
+        const char *p = out.c_str();
+        if (js_parse(p, v) && v["api"].number(0) >= CREATOR_API) { return true; }
+        // an older creator (from before these screens) is open there: it is asked to close, and this one started
+        std::string bye;
+        http("POST", "/api/quit", "{}", bye, 2500);
+        for (int t = 0; t < 20 && http("GET", "/api/version", "", bye, 500) == 200; t++) { SDL_Delay(250); }
+    }
     std::string script = creator_script();
     if (script.empty()) {
         sWhy = "The creator (port/tools/creator/creator.py) was not found. Put its path in bt3_settings.txt as creator_path=...";
