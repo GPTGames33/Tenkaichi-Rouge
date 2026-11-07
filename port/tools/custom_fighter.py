@@ -1980,6 +1980,34 @@ def form_lines(spec):
     return out
 
 
+_PUT_WRITTEN = {}  # folder -> the files _put has written to it (write_package: which old .pak files are stale)
+
+
+def _retry(fn, tries=40):
+    """fn() again for a few seconds while Windows answers that another program has the file (an antivirus or the
+    search indexer looking at a file just written, the game reading it): WinError 32 is brief."""
+    import time
+    for i in range(tries):
+        try:
+            return fn()
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(0.15)
+
+
+def _put(path, data):
+    """A package's file written, unless it already holds exactly that (a warrior not changed is not touched)."""
+    path = pathlib.Path(path)
+    _PUT_WRITTEN.setdefault(path.parent, set()).add(path)
+    try:
+        if path.stat().st_size == len(data) and path.read_bytes() == data:
+            return
+    except OSError:
+        pass
+    _retry(lambda: path.write_bytes(data))
+
+
 def write_package(disc, spec_path, chars_dir, done, inherit=None):
     """inherit: keys a form takes from the warrior it is a form of when its own file has none (the stance)."""
     spec_path = pathlib.Path(spec_path).resolve()
@@ -1994,23 +2022,22 @@ def write_package(disc, spec_path, chars_dir, done, inherit=None):
     done[spec_path] = folder
     out = chars_dir / folder
     out.mkdir(parents=True, exist_ok=True)
-    for old in out.glob("*.pak"):
-        old.unlink()
+    stale = set(out.glob("*.pak"))  # (taken away once the new ones are written: _put)
     stem = re.sub(r"[^A-Za-z0-9]+", "_", spec["name"]).strip("_")[:24] or "fighter"
     for i, costume in enumerate(f.costumes):
         clean = f.costume_model(i, False)
-        (out / f"{stem}_{i + 1}p.pak").write_bytes(clean.bytes())
-        (out / f"{stem}_{i + 1}p_dmg.pak").write_bytes(f.costume_damaged(i, clean).bytes())
-    (out / f"{stem}_anm.pak").write_bytes(f.anims().bytes())
-    (out / f"{stem}_eff.pak").write_bytes(f.effects().bytes())
+        _put(out / f"{stem}_{i + 1}p.pak", clean.bytes())
+        _put(out / f"{stem}_{i + 1}p_dmg.pak", f.costume_damaged(i, clean).bytes())
+    _put(out / f"{stem}_anm.pak", f.anims().bytes())
+    _put(out / f"{stem}_eff.pak", f.effects().bytes())
     bank_us, bank_jp, lines_us, lines_jp = disc.voice_files(f.voice[0])
-    (out / f"{stem}_voice_us.pak").write_bytes(bank_us)
-    (out / f"{stem}_voice_jp.pak").write_bytes(bank_jp)
+    _put(out / f"{stem}_voice_us.pak", bank_us)
+    _put(out / f"{stem}_voice_jp.pak", bank_jp)
     for lang, lines in (("voice_us", lines_us), ("voice_jp", lines_jp)):
         (out / lang).mkdir(exist_ok=True)
         for line, data in enumerate(lines):
             if len(data) >= 16:
-                (out / lang / f"{line:03d}.adx").write_bytes(data)
+                _put(out / lang / f"{line:03d}.adx", data)
     p = f.portrait[0]
     shot = spec.get("portrait_image")
     for old in ("chip.bin",):
@@ -2022,26 +2049,26 @@ def write_package(disc, spec_path, chars_dir, done, inherit=None):
         png = (spec_path.parent / shot).read_bytes()
         stored = P.portrait_rgba(png)
         b = f.base[0]
-        (out / "portrait.bin").write_bytes(P.portrait_bin(None, disc.portrait(b), stored=stored))
+        _put(out / "portrait.bin", P.portrait_bin(None, disc.portrait(b), stored=stored))
         chip = disc.chip(b)
         if chip:
-            (out / "chip.bin").write_bytes(P.chip_bin(None, chip, stored=stored))
+            _put(out / "chip.bin", P.chip_bin(None, chip, stored=stored))
         m1, m2 = P.member_bins(None, disc.member(b, 0), disc.member(b, 1), stored=stored)
-        (out / "member_1p.bin").write_bytes(m1)
-        (out / "member_2p.bin").write_bytes(m2)
+        _put(out / "member_1p.bin", m1)
+        _put(out / "member_2p.bin", m2)
     else:
-        (out / "portrait.bin").write_bytes(disc.portrait(p))
+        _put(out / "portrait.bin", disc.portrait(p))
         for side in (0, 1):
             m = disc.member(p, side) or disc.member(f.base[0], side)
-            (out / f"member_{side + 1}p.bin").write_bytes(m)
+            _put(out / f"member_{side + 1}p.bin", m)
         if p != f.base[0]:  # the roster chip of the same character as the portrait
             chip = disc.chip(p)
             if chip:
-                (out / "chip.bin").write_bytes(chip)
+                _put(out / "chip.bin", chip)
     if f.chip:  # the small portrait chosen: that character's chip, over the one made
         chip = disc.chip(f.chip[0])
         if chip:
-            (out / "chip.bin").write_bytes(chip)
+            _put(out / "chip.bin", chip)
     manifest = ["# made by port/tools/custom_fighter.py from " + spec_path.name, "format=1",
                 f"name={spec['name'][:63]}", f"form={spec.get('title', '')[:95]}", f"base={f.base[0]}",
                 "author=Custom Character", "about=" + " / ".join(
@@ -2077,7 +2104,7 @@ def write_package(disc, spec_path, chars_dir, done, inherit=None):
     for direction, cost in spec.get("form_costs", {}).items():
         manifest.append(f"{direction}_cost={int(cost)}")
     manifest += form_lines(spec)
-    (out / "character.txt").write_bytes(("\n".join(manifest) + "\n").encode("utf-8"))
+    _put(out / "character.txt", ("\n".join(manifest) + "\n").encode("utf-8"))
     # A form of this warrior whose own file names no way back goes back to this warrior (R3 + Down). (The game also
     # remembers who a fighter transformed from, whatever the files say: src/battle/btl_char_mgr.c.)
     for linked in ahead:
@@ -2085,11 +2112,14 @@ def write_package(disc, spec_path, chars_dir, done, inherit=None):
         if txt.is_file():
             t = txt.read_bytes().decode("utf-8")
             if re.search(r"^down=none$", t, re.M):
-                txt.write_bytes(re.sub(r"^down=none$", lambda _m: f"down={folder}", t, count=1, flags=re.M).encode("utf-8"))
+                _put(txt, re.sub(r"^down=none$", lambda _m: f"down={folder}", t, count=1, flags=re.M).encode("utf-8"))
     for n in f.notes + f.mix_notes:
         BUILD_NOTES.append(f"{spec['name']}: {n}")
     print(f.describe())
     print(f"  -> characters/{folder}/")
+    for old in stale - _PUT_WRITTEN.get(out, set()):
+        _retry(old.unlink)
+    _PUT_WRITTEN.pop(out, None)
     return folder
 
 

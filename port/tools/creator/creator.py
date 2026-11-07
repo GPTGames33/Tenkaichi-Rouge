@@ -650,7 +650,7 @@ class App:
         import shutil
         for folder in old:
             if folder not in made and (chars / folder).is_dir():
-                shutil.rmtree(chars / folder)
+                cf._retry(lambda f=folder: shutil.rmtree(chars / f))
         mine.write_text(json.dumps(sorted(made), indent=2), encoding="utf-8")
         return sorted(made)
 
