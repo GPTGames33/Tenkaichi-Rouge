@@ -1019,6 +1019,8 @@ static std::string folder_name(const std::string &name) {
 struct Face { int state; SDL_GPUTexture *tex; }; // state 0 not asked, 1 asked, 2 there, 3 none
 static Face sFace[2200];
 static int sFacesMade;
+// the part of a portrait (a 128 x 128 bust) a round face shows: the face itself, with some hair round it
+static const ImVec2 kFaceUv0(0.16f, 0.18f), kFaceUv1(0.84f, 0.86f);
 static ImTextureID face_tex(int id) {
     if (id < 0 || id >= (int)(sizeof(sFace) / sizeof(sFace[0]))) { return (ImTextureID)0; }
     Face &f = sFace[id];
@@ -2529,7 +2531,7 @@ static void tip_box(const std::string &line) {
     zlook::brackets(sDl, ImVec2(a.x - S(5), a.y - S(5)), ImVec2(b.x + S(5), b.y + S(5)), S(18), S(2.6f), IM_COL32(255, 255, 255, 240));
     float r = S(34);
     ImVec2 c(a.x + S(16) + r, a.y + S(14) + r);
-    zlook::face_ring(sDl, face_tex(HOST_CHARA), c, r, false, ImVec2(0.2f, 0.03f), ImVec2(0.8f, 0.63f), sS);
+    zlook::face_ring(sDl, face_tex(HOST_CHARA), c, r, false, kFaceUv0, kFaceUv1, sS);
     bool err = sToastErr && sFrames < sToastUntil && line == sToast;
     float x = c.x + r + S(22), wrap = b.x - x - S(24);
     float size = S(21);
@@ -2556,7 +2558,7 @@ static void title_and_tabs(const char *heading) {
     int face = -1;
     if (sScreen == SC_EDIT) { face = chara_id(sSpec.has("portrait") ? sSpec["portrait"] : look()); }
     if (face >= 0) {
-        zlook::face_ring(sDl, face_tex(face), e, er, false, ImVec2(0.2f, 0.03f), ImVec2(0.8f, 0.63f), sS);
+        zlook::face_ring(sDl, face_tex(face), e, er, false, kFaceUv0, kFaceUv1, sS);
     } else {
         sDl->AddCircleFilled(ImVec2(e.x, e.y + S(3)), er + S(3), IM_COL32(107, 58, 0, 255));
         grad(ImVec2(e.x - er, e.y - er), ImVec2(e.x + er, e.y + er), IM_COL32(255, 214, 90, 255), IM_COL32(232, 130, 10, 255), er);
@@ -2650,7 +2652,7 @@ static int draw_rows(ImVec2 a, ImVec2 b, const std::vector<Row> &rows, int cur, 
         if (r.face >= 0) { // (its face at the row's end)
             float fr = (rh - S(12)) * 0.5f;
             ImTextureID t = face_tex(r.face);
-            zlook::face_ring(sDl, t, ImVec2(rb.x - S(10) - fr, y + rh * 0.5f), fr, false, ImVec2(0.2f, 0.03f), ImVec2(0.8f, 0.63f), sS * 0.6f);
+            zlook::face_ring(sDl, t, ImVec2(rb.x - S(10) - fr, y + rh * 0.5f), fr, false, kFaceUv0, kFaceUv1, sS * 0.6f);
             vmax -= fr * 2 + S(8);
         }
         if (r.bar >= 0.0f) { // a slider: its track, the default's tick, the knob; the value after it
@@ -2847,7 +2849,7 @@ static void grid_frame(Overlay &o, std::vector<Prompt> &ps) {
             }
             float r = std::min(b.x - a.x, b.y - a.y) * 0.5f - S(4);
             zlook::face_ring(sDl, face_tex((int)(*items[i])["id"].number(0)), ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f), sel ? r * 1.08f : r, sel,
-                            ImVec2(0.2f, 0.03f), ImVec2(0.8f, 0.63f), sS);
+                            kFaceUv0, kFaceUv1, sS);
             if (click_in(a, b)) { clicked = i; }
         }
         sDl->PopClipRect();
@@ -5213,7 +5215,7 @@ static void status_frame(const Trial *tr) {
         ImVec2 a(P(CAM_X, 0).x - w * 0.5f, P(0, 556).y), b(a.x + w, a.y + h);
         sDl->AddRectFilled(a, b, IM_COL32(30, 22, 60, 225), S(8));
         sDl->AddRect(a, b, IM_COL32(150, 130, 220, 200), S(8), 0, S(1.5f));
-        zlook::face_ring(sDl, face_tex(tr->face), ImVec2(a.x + S(26), (a.y + b.y) * 0.5f), S(16), false, ImVec2(0.2f, 0.03f), ImVec2(0.8f, 0.63f), sS * 0.7f);
+        zlook::face_ring(sDl, face_tex(tr->face), ImVec2(a.x + S(26), (a.y + b.y) * 0.5f), S(16), false, kFaceUv0, kFaceUv1, sS * 0.7f);
         sDl->AddText(bf, fs, ImVec2(a.x + S(52), a.y + S(7)), IM_COL32(255, 236, 150, 255), tr->name.c_str());
         sDl->AddText(sFont, S(13), ImVec2(a.x + S(52), a.y + S(27)), kDim, pill.c_str());
     }
