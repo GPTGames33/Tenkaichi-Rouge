@@ -41,6 +41,14 @@ The whole-moveset swap was checked in the game (2026-11-04).
 ## Model
 - Skeleton of 71 nodes (head = node 0x33). Motions are retargeted by height against a reference skeleton, so
   sharing animations looks possible.
+- Posing (src/battle/bobj_a.c): BtlObjAnim_SamplePose fills each node's local rotation (layer 0, layer 1 mixed
+  in, then the blend from the last pose: `fromRot`), BtlObjPose_GetNodeMtx adds the look-at rotations (node 2,
+  0x2E, 0x2F, the jaw), BtlObjPose_CalcMatrices chains them (world = local * parent, row vectors); a fighter runs
+  the passes itself (anim.manual), the menus' viewer (ChrView, object type 3, model motion 7) through
+  BtlObj_UpdateAll. The Stance Maker's pose goes in at the end of SamplePose (`pose * motion`, before the blend),
+  so the motions' own blends ease it in and out. Motion ids: 0/1 idle, 2..9 walking, 0xC..0x1A dashes, 0x1C..0x1E
+  steps, 0x1F..0x22 jump, 0x23..0x25 rush dash, 0x26/0x27 flying idle, 0x2B..0x33 ascend / descend, 0x34..0x36 ki
+  charge, 0xEC..0xFD guards and evasions, 0x18B the hop of a fighter that cannot fly.
 - Textures are 8-bit with a palette (CLUT), so recolouring = editing palettes. The game already draws palette
   passes (`ObjDraw_AddClutPass`).
 - Mesh format is not fully understood, and mixing parts (hair, head) between models is new work. This is

@@ -127,7 +127,7 @@ static int sStRow;             // Advanced: the slider picked (0..2)
 static int sStDrag = -1;       // the bone the mouse holds, -1 none
 static Q4 sStDragQ0;           // ... its pose when it was grabbed
 static V3 sStDragU0, sStDragJ0, sStDragH0, sStDragP[3]; // ... its joint, its dot, the parent's axes then (model space)
-static float sStDragX0;        // ... the mouse's x then
+static ImVec2 sStDragM0;       // ... where the mouse was then
 static bool sStMouseBusy;      // the mouse is the Stance Maker's this frame (not the model's turn)
 static float sStGotLocal[ST_GOT];
 static int sStGotSeen = -1;
@@ -283,6 +283,21 @@ static bool st_bone(int i, V3 *joint, V3 *dot, V3 parentAxes[3]) {
     *dot = vadd(*joint, vadd(vmul(down, -len * 0.45f), vmul(front, -len)));
     return true;
 }
+// Kept to an axis (model space a): the turn about it that a move of `delta` (window pixels) of the dot asks for - the
+// move along the way the dot goes on the screen when it turns (so it turns whichever way it is seen from); a dot that
+// goes nowhere on the screen when it turns (the axis pointing at the camera through it, or the dot on the axis):
+// across the screen turns it.
+static float st_locked_angle(V3 J, V3 u, V3 a, ImVec2 delta) {
+    const float eps = 0.05f;
+    V3 k = vnorm(a);
+    V3 r = vadd(vadd(vmul(u, cosf(eps)), vmul(vcross(k, u), sinf(eps))), vmul(k, vdot(k, u) * (1.0f - cosf(eps))));
+    ImVec2 p0, p1;
+    if (st_project(vadd(J, u), &p0) && st_project(vadd(J, r), &p1)) {
+        float tx = (p1.x - p0.x) / eps, ty = (p1.y - p0.y) / eps, t2 = tx * tx + ty * ty; // (pixels a radian)
+        if (t2 > S(40) * S(40)) { return (delta.x * tx + delta.y * ty) / t2; }
+    }
+    return delta.x / S(120);
+}
 // the pose of bone i turned by `rad` about the parent's axis (parent space), from q0
 static Q4 st_turn(Q4 q0, V3 axisParent, float rad) { return qfix(qmul(qaxis(axisParent, rad), q0)); }
 // the turn (parent space) that takes the dot from u to v (model space) about the joint, or about the kept axis
@@ -348,7 +363,7 @@ static void stance_rows(std::vector<Row> &rows) {
     r.face = chara_id(sSpec["stance"]);
     r.tip = "Whose fighting stance: how your warrior stands, walks, dashes and flies. The attacks stay the moveset's.";
     r.ok = [] {
-        open_grid("WHOSE STANCE?", [](const J *p) { if (p) { sSpec.set("stance", *p); } else { sSpec.erase("stance"); } touch(); }, false, "Moveset's own", true);
+        open_grid("WHOSE STANCE?", [](const J *p) { if (p) { sSpec.set("stance", *p); } else { sSpec.erase("stance"); } touch(); }, false, "Moveset's own");
     };
     rows.push_back(r);
     r = Row();
@@ -524,22 +539,22 @@ static void stance_frame(Overlay &o, std::vector<Prompt> &ps) {
         sStDragH0 = d.H;
         sStDragU0 = vsub(d.H, d.J);
         for (int k = 0; k < 3; k++) { sStDragP[k] = d.P[k]; }
-        sStDragX0 = io.MousePos.x;
+        sStDragM0 = io.MousePos;
         stance_remember();
         sound(0);
     }
     if (sStDrag >= 0 && (!ImGui::IsMouseDown(0) || !sMouse)) { sStDrag = -1; }
+    static const V3 kE[4] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}; // (the parent's axes in its own space)
     if (sStDrag >= 0) {
         sStMouseBusy = true;
         V3 t, ax;
         float rad;
-        if (st_unproject(io.MousePos, sStDragH0, &t)) {
-            if (st_turn_to(sStDragU0, vsub(t, sStDragJ0), sStDragP, sStAxis, &ax, &rad)) {
-                sStPose[sStDrag] = st_turn(sStDragQ0, ax, rad);
-            } else if (sStAxis != 0) { // (the dot on the kept axis: across the screen turns it)
-                V3 a = v3(sStAxis == 1 ? 1.0f : 0.0f, sStAxis == 2 ? 1.0f : 0.0f, sStAxis == 3 ? 1.0f : 0.0f);
-                sStPose[sStDrag] = st_turn(sStDragQ0, a, (io.MousePos.x - sStDragX0) / S(120));
-            }
+        if (sStAxis != 0) {
+            ImVec2 moved(io.MousePos.x - sStDragM0.x, io.MousePos.y - sStDragM0.y);
+            sStPose[sStDrag] = st_turn(sStDragQ0, kE[sStAxis], st_locked_angle(sStDragJ0, sStDragU0, sStDragP[sStAxis - 1], moved));
+            stance_write();
+        } else if (st_unproject(io.MousePos, sStDragH0, &t) && st_turn_to(sStDragU0, vsub(t, sStDragJ0), sStDragP, 0, &ax, &rad)) {
+            sStPose[sStDrag] = st_turn(sStDragQ0, ax, rad);
             stance_write();
         }
     }
@@ -551,14 +566,12 @@ static void stance_frame(Overlay &o, std::vector<Prompt> &ps) {
         sStickFrom = sFrames;
         V3 t, ax;
         float rad;
-        ImVec2 goal(d.at.x + sIn.lx * S(5), d.at.y + sIn.ly * S(5));
-        if (st_unproject(goal, d.H, &t)) {
-            if (st_turn_to(vsub(d.H, d.J), vsub(t, d.J), d.P, sStAxis, &ax, &rad)) {
-                sStPose[sStSel] = st_turn(sStPose[sStSel], ax, rad);
-            } else if (sStAxis != 0) {
-                V3 a = v3(sStAxis == 1 ? 1.0f : 0.0f, sStAxis == 2 ? 1.0f : 0.0f, sStAxis == 3 ? 1.0f : 0.0f);
-                sStPose[sStSel] = st_turn(sStPose[sStSel], a, sIn.lx * 0.04f);
-            }
+        ImVec2 step(sIn.lx * S(5), sIn.ly * S(5));
+        if (sStAxis != 0) {
+            sStPose[sStSel] = st_turn(sStPose[sStSel], kE[sStAxis], st_locked_angle(d.J, vsub(d.H, d.J), d.P[sStAxis - 1], step));
+            stance_write();
+        } else if (st_unproject(ImVec2(d.at.x + step.x, d.at.y + step.y), d.H, &t) && st_turn_to(vsub(d.H, d.J), vsub(t, d.J), d.P, 0, &ax, &rad)) {
+            sStPose[sStSel] = st_turn(sStPose[sStSel], ax, rad);
             stance_write();
         }
     }
@@ -622,7 +635,7 @@ static void stance_frame(Overlay &o, std::vector<Prompt> &ps) {
     ps.push_back({B_L2R2, "T-pose / Numbers"});
     ps.push_back({B_RSTICK, "Turn / zoom"});
     ps.push_back({B_CIRCLE, "Done"});
-    if (sIn.back) { stance_write(); ov_close(); sound(2); return; }
+    if (sIn.back) { ov_close(); sound(2); return; } // (every change is in the spec already)
     if (!sTyping && !io.KeyCtrl) { // the keyboard's own: X, Y, Z keep to an axis (again: free), T the T-pose, N the numbers
         static const ImGuiKey kK[3] = {ImGuiKey_X, ImGuiKey_Y, ImGuiKey_Z};
         for (int k = 0; k < 3; k++) {
