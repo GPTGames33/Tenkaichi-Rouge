@@ -608,6 +608,28 @@ def recolour_model(m, changes):
     return m
 
 
+def skin_colour(m):
+    """A model pack's skin colour: the main colour of its face texture (bytes rgb), None if it has none."""
+    face = face_texture(m)
+    if face is None:
+        return None
+    for index, cols in texture_colours(m, limit=3):
+        if index == face and cols:
+            return bytes(hex_rgb(cols[0][0]))
+    return None
+
+
+def match_skin(m, to):
+    """A copy of model pack m with its skin (every texture's shades of its skin colour, the face's eye frames and
+    mouth pictures too) in colour `to`."""
+    src = skin_colour(m)
+    if src is None or src == to:
+        return m
+    m = Pack(m.bytes(), 252)
+    count = struct.unpack_from("<I", m[0xC], 0)[0] if m[0xC] and len(m[0xC]) >= 8 else 0
+    return recolour_model(m, [(i, src, to, 1.0) for i in range(min(count, 255))])
+
+
 def texture_colours(model_pack, limit=8):
     """For the creator: [(texture index, [(#rrggbb, share of the texture's pixels)])] of a model: the main colours
     of each texture (shades grouped, most used first), as they look in the picture."""
@@ -1394,6 +1416,11 @@ class Fighter:
         # n-th extra layer)
         self.part_tags = [f"{k}.{n}" for k in order if parts.get(k)
                           for n, v in enumerate(parts[k] if isinstance(parts[k], list) else [parts[k]]) if v]
+        # ("match_skin": true on a layer: its donor's skin colour changed to the base's before it is put on)
+        # (the look's "match_skin": true: every layer's)
+        all_skin = bool(lk.get("match_skin"))
+        self.part_skin = [all_skin or bool(isinstance(v, dict) and v.get("match_skin")) for k in order if parts.get(k)
+                          for v in (parts[k] if isinstance(parts[k], list) else [parts[k]]) if v]
         extra = lk.get("extra_layers") or []
         if not isinstance(extra, list) or len(extra) > 8:
             raise Fail("extra_layers: a list of up to 8 layers")
@@ -1404,6 +1431,7 @@ class Fighter:
                 raise Fail(f"extra layer {n + 1}: {{chara, costume, piece: one of {', '.join(order)}}}")
             self.parts.append((v.get("piece", "hair") + "+", ref(v), v.get("adjust") or {}))
             self.part_tags.append(f"x.{n}")
+            self.part_skin.append(all_skin or bool(v.get("match_skin")))
         self.body = node_keys(lk.get("body") or {})
         # attack colours: {"blast1_1".."ultimate" | "ki_blasts" | "charge": [{"from", "to", "range"}]}
         self.fx = {k: v for k, v in (spec.get("attack_colours") or {}).items() if v}
@@ -1710,9 +1738,16 @@ class Fighter:
         mix = mix_module()
         d = self.disc
         sel, tags = [], []
-        for (piece, who, opts), tag in zip(self.parts, self.part_tags):
+        skin_to = None
+        for (piece, who, opts), tag, skin in zip(self.parts, self.part_tags, self.part_skin):
             try:
-                sel.append((d.model(*who, damaged).bytes(), piece, opts))
+                donor = d.model(*who, damaged)
+                if skin:
+                    if skin_to is None:
+                        skin_to = self.skin_target(m) or False
+                    if skin_to:
+                        donor = match_skin(donor, skin_to)
+                sel.append((donor.bytes(), piece, opts))
                 tags.append(tag)
             except Fail as e:
                 self.note(f"{piece} from {name(who[0])} left out: {e}")
@@ -1741,6 +1776,18 @@ class Fighter:
                 dropped = sel.pop()
                 tags.pop()
                 self.note(f"one {dropped[1].rstrip('+')} layer left out: {e}")
+
+    def skin_target(self, m):
+        """The skin colour a "match_skin" layer gets: the base's (its face texture's main colour), as the fighter's
+        own colour changes of that texture make it."""
+        c = skin_colour(m)
+        if c is None:
+            return None
+        face = face_texture(m)
+        for tex, ref_, to, rng in self.colours:
+            if tex == face and colour_near(c, ref_, rng):
+                c = colour_shift(c, ref_, to)
+        return c
 
     def painted(self, m, costume, damaged, pre):
         """The paint of the costumes with this look, on the model m (after its colour changes; pre: its texture

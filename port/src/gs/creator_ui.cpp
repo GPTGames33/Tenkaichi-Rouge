@@ -935,7 +935,7 @@ static void clean_empty(const char *key) { // (an empty object or list of the sp
 // "stance_pose"...). Every screen of the look reads edit_view() and writes edit_spec(): the first write to a costume
 // without a look of its own starts one, a copy of costume 1's (its paint: what was painted on it).
 static int sEditCostume;       // 0..: the costume edited (and shown on the model)
-static const char *const kLookKeys[] = {"parts", "body", "colours", "extra_layers", "shading", "stance_pose"};
+static const char *const kLookKeys[] = {"parts", "body", "colours", "extra_layers", "shading", "stance_pose", "match_skin"};
 static int costume_count(void) { return sSpec["costumes"].size() ? (int)sSpec["costumes"].size() : 1; }
 static bool has_own_look(int i) {
     const J &e = sSpec["costume_edits"][(size_t)(i < 0 ? 0 : i)];
@@ -2316,6 +2316,22 @@ static void rows_parts(std::vector<Row> &rows) {
         c.sq = [] { edit_spec().erase("colours"); touch(); sound(2); };
     }
     rows.push_back(c);
+    {
+        bool on = edit_view()["match_skin"].truthy();
+        Row k;
+        k.label = "Match skin";
+        k.value = on ? "On: pieces take the body's skin colour" : "Off: pieces keep their own skin";
+        k.tip = "Heads, arms and hands from other fighters get your warrior's skin colour (Zarbon's head on Piccolo turns green).";
+        auto flip = [] {
+            if (edit_view()["match_skin"].truthy()) { edit_spec().erase("match_skin"); }
+            else { edit_spec().set("match_skin", J::boolean(true)); }
+            touch();
+            sound(0);
+        };
+        k.ok = flip;
+        k.lr = [flip](int) { flip(); };
+        rows.push_back(k);
+    }
     int np = (int)edit_view()["paint"].size();
     Row p;
     p.label = "Textures";
