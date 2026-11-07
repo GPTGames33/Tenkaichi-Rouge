@@ -247,16 +247,18 @@ class App:
         import hashlib, os, shutil
         spec = dict(spec, name=spec.get("name") or "preview")
         f = cf.Fighter(self.disc, spec, "preview")
-        look = f.costumes[min(max(costume, 0), len(f.costumes) - 1)]
-        key = json.dumps([list(look)] + [spec.get(k) for k in (
-            "parts", "colours", "body", "paint", "moveset", "moves", "melee", "ki_blasts", "voice", "names")], sort_keys=True)
+        index = min(max(costume, 0), len(f.costumes) - 1)
+        look = f.costumes[index]
+        key = json.dumps([list(look), index] + [spec.get(k) for k in (
+            "parts", "colours", "body", "paint", "moveset", "moves", "melee", "ki_blasts", "voice", "names", "stance",
+            "stance_pose", "costume_edits")], sort_keys=True)
         h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
         root = self.cache / "preview"
         out = root / h
         if not (out / "preview_1p.pak").exists():
             tmp = root / (h + ".part")
             tmp.mkdir(parents=True, exist_ok=True)
-            (tmp / "preview_1p.pak").write_bytes(f.model(look, False).bytes())
+            (tmp / "preview_1p.pak").write_bytes(f.model(look, False, index).bytes())
             (tmp / "preview_anm.pak").write_bytes(f.anims().bytes())
             (tmp / "character.txt").write_text("# the Custom Character screen's preview (not a character)\nformat=1\n"
                                                f"base={f.base[0]}\n", encoding="utf-8")

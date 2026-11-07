@@ -302,6 +302,32 @@ strength, speed and the moves themselves are in the character's own `*_1p.pak` a
 
 These keys make a character stronger or weaker than the original. That is the player's own game only (section 11).
 
+### A stance pose (model entry 0x1A)
+
+A model (`*_Np.pak`, and its `_dmg`) may carry a **stance pose**: a turn of some of its bones that the fight puts on
+top of the motions, so the character stands, walks and flies in a pose of its own (the Custom Character screen's
+Stance Maker makes it; `port/tools/custom_fighter.py`, `"stance_pose"`). It lives in entry `0x1A` of the model pack,
+which is empty in every model of the disc and which nothing else reads; a build without stances ignores it, and so
+does this one when the entry is anything else.
+
+| Offset | Size | What |
+|---|---|---|
+| 0x000 | 4 | `STNC` |
+| 0x004 | 4 | 1 (the version) |
+| 0x008 | 4 | 71 (the nodes that motions animate) |
+| 0x00C | 4 | 0x19E (the motions of an animation pack) |
+| 0x010 | 71 x 16 | per node id: a quaternion x, y, z, w (floats, w >= 0), the identity for a node not posed |
+| 0x480 | 0x19E | per motion: how much of the pose it takes, 0..255 |
+
+Node `n`'s rotation of the frame becomes `pose[n] * motion` (the pose turns the node in its parent's space), scaled
+down to the motion's weight, before the blend from the motion before (src/battle/bobj_a.c, `BtlObj_PortStance`).
+`custom_fighter.py` writes 255 for standing, walking, stepping and floating, 153 (60%) for dashing, jumping,
+rushing in, ascending and descending, and 0 for every other motion (attacks, ki blasts, guards, charging, throws,
+hits, transformations, scenes), so the pose eases out as an attack starts and back in when it ends. A motion of the
+model file itself (a fusion's, a partner's) takes none. The menus' 3D viewer (character reference, Mod Manager,
+Custom Character screen) shows the pose whole on what it plays. A costume's model carries its own pose (or none);
+a transformation is another model and takes its own.
+
 ## 8. Where a package shows
 
 | Place | Added character | Replaced character |

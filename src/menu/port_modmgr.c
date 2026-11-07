@@ -1057,6 +1057,11 @@ s32 Mm_ViewReady(void) {
     return ChrView_PortInitDone() && sMvShown >= 0 && ChrView_IsVisible() && gChrView->cur != NULL && !ChrView_IsLoading();
 }
 
+/* The model's battle object, NULL while there is none to draw (the Custom Character screen's Stance Maker). */
+u8 *Mm_ViewObj(void) {
+    return Mm_ViewReady() ? BtlObj_Get(gChrView->cur->obj) : NULL;
+}
+
 /* What the model drawn now is (Mm_ViewWant's key), -1 none yet. */
 s32 Mm_ViewKey(void) {
     return Mm_ViewReady() ? sMvShown : -1;

@@ -501,6 +501,221 @@ void BtlObjAnim_ClearNodeRot(BobjAnim *anim, s32 node) {
     }
 }
 
+#ifdef PORT
+/*
+ * PC only: the stance of a character package ("stance_pose" of port/tools/custom_fighter.py; the Custom Character
+ * screen's Stance Maker). A rotation per node, in its parent's space, put on the motion's own (q = stance * motion,
+ * as look.node2 is put on node 2), at a weight per motion: the fighting stance, the moves and the flight take it, the
+ * attacks, throws, hits and scenes do not. It is part of the sampled pose, before the blend from the last pose
+ * (BtlObjAnim_StartBlend), so the motions' own 0.15 s blends ease it in and out. Only data both machines read from the
+ * package and the motion playing decide it: nothing of the frame's timing.
+ *
+ * Model pack entry 0x1A (empty in every model of the disc, never read by the game): PortStance below.
+ * Objects other than a fighter (the menus' viewer) take it whole, on whatever they play. The Custom Character screen's
+ * Stance Maker poses the viewer's model itself while it is open (PortCreator_StanceLive, port/src/gs/creator_stance.cpp),
+ * and has it stand in the fighting stance (motion 0 of the warrior's animations: BtlObj_PortStanceView).
+ */
+#define PORT_STANCE_ENTRY 0x1A
+#define PORT_STANCE_MAGIC 0x434E5453 /* "STNC" */
+typedef struct PortStance {
+    /* 0x000 */ u32 magic;
+    /* 0x004 */ u32 version;                 /* 1 */
+    /* 0x008 */ u32 nodes;                   /* BOBJ_NODE_MAX */
+    /* 0x00C */ u32 motions;                 /* BOBJ_ANIM_MAX */
+    /* 0x010 */ f32 q[BOBJ_NODE_MAX][4];     /* x, y, z, w (w >= 0); the identity for a node not posed */
+    /* 0x480 */ u8 weight[BOBJ_ANIM_MAX];    /* per motion: 0..255 of the stance */
+} PortStance;
+typedef struct PortStanceFile {
+    /* 0x00 */ u32 *buf;
+    /* 0x04 */ s32 size;
+    /* 0x08 */ s32 id;
+    /* 0x0C */ void *orig;
+} PortStanceFile;
+/* the Stance Maker (render thread's side): 1 while it poses `obj`, with quats[71][4]; *tpose 1: the bind pose under it */
+extern s32 PortCreator_StanceLive(void *obj, f32 *quats, s32 *tpose);
+/* ... and the fighting stance it wants the viewer in: -> its number (0: none); copies motion 0 (packed) into dst, its
+   size in *size, when `have` is another number */
+extern s32 PortCreator_StanceMotion(void *dst, s32 max, s32 *size, s32 have);
+extern void PortCreator_StancePut(f32 *data, s32 count);
+
+/* The stance in the object's model pack, NULL none. */
+static PortStance *BtlObj_PortStanceOf(BobjObj *obj) {
+    PortStanceFile *file = *(PortStanceFile **)((u8 *)obj + 0x14); /* (its resource slot: file[0] is the model) */
+    u32 *buf;
+    PortStance *st;
+
+    if (file == NULL || (buf = file->buf) == NULL || buf[0] < PORT_STANCE_ENTRY || buf[0] > 0x400) {
+        return NULL;
+    }
+    if (buf[PORT_STANCE_ENTRY + 1] < buf[PORT_STANCE_ENTRY] || buf[PORT_STANCE_ENTRY + 1] - buf[PORT_STANCE_ENTRY] < sizeof(PortStance)) {
+        return NULL;
+    }
+    st = (PortStance *)((u8 *)buf + (buf[PORT_STANCE_ENTRY] >> 2 << 2));
+    if (st->magic != PORT_STANCE_MAGIC || st->version != 1 || st->nodes != BOBJ_NODE_MAX || st->motions != BOBJ_ANIM_MAX) {
+        return NULL;
+    }
+    return st;
+}
+
+/* The stance this frame: its quaternions (71 x 4) and weight; NULL none. *tpose: the bind pose instead of the motion. */
+static f32 *BtlObj_PortStance(BobjObj *obj, f32 *live, f32 *weight, s32 *tpose) {
+    PortStance *st;
+    u32 m;
+
+    *tpose = 0;
+    *weight = 0.0f;
+    if (obj->type == 3 && PortCreator_StanceLive(obj, live, tpose)) {
+        *weight = 1.0f;
+        return live;
+    }
+    if (obj->type != 0 && obj->type != 3) {
+        return NULL;
+    }
+    st = BtlObj_PortStanceOf(obj);
+    if (st == NULL) {
+        return NULL;
+    }
+    if (obj->type != 0) { /* (the viewer: whatever it plays) */
+        *weight = 1.0f;
+        return &st->q[0][0];
+    }
+    m = obj->anim.layer[0].id;
+    if (m >= BOBJ_ANIM_MAX || (m < 8 && obj->anim.layer[0].data == obj->mdl.modelAnims[m])) {
+        return NULL; /* (a motion of the model file itself: a fusion's, a partner's scene) */
+    }
+    *weight = (f32)st->weight[m] * (1.0f / 255.0f);
+    return *weight > 0.0f ? &st->q[0][0] : NULL;
+}
+
+/* Puts the stance on a node's rotation of this frame. */
+static void BtlObj_PortStanceNode(f32 *stance, f32 weight, u32 id, Quat *rot) {
+    Quat *s = (Quat *)(stance + id * 4);
+    Quat t;
+
+    if (s->w >= 0.99999f) {
+        return;
+    }
+    if (weight < 1.0f) {
+        Quat_SlerpIdentity(&t, s, weight);
+    } else {
+        t = *s;
+    }
+    Quat_Mul(rot, &t, rot);
+}
+
+/* The menus' viewer object while the Stance Maker is open: it plays the warrior's fighting stance (motion 0 of its
+   animations, which the screen hands over packed), looping; once the screen no longer wants it, its own motion again
+   (the model file's 7th, as ChrView_StepLoad starts it). Called by the screen each frame, before the viewer's update. */
+static u8 sPortStancePacked[0x20000] __attribute__((aligned(16)));
+static u8 sPortStanceMotion[BOBJ_WORK_LAYER_SIZE] __attribute__((aligned(16)));
+static s32 sPortStanceGen;    /* the motion in sPortStancePacked */
+static s32 sPortStanceBad;    /* ... which is not one this buffer holds */
+void BtlObj_PortStanceView(BobjObj *obj) {
+    BobjAnimPlayer *ap = &obj->anim;
+    s32 size = 0;
+    s32 gen = PortCreator_StanceMotion(sPortStancePacked, sizeof(sPortStancePacked), &size, sPortStanceGen);
+    s32 raw = 0;
+
+    if (gen > 0 && gen != sPortStanceGen) {
+        sPortStanceGen = gen;
+        sPortStanceBad = size <= 8 || ((u32 *)sPortStancePacked)[0] == 0 || ((u32 *)sPortStancePacked)[0] > BOBJ_WORK_LAYER_SIZE;
+        if (!sPortStanceBad) {
+            ap->layer[0].data = NULL; /* (decoded again below) */
+        }
+    }
+    if (gen <= 0 || sPortStanceBad) {
+        if (ap->layer[0].data == (BobjAnim *)sPortStanceMotion) {
+            BtlObjAnim_PlayModel(obj, 7, BOBJ_PLAY_LOOP);
+        }
+        return;
+    }
+    if (ap->layer[0].data == (BobjAnim *)sPortStanceMotion) {
+        return;
+    }
+    Bpe_Decode(sPortStancePacked, sPortStanceMotion, &raw); /* (again for each model: the retarget below is its own) */
+    ap->layer[0].data = (BobjAnim *)sPortStanceMotion;
+    ap->layer[0].id = 0;
+    ap->layer[0].length = ap->layer[0].data->length;
+    ap->layer[1].data = NULL;
+    ap->mix = 0.0f;
+    ap->frame = 0.0f;
+    ap->prevFrame = 0.0f;
+    ap->mode = BOBJ_PLAY_LOOP;
+    ap->manual = 0;
+    memset(ap->layer[0].cursor, 0, sizeof(ap->layer[0].cursor));
+    BtlObjAnim_Retarget(ap->layer[0].data, obj, obj, 0, 1);
+}
+
+/* For the Stance Maker: where the viewer's nodes are, after its frame (PortCreator_StancePut): the model's matrix to
+   the screen (16: the object's matrix times the view's world-to-screen one, row vectors), the screen's centre (2),
+   then per node id 0..70 its matrix and its parent's in the model's own space (16 + 16; all 0 for a node it lacks). */
+static f32 sPortStanceOut[18 + BOBJ_NODE_MAX * 32];
+void BtlObj_PortStanceCapture(BobjObj *obj, Mtx44 *world2screen, f32 cx, f32 cy) {
+    Mtx44 inv;
+    Mtx44 m;
+    f32 *xf = &obj->xf.mtx.m[0][0];
+    f32 a[9];
+    f32 det;
+    s32 i;
+    s32 j;
+    BobjBone *bone = obj->mdl.nodes;
+
+    memset(sPortStanceOut, 0, sizeof(sPortStanceOut));
+    Mtx_Mul(&m, world2screen, &obj->xf.mtx); /* (Mtx_Mul(d, a, b): b first, then a, as the node matrices are made) */
+    for (i = 0; i < 16; i++) {
+        sPortStanceOut[i] = (&m.m[0][0])[i];
+    }
+    sPortStanceOut[16] = cx;
+    sPortStanceOut[17] = cy;
+    /* the inverse of the object's matrix (rotation, scale, the menus' narrowing; translation in row 3) */
+    a[0] = xf[5] * xf[10] - xf[6] * xf[9];
+    a[1] = xf[2] * xf[9] - xf[1] * xf[10];
+    a[2] = xf[1] * xf[6] - xf[2] * xf[5];
+    a[3] = xf[6] * xf[8] - xf[4] * xf[10];
+    a[4] = xf[0] * xf[10] - xf[2] * xf[8];
+    a[5] = xf[2] * xf[4] - xf[0] * xf[6];
+    a[6] = xf[4] * xf[9] - xf[5] * xf[8];
+    a[7] = xf[1] * xf[8] - xf[0] * xf[9];
+    a[8] = xf[0] * xf[5] - xf[1] * xf[4];
+    det = xf[0] * a[0] + xf[1] * a[3] + xf[2] * a[6];
+    if (det > -1e-12f && det < 1e-12f) {
+        return;
+    }
+    det = 1.0f / det;
+    memset(&inv, 0, sizeof(inv));
+    for (i = 0; i < 3; i++) {
+        for (j = 0; j < 3; j++) {
+            inv.m[i][j] = a[i * 3 + j] * det;
+        }
+    }
+    for (j = 0; j < 3; j++) {
+        inv.m[3][j] = -(xf[12] * inv.m[0][j] + xf[13] * inv.m[1][j] + xf[14] * inv.m[2][j]);
+    }
+    inv.m[3][3] = 1.0f;
+    while (1) {
+        BobjPart *part = BtlObj_GetNode(obj, bone->id);
+
+        if (bone->id < BOBJ_NODE_MAX && part != NULL) {
+            f32 *out = sPortStanceOut + 18 + bone->id * 32;
+
+            Mtx_Mul(&m, &inv, &part->mtx);
+            for (i = 0; i < 16; i++) {
+                out[i] = (&m.m[0][0])[i];
+            }
+            Mtx_Mul(&m, &inv, &part->parent);
+            for (i = 0; i < 16; i++) {
+                out[16 + i] = (&m.m[0][0])[i];
+            }
+        }
+        if (bone->last != 0) {
+            break;
+        }
+        bone = (BobjBone *)((u8 *)bone + bone->next);
+    }
+    PortCreator_StancePut(sPortStanceOut, sizeof(sPortStanceOut) / sizeof(f32));
+}
+#endif
+
 /* Fills every node's local translation and rotation for the current frame: layer 0, then layer 1 mixed in by
    anim.mix, then the blend from the pose stored by BtlObjAnim_StartBlend (not for node 0). */
 void BtlObjAnim_SamplePose(BobjObj *obj) {
@@ -515,6 +730,12 @@ void BtlObjAnim_SamplePose(BobjObj *obj) {
     f32 w;
     f32 frame;
     Vec4 *dst;
+#ifdef PORT
+    f32 live[BOBJ_NODE_MAX * 4];
+    f32 *stance;
+    f32 stanceW;
+    s32 tpose;
+#endif
 
     ap = &obj->anim;
     layer[1] = &obj->anim.layer[1];
@@ -527,6 +748,12 @@ void BtlObjAnim_SamplePose(BobjObj *obj) {
     if (0.0f < ap->blend) {
         w = ap->blend * ap->blend * ap->blend * -2.0f + ap->blend * ap->blend * 3.0f;
     }
+#ifdef PORT
+    stance = BtlObj_PortStance(obj, live, &stanceW, &tpose);
+    if (tpose) {
+        w = 0.0f;
+    }
+#endif
     while (1) {
         id = bone->id;
         part = BtlObj_GetNode(obj, id);
@@ -571,6 +798,18 @@ void BtlObjAnim_SamplePose(BobjObj *obj) {
                     Quat_Slerp(&part->rot, &part->rot, &rot, ap->mix);
                 }
             }
+#ifdef PORT
+            if (tpose) { /* (the Stance Maker's T-pose: the bind pose, with the stance on it) */
+                Vec4_Copy(dst, &bone->rest);
+                part->rot.x = 0.0f;
+                part->rot.y = 0.0f;
+                part->rot.z = 0.0f;
+                part->rot.w = 1.0f;
+            }
+            if (stance != NULL) {
+                BtlObj_PortStanceNode(stance, stanceW, id, &part->rot);
+            }
+#endif
             if (id != 0 && 0.0f < w) {
                 Vec4_Lerp(dst, &part->fromPos, dst, w);
                 part->pos.w = 1.0f;
