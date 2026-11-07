@@ -1112,7 +1112,8 @@ struct Row {
 };
 
 // ---- the screens over the list (the grid, the keyboard, lists, the colours): a stack
-enum { OV_GRID, OV_LIST, OV_KEYS, OV_COLOURS, OV_PALETTE, OV_TEXT, OV_FX, OV_WORKSHOP, OV_TEXPICK, OV_PAINT, OV_WHEEL };
+enum { OV_GRID, OV_LIST, OV_KEYS, OV_COLOURS, OV_PALETTE, OV_TEXT, OV_FX, OV_WORKSHOP, OV_TEXPICK, OV_PAINT, OV_WHEEL,
+       OV_SHADING, OV_HSL }; // (the last two: creator_shading.cpp, creator_hsl.cpp)
 struct Overlay {
     int kind = OV_LIST;
     int id = 0;                          // (which one: a choice may close it and open another in its place)
@@ -1550,6 +1551,7 @@ static void add_recent(unsigned rgb) {
 static void open_wheel(const std::string &title, unsigned start, std::function<void(unsigned)> picked);
 static void open_workshop(int piece);
 static void open_texpick(int texture = -1);
+static void open_shading(void); // (creator_shading.cpp)
 
 // ---- an attack's colours (the web page's 🎨: /api/fxcolours, the spec's attack_colours, as index.html writes them)
 static const char *fx_label(const std::string &what) {
@@ -1940,6 +1942,18 @@ static void rows_parts(std::vector<Row> &rows) {
         p.sq = [] { confirm("REMOVE ALL THE PAINT?", [] { sSpec.erase("paint"); touch(); sound(2); }); };
     }
     rows.push_back(p);
+    int nsh = (int)sSpec["shading"].size();
+    Row sh;
+    sh.label = "Shading...";
+    sh.value = nsh ? std::to_string(nsh) + (nsh > 1 ? " parts shaded your way" : " part shaded your way") : "The game's shading";
+    sh.sub = "shadows, glow, outline";
+    sh.tip = "Borrow any part's shading, add the Super Saiyan glow, recolour the shadows themselves.";
+    sh.ok = [] { open_shading(); };
+    if (nsh) {
+        sh.sqLabel = "All the game's";
+        sh.sq = [] { sSpec.erase("shading"); touch(); sound(2); };
+    }
+    rows.push_back(sh);
 }
 
 static void rows_moves(std::vector<Row> &rows) {
@@ -4032,6 +4046,13 @@ static void wheel_frame(Overlay &o, std::vector<Prompt> &ps) {
     }
 }
 
+// =============================================================================================== shading
+// The Hue / Strength / Light colour panel (open_hsl) and the SHADING screen (open_shading): files of their own, parts
+// of this one (they use its lists, overlays and drawing).
+#define CREATOR_UI_PARTS
+#include "creator_hsl.cpp"
+#include "creator_shading.cpp"
+
 // =============================================================================================== the camera
 // Zoomed in and out (the right stick up / down, + / -, the wheel over the model), moved (R3 + the right stick, the right
 // mouse button dragging it), and two places to go back to (L3 / V, or the chips): the whole warrior and its head.
@@ -4148,7 +4169,7 @@ static void model_frame(void) {
     // the warrior as it is: built by the creator once its look has rested a moment
     J key = J::arr();
     key.push(look());
-    static const char *const kLook[] = {"costumes", "parts", "colours", "body", "paint", "moveset", "moves", "melee", "ki_blasts", "voice", "names"};
+    static const char *const kLook[] = {"costumes", "parts", "colours", "body", "paint", "moveset", "moves", "melee", "ki_blasts", "voice", "names", "shading"};
     for (const char *k : kLook) { key.push(sSpec[k]); }
     key.push(J::num(sShownCostume));
     std::string text = js_text(key);
@@ -4444,6 +4465,8 @@ bool Creator_Frame(bool input) {
         else if (kind == OV_PAINT) { tipLine = sKeyboardLast ? "Aim with the arrows or the mouse, paint with Enter / the left button. F: tool, R: colour wheel, Z / C: size."
                                                              : "Aim with the left stick (the d-pad: a texel at a time), cross paints. Square: tool, triangle: colour wheel."; }
         else if (kind == OV_WHEEL) { tipLine = "Turn the ring for the hue, then pick how strong and how bright in the square."; }
+        else if (kind == OV_SHADING) { tipLine = shading_tip(o); }
+        else if (kind == OV_HSL) { tipLine = "Any colour you like! Fire it in a fight to see it."; }
         else if (kind == OV_LIST && o.cur < (int)o.rows.size() && !o.rows[o.cur].tip.empty()) { tipLine = o.rows[o.cur].tip; }
         switch (kind) {
         case OV_GRID: grid_frame(o, ops); break;
@@ -4456,6 +4479,8 @@ bool Creator_Frame(bool input) {
         case OV_TEXPICK: texpick_frame(o, ops); break;
         case OV_PAINT: painter_frame(o, ops); break;
         case OV_WHEEL: wheel_frame(o, ops); break;
+        case OV_SHADING: shading_frame(o, ops); break;
+        case OV_HSL: hsl_frame(o, ops); break;
         default: text_frame(o, ops); break;
         }
         sBoxA = keepA;
@@ -4469,7 +4494,8 @@ bool Creator_Frame(bool input) {
     // ---- the model: turned with the right stick, A / D, or dragged with the mouse; the camera (cam_frame)
     {
         int top = sOv.empty() ? -1 : sOv.back().kind;
-        bool beside = top < 0 || top == OV_WORKSHOP || top == OV_PAINT || top == OV_TEXPICK || top == OV_COLOURS || top == OV_WHEEL || top == OV_PALETTE;
+        bool beside = top < 0 || top == OV_WORKSHOP || top == OV_PAINT || top == OV_TEXPICK || top == OV_COLOURS || top == OV_WHEEL || top == OV_PALETTE ||
+                      top == OV_SHADING || top == OV_HSL;
         float turn = sIn.r3 ? 0.0f : sIn.turn * 0.05f;
         if (sMouse && ImGui::IsMouseDragging(0) && beside && io.MouseClickedPos[0].x > std::max(sOvRight, P(740, 0).x)) { turn += io.MouseDelta.x * 0.012f; }
         if (turn != 0.0f) {

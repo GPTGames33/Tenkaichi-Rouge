@@ -138,11 +138,25 @@ void BtlObjMdl_InitAlphaSlots(void *res, ObjMdl *mdl, s32 row) {
         skip = -1;
     }
     memset(model->alpha, 0, 16);
+#ifdef PORT
+    {   /* (a Custom Character's materials drawn without an outline: TexEntry +0x2E, port/src/gs/gs_draw.c) */
+        extern void Port_OutlineSlot(int id, int off);
+        for (j = 0; j < 15; j++) {
+            Port_OutlineSlot(row + j, 0);
+        }
+    }
+#endif
     for (i = 0; (u32)i < tex->count; i++) {
         if (i >= first && i < first + count) {
             TexEntry *e = &tex->ent[i];
             s32 alpha = e->unk28[5];
             s32 slot = e->unk28[4];
+#ifdef PORT
+            if (e->unk28[6] == 1 && skip != i) {
+                extern void Port_OutlineSlot(int id, int off);
+                Port_OutlineSlot(slot + row, 1);
+            }
+#endif
 
             if (alpha > 0x80) {
                 alpha = 0x7F;

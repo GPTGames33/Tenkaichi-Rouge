@@ -117,6 +117,16 @@ GsTarget gsTargets[MAX_TARGETS];
 int gsTargetCount;
 int gsTexCount;
 unsigned gsFxOff;
+/* The materials a Custom Character's shading draws without an outline (port/tools/creator/shade.py: TexEntry +0x2E =
+   1, a byte the game never reads): told by BtlObjMdl_InitAlphaSlots (src/sys/gfxm_e_b.c) as a model takes its row of
+   object ids, read by the outline pass (outline.frag: no line on such an id's pixels, nor toward them). */
+uint32_t gsOutlineOff[8];
+void Port_OutlineSlot(int id, int off) {
+    if (id >= 0 && id < 255) {
+        if (off) { gsOutlineOff[id >> 5] |= 1u << (id & 31); }
+        else { gsOutlineOff[id >> 5] &= ~(1u << (id & 31)); }
+    }
+}
 int gsGlowPercent = GLOW_DEFAULT;
 int gsGlarePercent = GLOW_DEFAULT;
 int gsSharpBlur = 1; /* the setting "Sharp stage blur" (sharp_blur): see draw_state */
@@ -250,6 +260,7 @@ typedef struct Tex {
     int pack;                /* a texture pack's replacement still being read (gs_texpack.c), or -1 */
     uint32_t packAlpha;      /* and the amax it will have */
     float avg[3];            /* its average colour, weighted by alpha, 0..1 (an energy light's colour is in its texture) */
+    int tint;                /* a fighter's shading ramp that is a shadow colour (tint_ramp, GsGpu_DrawVu0) */
 } Tex;
 static Tex sTex[MAX_TEX];
 static uint16_t sTexBucket[TEX_BUCKETS]; /* index + 1 of a cache entry, 0 = empty (open addressing) */
@@ -267,6 +278,22 @@ static Tex *sLast; /* the entry the previous lookup returned */
    Vivid, ambient, energy light: the grade pass over the picture as the HUD begins (native effect 6, marker 0x70 of
    src/battle/hud_0.c; shaders/grade.frag, drawn by gs_gpu.c). */
 static int sToonWanted; /* the texture asked for now is a fighter's shading ramp (GsGpu_DrawVu0, layer 1) */
+
+/* A shadow colour of the Custom Character creator (port/tools/creator/shade.py tint_ramp): a fighter's shading ramp
+   whose every entry has an odd alpha below 0x80 (the game's ramps are 0x80 throughout, and the PS2 blends them with
+   FIX, so their alpha is never seen). Its colour is the shadow's, its alpha how strong the shadow is there: drawn
+   over the lit picture (Cs * As + Cd * (1 - As)) instead of taken away from it (Cd - Cs), so a shadow can be any
+   colour (blue on yellow hair). Only the picture: it comes with the package, both players of a fight see it. */
+static int tint_ramp(const uint32_t *px, uint32_t n) {
+    uint32_t i;
+    for (i = 0; i < n; i++) {
+        uint32_t a = px[i] >> 24;
+        if (a >= 0x80 || !(a & 1)) {
+            return 0;
+        }
+    }
+    return n > 0;
+}
 static float sTexAvg[3] = {1.0f, 1.0f, 1.0f}; /* (texture_get: the average colour of the texture being made) */
 /* The energy lights of the frame: every additive draw of a fight is a light where it is on the screen, at its depth,
    in its colour (vertex colour times its texture's average); nearby ones merged, the GS_LIGHTS strongest kept. */
@@ -951,7 +978,8 @@ static GsTex texture_get(int ctx) {
                     (double)(gpu_now() - font_t0) / 1e6);
         }
     }
-    if (toonSharp > 0 && !replaced && !menuText && px != NULL) {
+    int tint = sToonWanted && !replaced && !menuText && px != NULL && tint_ramp(px, tw * th);
+    if (toonSharp > 0 && !replaced && !menuText && px != NULL && !tint) {
         uint32_t sw = 0, sh = 0;
         uint32_t *sharp = toon_sharpen(px, tw, th, toonSharp, &sw, &sh);
         if (sharp != NULL) {
@@ -1010,6 +1038,7 @@ static GsTex texture_get(int ctx) {
     t->packAlpha = packMaxAlpha;
     memcpy(t->avg, sTexAvg, sizeof(t->avg));
     sTexAvg[0] = sTexAvg[1] = sTexAvg[2] = 1.0f;
+    t->tint = tint;
     return t->tex;
 }
 
@@ -2189,6 +2218,18 @@ void GsGpu_DrawVu0(int layer, int ctx, const float *vertices, uint32_t count, co
         return;
     }
     sToonWanted = 0;
+    if (layer == 1 && sLast != NULL && sLast->tex == d.tex && sLast->tint) {
+        /* a shadow colour (tint_ramp): the ramp's colour over the picture by its alpha, not taken away */
+        uint64_t alpha = gGs.alpha[ctx], prim = gGs.prim;
+        gGs.alpha[ctx] = (alpha & ~0xFFull) | 0x44; /* (Cs - Cd) * As + Cd */
+        gGs.prim = prim | (1ull << 6);
+        d.pipeline = pipeline_get(ctx, 0, 1, 0);
+        gGs.alpha[ctx] = alpha;
+        gGs.prim = prim;
+        d.mode[1] = 1; /* decal: the ramp's colour and alpha as they are */
+        d.mode[2] = 1;
+        d.mode[3] = 0;
+    }
     if (layer == 2 && d.misc[1] == 1.0f && d.misc[2] != 0.0f) {
         /* TEST.DATE rejects pixels marked by FBA. Stencil also rejects overlap within this
            draw run, which a single snapshot of the alpha buffer cannot see. */

@@ -226,7 +226,8 @@ class App:
     def model(self, spec, costume=0):
         """The 3D model of a costume of the fighter, for the preview (port/tools/creator/model.py)."""
         import model as mdl
-        spec = dict(spec, name=spec.get("name") or "preview")
+        spec = {k: v for k, v in spec.items() if k != "shading"}  # (its textures as coloured, before the shading)
+        spec["name"] = spec.get("name") or "preview"
         f = cf.Fighter(self.disc, spec, "preview")
         look = f.costumes[min(costume, len(f.costumes) - 1)]
         key = json.dumps([look, spec.get("parts"), spec.get("colours"), spec.get("body"), spec.get("paint")], sort_keys=True)
@@ -249,7 +250,8 @@ class App:
         f = cf.Fighter(self.disc, spec, "preview")
         look = f.costumes[min(max(costume, 0), len(f.costumes) - 1)]
         key = json.dumps([list(look)] + [spec.get(k) for k in (
-            "parts", "colours", "body", "paint", "moveset", "moves", "melee", "ki_blasts", "voice", "names")], sort_keys=True)
+            "parts", "colours", "body", "paint", "moveset", "moves", "melee", "ki_blasts", "voice", "names")]
+            + [f.shading_of(min(max(costume, 0), len(f.costumes) - 1))], sort_keys=True)
         h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
         root = self.cache / "preview"
         out = root / h
@@ -326,7 +328,7 @@ class App:
         the same picture, painted with it)}], most used first."""
         import base64
         import model as mdl
-        spec = {k: v for k, v in spec.items() if k != "paint"}
+        spec = {k: v for k, v in spec.items() if k not in ("paint", "shading")}
         spec["name"] = spec.get("name") or "preview"
         f = cf.Fighter(self.disc, spec, "preview")
         k = min(max(costume, 0), len(f.costumes) - 1)
@@ -374,6 +376,25 @@ class App:
                         "variants": variants})
         self._tex_key, self._tex = key, {"costume": k + 1, "textures": out, "notes": list(f.notes)}
         return self._tex
+
+    def shading(self, spec, costume=0):
+        """For the SHADING screen (port/src/gs/creator_shading.cpp): the parts of a costume of the warrior as built
+        without its shading - {"costume", "parts": [{key, label, triangles, own_shadow ("#rrggbb": about the colour
+        the game draws its shadows in), glow (its textures' own, 0..127), outline}], "layer": the hair is a piece
+        layer}."""
+        import shade
+        spec = {k: v for k, v in spec.items() if k != "shading"}
+        spec["name"] = spec.get("name") or "preview"
+        f = cf.Fighter(self.disc, spec, "preview")
+        k = min(max(costume, 0), len(f.costumes) - 1)
+        key = json.dumps([k] + [spec.get(x) for x in ("costumes", "look", "base", "parts", "colours", "body", "paint")],
+                         sort_keys=True)
+        if getattr(self, "_shade_key", None) != key:
+            pack = f.model(f.costumes[k], False)
+            self._shade = {"costume": k + 1, "parts": shade.parts(pack.bytes()),
+                           "layer": bool((spec.get("parts") or {}).get("hair")), "notes": list(f.notes)}
+            self._shade_key = key
+        return self._shade
 
     def install(self, name):
         spec = json.loads(self.path_of(name).read_text(encoding="utf-8-sig"))
@@ -669,6 +690,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.send(200, a.colours(body["spec"]))
                 if act == "/api/textures":
                     return self.send(200, a.textures(body["spec"], int(body.get("costume", 0))))
+                if act == "/api/shading":
+                    return self.send(200, a.shading(body["spec"], int(body.get("costume", 0))))
                 if act == "/api/quit":
                     threading.Thread(target=self.server.shutdown, daemon=True).start()
                     return self.send(200, {"text": "bye"})

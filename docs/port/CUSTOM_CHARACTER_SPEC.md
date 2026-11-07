@@ -24,6 +24,15 @@ code are taken from that project.
    - **Fine tune** (advanced): per-bone stretch, move and turn for one part, e.g. a single hair strand.
    - **Colours**: pick a texture region (hair, skin, outfit pieces), then a colour, with buttons for
      "original" and "reset all".
+   - **Shading** (PARTS: "Shading..."): the model's parts are listed (face, hair, chest, waist, upper arms,
+     forearms, hands, hips, shins, feet, tail, accessories). For each part you can set:
+     - its shadow colour (SHADE COLOUR: Hue / Strength / Light, ready colours, "Its own colours");
+     - the same shading as another part (left / right);
+     - the Super Saiyan glow (its own / on / off);
+     - its outline (with the body / none).
+
+     The spec key is "shading". See the custom_fighter.py docstring and CUSTOM_CHARACTER_RESEARCH.md
+     "Shading".
 4. **Moves** (tabs):
    - **Fighting**: melee/rush style, finishers, stats and ki, ki blasts and aura. Each is taken from any
      roster character.
