@@ -5014,7 +5014,7 @@ static const Trial *trial_now(void) {
     if (o.stage == 0) {
         if (o.rest < 12) { return NULL; }
         std::vector<const J *> items = grid_items(o);
-        if (o.cur >= (int)items.size()) { return NULL; }
+        if (o.cur >= (int)items.size() || items[(size_t)o.cur] == NULL) { return NULL; } // (the none cell: nothing to try on)
         const J &c = *items[(size_t)o.cur];
         try_choice(o, ref_of(c), "g" + std::to_string((int)c["id"].number(-1)), c["name"].text(), (int)c["id"].number(-1));
     } else if (o.stage == 1) {
