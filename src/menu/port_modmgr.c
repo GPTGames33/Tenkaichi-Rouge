@@ -1264,7 +1264,11 @@ void Mm_ViewDraw(f32 cx, f32 feet, f32 height) {
     f32 hf;
 
     if (!Mm_ViewReady()) {
-        return;
+        /* (with the stage: while the next model is read the one there stays, with its stage, rather than the
+           backdrop flashing up) */
+        if (!sMvStage || !ChrView_PortInitDone() || sMvShown < 0 || !ChrView_IsVisible() || gChrView->cur == NULL) {
+            return;
+        }
     }
     place[0] = cx;
     place[1] = feet;

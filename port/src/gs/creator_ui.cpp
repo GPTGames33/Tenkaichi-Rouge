@@ -2006,7 +2006,7 @@ static void rows_parts(std::vector<Row> &rows) {
         r.value = i < (int)cos.size() ? nm(cos[i], "?") : "none";
         r.sub = i == 0 ? "the look of your warrior" : i == sShownCostume && i < (int)cos.size() ? "shown" : "";
         r.face = i < (int)cos.size() ? chara_id(cos[i]) : -1;
-        r.tip = "Body, hair and clothes of a whole character. A warrior can have up to 16 costumes (L2 / R2 show them).";
+        r.tip = "Body, hair and clothes of a whole character. A warrior can have up to 16 costumes (the WARRIOR tab's Editing row shows them).";
         r.ok = [i] {
             open_grid("COSTUME " + std::to_string(i + 1) + ": WHOSE LOOK?", [i](const J *p) {
                 std::vector<J> list;
