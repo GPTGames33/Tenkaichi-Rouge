@@ -1863,7 +1863,6 @@ static const char *number_word(int n) {
                                     "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen"};
     return n >= 0 && n <= 16 ? k[n] : "many";
 }
-static int costume_count(void) { return sSpec["costumes"].size() ? (int)sSpec["costumes"].size() : 1; }
 static J costume_look(int k) { return sSpec["costumes"].size() > (size_t)k ? sSpec["costumes"][(size_t)k] : look(); }
 static void set_costume_look(int k, const J &ref) { // the whole look of costume k (0: also the warrior's "look")
     if (sSpec["costumes"].size()) {
@@ -2117,7 +2116,6 @@ static void pick_extra_layer(int i) {
     });
 }
 
-static J costume_look(int i) { return sSpec["costumes"].size() > (size_t)i ? sSpec["costumes"][(size_t)i] : look(); }
 
 static void rows_parts(std::vector<Row> &rows) {
     int ncos = costume_count();
