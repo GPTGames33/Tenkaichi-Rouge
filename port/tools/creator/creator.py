@@ -265,7 +265,7 @@ class App:
         f = cf.Fighter(self.disc, spec, "preview")
         k = min(max(costume, 0), len(f.costumes) - 1)
         look = f.costumes[k]
-        if not spec.get("costume_edits") and not spec.get("extra_layers"):  # (as before: the same folders)
+        if not any(spec.get(x) for x in ("costume_edits", "extra_layers", "stance", "stance_pose")):  # (as before: the same folders)
             key = json.dumps([list(look)] + [spec.get(x) for x in (
                 "parts", "colours", "body", "paint", "moveset", "moves", "melee", "ki_blasts", "voice", "names")]
                 + ([f.shading_of(k)] if f.shading_of(k) else []), sort_keys=True)
@@ -278,7 +278,7 @@ class App:
             tmp = root / (h + ".part")
             tmp.mkdir(parents=True, exist_ok=True)
             fk = f.costume_fighter(k)
-            (tmp / "preview_1p.pak").write_bytes(fk.model(look, False).bytes())
+            (tmp / "preview_1p.pak").write_bytes(fk.model(look, False, k).bytes())
             # (which node each workshop part became in this model: the workshop makes the one it is on blink)
             (tmp / "nodes.json").write_text(json.dumps(fk.mix_ids), encoding="utf-8")
             f.notes += [n for n in fk.notes if n not in f.notes]

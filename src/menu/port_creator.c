@@ -33,6 +33,13 @@
 #define PC_PLACE_FEET 10
 #define PC_PLACE_H 11     /* ... and its height (the screen's camera zooms and moves the model: these change) */
 #define PC_PLATFORM 12    /* 1: the platform under it (not in a close shot) */
+#define PC_STANCE 13      /* 1: the Stance Maker is open (it wants to know where the model's joints are) */
+
+/* the Stance Maker (src/battle/bobj_a.c): the viewer's motion, and where its joints were drawn */
+extern u8 *Mm_ViewObj(void);
+extern void BtlObj_PortStanceView(u8 *obj);
+extern void BtlObj_PortStanceCapture(u8 *obj, void *world2screen, f32 cx, f32 cy);
+extern u8 *gBtlCamView; /* (View, battle/btl_cam.h: world2screen at 0x140, the screen's centre at 0x240) */
 
 extern void PortCreator_Open(void);
 extern void PortCreator_Close(void);
@@ -96,7 +103,13 @@ s32 PortCreator_Run(void) {
         if (PortCreator_Get(PC_PLATFORM)) {
             Mx_Platform(x, feet + Mx_LenY(4.0f), h * 0.82f);
         }
+        if (Mm_ViewObj() != NULL) {
+            BtlObj_PortStanceView(Mm_ViewObj()); /* (the fighting stance while the Stance Maker is open) */
+        }
         Mm_ViewDraw(x, feet, h);
+        if (PortCreator_Get(PC_STANCE) == 1 && Mm_ViewObj() != NULL && gBtlCamView != NULL) {
+            BtlObj_PortStanceCapture(Mm_ViewObj(), gBtlCamView + 0x140, *(f32 *)(gBtlCamView + 0x240), *(f32 *)(gBtlCamView + 0x244));
+        }
         ColorFade_Draw();
         File_Stub264D90();
         Gfx_EndFrame(1);

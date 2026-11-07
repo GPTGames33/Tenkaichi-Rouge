@@ -679,6 +679,13 @@ static struct {
     float camZoom, camFocus, camPanX, camPanY; // the camera: how close, the point of the model it stays on (0 feet,
                                                // 1 top), moved (mockup pixels); set on the render thread
 } sSh;
+// the Stance Maker (creator_stance.cpp, included further down)
+struct Row;
+static int stance_open(void);
+static void stance_close(void);
+static void stance_rows(std::vector<Row> &rows);
+static bool stance_mouse_busy(void);
+static J stance_model_key(void);
 #define CAM_X 1030.0f    // where the model stands at zoom 1 (mockup pixels: port_creator.c): across, its feet, its height
 #define CAM_FEET 605.0f
 #define CAM_H 390.0f
@@ -737,6 +744,7 @@ extern "C" int PortCreator_Get(int what) {
         break;
     }
     case 12: v = sSh.camZoom < 1.6f; break; // (the platform under it: not in a close shot)
+    case 13: v = stance_open(); break;      // (the Stance Maker: creator_stance.cpp)
     }
     SDL_UnlockMutex(sShare);
     return v;
@@ -1193,7 +1201,7 @@ struct WsPath {
 
 // ---- the screens over the list (the grid, the keyboard, lists, the colours): a stack
 enum { OV_GRID, OV_LIST, OV_KEYS, OV_COLOURS, OV_PALETTE, OV_TEXT, OV_FX, OV_WORKSHOP, OV_TEXPICK, OV_PAINT, OV_WHEEL, OV_WSEDIT,
-       OV_SHADING, OV_HSL }; // (the last two: creator_shading.cpp, creator_hsl.cpp)
+       OV_SHADING, OV_HSL, OV_STANCE }; // (OV_STANCE: creator_stance.cpp) // (the last two: creator_shading.cpp, creator_hsl.cpp)
 struct Overlay {
     int kind = OV_LIST;
     int id = 0;                          // (which one: a choice may close it and open another in its place)
@@ -1244,6 +1252,7 @@ static void painter_close(void);
 static void ov_close(void) {
     if (!sOv.empty()) {
         if (sOv.back().kind == OV_PAINT) { painter_close(); } // (its paint into the spec, its picture freed)
+        if (sOv.back().kind == OV_STANCE) { stance_close(); } // (the viewer back to its own motion)
         for (SDL_GPUTexture *t : sOv.back().pics) { Ui_TextureFree(t); }
         sOv.pop_back();
     }
@@ -1877,6 +1886,7 @@ static void rows_warrior(std::vector<Row> &rows) {
         }, false, "Base's own");
     };
     rows.push_back(r);
+    stance_rows(rows); // "Stance" and "Stance maker" (creator_stance.cpp)
 }
 
 static const char *const kPieces[8][3] = {
@@ -4838,8 +4848,9 @@ static void model_frame(void) {
     J key = J::arr();
     key.push(look());
     static const char *const kLook[] = {"costumes", "parts", "colours", "body", "paint", "moveset", "moves", "melee", "ki_blasts", "voice", "names",
-                                        "costume_edits", "extra_layers", "shading", "stance_pose"};
+                                        "costume_edits", "extra_layers", "shading", "stance"};
     for (const char *k : kLook) { key.push(sSpec[k]); }
+    key.push(stance_model_key()); // (the pose: as it was while the Stance Maker shows it live)
     key.push(J::num(sShownCostume));
     std::string text = js_text(key);
     if (text != sPreviewKey) {
@@ -4877,6 +4888,11 @@ static void model_frame(void) {
     if (sBuiltKey >= 0) { want_model(sBuiltKey, sBuiltAs, 0, sBuiltFolder); }
     else { J lk = look(); if (chara_id(lk) >= 0 && chara_id(lk) < 161) { want_disc(lk); } }
 }
+
+// =============================================================================================== the Stance Maker
+#define CREATOR_STANCE_IN_UI
+#include "creator_stance.cpp"
+static int stance_open(void) { return sStanceOpen; }
 
 // =============================================================================================== a frame
 static void results(void) {
@@ -4990,6 +5006,7 @@ bool Creator_Frame(bool input) {
         for (char &c : headingText) { c = (char)SDL_toupper((unsigned char)c); }
         if (headingText.size() > 22) { headingText = headingText.substr(0, 22); }
         heading = headingText.c_str();
+        if (!sOv.empty() && sOv.back().kind == OV_STANCE) { heading = "STANCE MAKER"; }
     }
     title_and_tabs(heading);
     if (sScreen == SC_HOME) { static const char *const kHome[1] = {"MY FIGHTERS"}; draw_tabs(0, kHome, 1); }
@@ -5151,6 +5168,7 @@ bool Creator_Frame(bool input) {
         else if (kind == OV_WHEEL) { tipLine = "Turn the ring for the hue, then pick how strong and how bright in the square."; }
         else if (kind == OV_SHADING) { tipLine = shading_tip(o); }
         else if (kind == OV_HSL) { tipLine = "Any colour you like! Fire it in a fight to see it."; }
+        else if (kind == OV_STANCE) { tipLine = "Grab the dots and pose him, right on the model - then fight in that stance!"; }
         else if (kind == OV_LIST && o.cur < (int)o.rows.size() && !o.rows[o.cur].tip.empty()) { tipLine = o.rows[o.cur].tip; }
         switch (kind) {
         case OV_GRID: grid_frame(o, ops); break;
@@ -5166,6 +5184,7 @@ bool Creator_Frame(bool input) {
         case OV_WHEEL: wheel_frame(o, ops); break;
         case OV_SHADING: shading_frame(o, ops); break;
         case OV_HSL: hsl_frame(o, ops); break;
+        case OV_STANCE: stance_frame(o, ops); break;
         default: text_frame(o, ops); break;
         }
         sBoxA = keepA;
@@ -5180,9 +5199,9 @@ bool Creator_Frame(bool input) {
     {
         int top = sOv.empty() ? -1 : sOv.back().kind;
         bool beside = top < 0 || top == OV_WORKSHOP || top == OV_WSEDIT || top == OV_PAINT || top == OV_TEXPICK || top == OV_COLOURS || top == OV_WHEEL || top == OV_PALETTE ||
-                      top == OV_SHADING || top == OV_HSL;
+                      top == OV_SHADING || top == OV_HSL || top == OV_STANCE;
         float turn = sIn.r3 ? 0.0f : sIn.turn * 0.05f;
-        if (sMouse && ImGui::IsMouseDragging(0) && beside && io.MouseClickedPos[0].x > std::max(sOvRight, P(740, 0).x)) { turn += io.MouseDelta.x * 0.012f; }
+        if (sMouse && ImGui::IsMouseDragging(0) && beside && io.MouseClickedPos[0].x > std::max(sOvRight, P(740, 0).x) && !stance_mouse_busy()) { turn += io.MouseDelta.x * 0.012f; }
         if (turn != 0.0f) {
             SDL_LockMutex(sShare);
             sSh.turn += (int)(turn * 1000.0f);

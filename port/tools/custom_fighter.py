@@ -29,6 +29,15 @@ A fighter file (JSON). Every part is optional except "name"; a character is {"ch
         "ultimate": {"chara": "Super Perfect Cell"}
       },
       "names": {"blast2_1": "Galick Kamehameha", "ultimate": "Rose Spirit Bomb"},
+      "stance": {"chara": "Teen Gohan Super Saiyan"},   whose fighting stance: his standing, walking, stepping, dashing,
+                                                 jumping and flying motions (STANCE_MOTIONS); the rest stays the
+                                                 moveset's (default: the moveset's)
+      "stance_pose": {"head": [0, 25, 0], "r_arm": [0, 0, -40]},   the Stance Maker's pose: per bone (STANCE_BONES:
+                                                 head neck chest waist, r_/l_ shoulder arm forearm hand thigh shin
+                                                 foot), degrees about its parent's x, then y, then z, put on the motions
+                                                 in fights at a weight per motion (stance_weights); a form without a
+                                                 stance of its own takes its warrior's; "costume_edits": {"2":
+                                                 {"stance_pose": ...}} gives a costume its own
       "voice": {"chara": "Goku (End)"},          spoken lines, bank, lip sync, pre-fight lines (default: base)
       "portrait": {"chara": "Goku (End)"},       the menus' picture and the team picture (default: base)
       "health": 50000, "ki": 20000, "blast": 5,  10000 a bar; 100000 a full ki gauge; stocks 0..7
@@ -68,7 +77,9 @@ n of a pack is part n - 1):
 - model pack entries: 0x12 general, 0x13 melee, 0x14 ki blasts, 0x15 movement, 0x16 pre/post-fight talk table,
   0x17 hair / cloth chains, 0x18 Blast 2 + Ultimate (arrays of 3), 0x19 Blast 1 (arrays of 2), 0x1B AI,
   0x1C camera cuts (0x24 each: 0..2 the starts of slots 2..4, 3 the Ultimate's intro), 0x2D..0x34 the move list
-  text in 8 languages, 0x35.. lip sync (0x35 + line, + 0x64 for the other language).
+  text in 8 languages, 0x35.. lip sync (0x35 + line, + 0x64 for the other language); 0x1A (empty on the disc) the
+  port's stance pose (stance_entry: "STNC", 1, 71, 0x19E, a quaternion per node, a weight byte per motion; read by
+  src/battle/bobj_a.c BtlObj_PortStance, ignored by any other build).
 - a move slot: its elements of 0x18 / 0x19, its motions in +8 (Blast 1: 0x103 + slot; Blast 2 / Ultimate: 0x22 from
   0x105 + (slot - 2) * 0x22, the Ultimate also 0x16B), its effect pack (+9 entry slot + 1), its camera cut, and its
   block of the move list text (the n-th '*' line and the lines after it).
@@ -122,6 +133,97 @@ SKILL_LAYOUT = (
 MELEE_MOTIONS = (list(range(0x37, 0x41)) + list(range(0x4C, 0x5C)) + list(range(0x5E, 0x6B)) + [0x6D, 0x70, 0x93]
                  + [m + k for m in (0x41, 0x44, 0x47, 0x90, 0x56, 0x59, 0x199) for k in range(3)])
 KIBLAST_MOTIONS = list(range(0x71, 0x90))
+
+# The stance (Stance Maker): "stance" = whose fighting stance - these motions of that character's animations (standing,
+# walking, stepping, dashing, jumping, flying, ascending and descending, the hop of a fighter that cannot fly), the
+# attacks and everything else staying the moveset's. "stance_pose" = the warrior's own pose on top of the motions: a
+# rotation per bone, written into model pack entry E_STANCE (empty on the disc; src/battle/bobj_a.c BtlObj_PortStance).
+STANCE_MOTIONS = list(range(0x00, 0x34)) + [0x18B, 0x18C]
+E_STANCE = 0x1A
+STANCE_BONES = (  # spec key, model node, name in the creator (mix.NODE_NAMES: the right is the warrior's own right)
+    ("head", 0x2F, "Head"), ("neck", 0x2E, "Neck"), ("chest", 0x11, "Chest"), ("waist", 0x10, "Waist"),
+    ("r_shoulder", 0x12, "Right shoulder"), ("r_arm", 0x13, "Right arm"), ("r_forearm", 0x14, "Right forearm"),
+    ("r_hand", 0x15, "Right hand"), ("l_shoulder", 0x20, "Left shoulder"), ("l_arm", 0x21, "Left arm"),
+    ("l_forearm", 0x22, "Left forearm"), ("l_hand", 0x23, "Left hand"), ("r_thigh", 0x09, "Right thigh"),
+    ("r_shin", 0x0A, "Right shin"), ("r_foot", 0x0B, "Right foot"), ("l_thigh", 0x0D, "Left thigh"),
+    ("l_shin", 0x0E, "Left shin"), ("l_foot", 0x0F, "Left foot"))
+
+
+def stance_weights():
+    """How much of the stance pose each motion takes (0..255; src/battle/bobj_a.c). All of it standing, walking,
+    stepping and floating; 60% dashing, jumping, rushing in, ascending and descending (the body leans into those);
+    none in everything else - attacks, ki blasts, guards, charging, throws, hits, transformations and the scenes -
+    whose own poses would be bent out of shape. A change of motion blends it in or out with the motion's own blend."""
+    w = bytearray(0x19E)
+    for m in list(range(0x00, 0x0C)) + [0x1C, 0x1D, 0x1E, 0x26, 0x27, 0x18B]:
+        w[m] = 255
+    for m in list(range(0x0C, 0x1C)) + list(range(0x1F, 0x26)) + list(range(0x28, 0x34)) + [0x18C]:
+        w[m] = 153
+    return bytes(w)
+
+
+def stance_bone(key):
+    """A stance_pose key -> model node: a spec key ("head"), the creator's name ("Right arm") or a node number."""
+    k = str(key).strip().lower()
+    for sk, node, label in STANCE_BONES:
+        if k in (sk, label.lower()):
+            return node
+    if re.fullmatch(r"(0x[0-9a-f]+|\d+)", k) and int(k, 0) < 71:
+        return int(k, 0)
+    raise Fail(f"stance_pose: unknown bone {key!r}: one of {', '.join(b[0] for b in STANCE_BONES)}")
+
+
+def euler_quat(rx, ry, rz):
+    """Degrees about the parent's x, then y, then z (q = qz * qy * qx) -> (x, y, z, w), w >= 0."""
+    import math
+
+    def axis(i, deg):
+        h = math.radians(deg) * 0.5
+        q = [0.0, 0.0, 0.0, math.cos(h)]
+        q[i] = math.sin(h)
+        return q
+
+    def mul(a, b):
+        ax, ay, az, aw = a
+        bx, by, bz, bw = b
+        return [aw * bx + ax * bw + ay * bz - az * by, aw * by - ax * bz + ay * bw + az * bx,
+                aw * bz + ax * by - ay * bx + az * bw, aw * bw - ax * bx - ay * by - az * bz]
+    q = mul(axis(2, rz), mul(axis(1, ry), axis(0, rx)))
+    n = math.sqrt(sum(c * c for c in q)) or 1.0
+    q = [c / n for c in q]
+    return [-c for c in q] if q[3] < 0 else q
+
+
+def stance_entry(pose):
+    """Model pack entry E_STANCE of a stance_pose {bone: [rx, ry, rz] degrees}: "STNC", version 1, 71 nodes,
+    0x19E motions, a quaternion per node (identity where not posed), the weight per motion (stance_weights)."""
+    q = [[0.0, 0.0, 0.0, 1.0] for _ in range(71)]
+    if not isinstance(pose, dict):
+        raise Fail("stance_pose: {bone: [x, y, z] degrees, ...}")
+    for key, rot in pose.items():
+        try:
+            rx, ry, rz = (float(v) for v in rot)
+        except (TypeError, ValueError):
+            raise Fail(f"stance_pose: {key!r} needs [x, y, z] in degrees")
+        if max(abs(rx), abs(ry), abs(rz)) > 360:
+            raise Fail(f"stance_pose: {key!r}: angles are -360..360 degrees")
+        q[stance_bone(key)] = euler_quat(rx, ry, rz)
+    return (b"STNC" + struct.pack("<III", 1, 71, 0x19E) + b"".join(struct.pack("<4f", *v) for v in q)
+            + stance_weights())
+
+
+def costume_value(spec, index, key, default=None):
+    """A top-level key of the spec as costume `index` (0-based) has it: its "costume_edits" overlay (by costume number
+    "1".."16", or a list in costume order) may give the costume its own value; else the spec's."""
+    edits = spec.get("costume_edits")
+    over = None
+    if isinstance(edits, dict):
+        over = edits.get(str(index + 1))
+    elif isinstance(edits, list) and 0 <= index < len(edits):
+        over = edits[index]
+    if isinstance(over, dict) and key in over:
+        return over[key]
+    return spec.get(key, default)
 
 NAMES = [
     "Goku (Early)", "Goku (Med)", "Goku (Med) Super Saiyan", "Goku (End)", "Goku (End) Super Saiyan", "Goku (End) Super Saiyan 2",
@@ -1108,6 +1210,11 @@ class Fighter:
         if is_bt4(self.base[0]):
             raise Fail("the base (AI and roster tables) must be a BT3 character: pick the one that fights most alike")
         self.moveset = ref(spec.get("moveset"), self.look)
+        self.stance = ref(spec.get("stance"))  # whose stance motions (STANCE_MOTIONS), None the moveset's
+        for i in range(len(self.costumes)):  # (checked now: a bad pose stops the build before any file is written)
+            pose = costume_value(spec, i, "stance_pose")
+            if pose:
+                stance_entry(pose)
         self.voice = ref(spec.get("voice"), self.base)
         self.portrait = ref(spec.get("portrait"), self.base)
         self.melee = ref(spec.get("melee"))
@@ -1189,15 +1296,16 @@ class Fighter:
     def costume_model(self, i, damaged):
         """Costume index i's model, from its own look."""
         f = self.costume_fighter(i)
-        m = f.model(self.costumes[i], damaged)
+        m = f.model(self.costumes[i], damaged, i)
         if f is not self:
             for n in f.notes:
                 self.note(f"costume {i + 1}: {n}")
             self.mix_notes += [n for n in f.mix_notes if n not in self.mix_notes]
         return m
 
-    def model(self, costume, damaged):
-        """One model (a costume, or its damaged version) with the fighter's moves, names and voice."""
+    def model(self, costume, damaged, index=None):
+        """One model (a costume, or its damaged version) with the fighter's moves, names, voice and stance pose.
+        index: which of the fighter's costumes it is (its costume_edits); default the first with this look."""
         d = self.disc
         m = d.model(*costume, damaged)
         if self.parts or self.body:  # pieces of other characters' models, workshop (port/tools/creator/mix.py)
@@ -1272,6 +1380,11 @@ class Fighter:
             m[E_TALK] = v[E_TALK]
             for e in LIP_ENTRIES:
                 m[e] = v[e]
+        if index is None:
+            index = self.costumes.index(tuple(costume)) if tuple(costume) in self.costumes else 0
+        pose = costume_value(self.spec, index, "stance_pose")
+        if pose:
+            m[E_STANCE] = stance_entry(pose)
         return m
 
     def shading_of(self, costume):
@@ -1414,6 +1527,10 @@ class Fighter:
 
     def anims(self):
         a = self.disc.anims(self.moveset[0])
+        if self.stance and self.stance[0] != self.moveset[0]:  # whose fighting stance: standing, moving, flying
+            src = self.disc.anims(self.stance[0])
+            for mo in STANCE_MOTIONS:
+                a.set_motion(mo, src.motion(mo))
         for who, motions in ((self.melee, MELEE_MOTIONS), (self.kiblasts, KIBLAST_MOTIONS)):
             if who:
                 src = self.disc.anims(who[0])
@@ -1443,7 +1560,7 @@ class Fighter:
         return e
 
     def changes_motions(self):
-        return bool(self.moveset[0] != self.look[0] or self.moves or self.melee or self.kiblasts)
+        return bool(self.moveset[0] != self.look[0] or self.moves or self.melee or self.kiblasts or self.stance)
 
     def describe(self):
         def nm(r):
@@ -1456,6 +1573,11 @@ class Fighter:
             lines.append(f"  melee     {nm(self.melee)}")
         if self.kiblasts:
             lines.append(f"  ki blasts {nm(self.kiblasts)}")
+        if self.stance:
+            lines.append(f"  stance    {nm(self.stance)}")
+        posed = [len(p) for p in (costume_value(self.spec, i, "stance_pose") for i in range(len(self.costumes))) if p]
+        if posed:
+            lines.append(f"  pose      {max(posed)} bones posed (Stance Maker)")
         for key, slot in SLOTS.items():
             who, s = self.moves.get(slot, (self.moveset, slot))
             try:
@@ -1485,11 +1607,15 @@ def folder_name(name):
 BUILD_NOTES = []  # what the last builds had to change or leave out (shown by the creator)
 
 
-def write_package(disc, spec_path, chars_dir, done):
+def write_package(disc, spec_path, chars_dir, done, inherit=None):
+    """inherit: keys a form takes from the warrior it is a form of when its own file has none (the stance)."""
     spec_path = pathlib.Path(spec_path).resolve()
     if spec_path in done:
         return done[spec_path]
     spec = load_spec(spec_path)
+    for k, v in (inherit or {}).items():
+        if v and not spec.get(k):
+            spec[k] = v
     f = Fighter(disc, spec, spec_path)
     folder = folder_name(spec["name"])
     done[spec_path] = folder
@@ -1564,7 +1690,9 @@ def write_package(disc, spec_path, chars_dir, done):
         elif isinstance(target, str) and target.startswith("disc:"):
             manifest.append(f"{direction}={disc_link(chara_id(target[5:]))}")
         else:
-            linked = write_package(disc, spec_path.parent / target, chars_dir, done)
+            # (a form fights in its warrior's stance unless it has one of its own)
+            linked = write_package(disc, spec_path.parent / target, chars_dir, done,
+                                   {k: spec.get(k) for k in ("stance", "stance_pose")})
             manifest.append(f"{direction}={linked}")
             if direction != "down" and linked != folder:
                 ahead.append(linked)
