@@ -4787,13 +4787,13 @@ the repository's own license). Its six files are `port/src/bt3_{zcounter2,bombar
   Mod Manager's backdrop and platform, and the Character Reference's viewer for the model (`Mm_ViewWantPreview`,
   `Mm_ViewTurn` in `port_modmgr.c`).
 - **The screen** is `port/src/gs/creator_ui.cpp`, drawn with Dear ImGui into the background list on the render
-  thread (`Creator_Frame`, from `ui.cpp`): title, tabs WARRIOR / PARTS / MOVES / FORMS / SAVE & PLAY (L1 / R1), the
+  thread (`Creator_Frame`, from `ui.cpp`): title, tabs WARRIOR / PARTS / MOVES / FORMS / PLAY (L1 / R1; was SAVE & PLAY), the
   list (d-pad, cross, circle, square, triangle; left / right on numbers), the character grid with BT3 / BT4 / ALL and
   typed search (the model shows whom the cursor rests on), the on-screen keyboard (and the physical one), the
   textures' swatches and a palette for colours, attack colours (square on a technique, and the Ki blasts / Ki charge
   rows: `/api/fxcolours`'s swatches and picture, `attack_colours` written as the web page writes it), the forms list, the tip box with a host, the button prompts (the
   keyboard's keys once it was used last: Enter, Esc, F, R, Q / E, Z / C, Ctrl+S; A / D or the right stick or a mouse
-  drag turn the model; L2 / R2 show the other costumes). While it is open the game gets no input (`gPortOverlayOpen`)
+  drag turn the model; L2 / R2 undo / redo since the Z WARRIORS look, below). While it is open the game gets no input (`gPortOverlayOpen`)
   and Esc is its "back".
 - **It is a client of `port/tools/creator/creator.py`** (the same JSON API as `index.html`). A creator answering
   `/api/version` on 127.0.0.1:`creator_port` (8765) is used; otherwise the game starts one hidden
@@ -4814,7 +4814,7 @@ the repository's own license). Its six files are `port/src/bt3_{zcounter2,bombar
   (`build`: torso, arms, legs, head, hands, feet; `nodes`): sliders (d-pad, left / right, held a while: 8 times the
   step; triangle resets a slider, square the part; the mouse drags them), the model built again once they rest. The
   camera: right stick up / down, + / -, the wheel over the model zoom; R3 + right stick or the right mouse button move
-  it; L3 / V or the FULL / HEAD chips go to the whole warrior or its face (`PortCreator_Get` 9..12: the place
+  it; L3 / V (or its hint, clicked) go to the whole warrior or its face (`PortCreator_Get` 9..12: the place
   `Mm_ViewDraw` is given, a point of the model kept where it is; no platform in a close shot). "Paint texture..."
   (also triangle on a texture of Recolour) lists the shown costume's textures (`/api/textures`: as built without the
   paint, PNG, size, palette, sig) and paints on one: a crosshair (left stick, the d-pad a texel at a time, the mouse),
@@ -4835,6 +4835,57 @@ the repository's own license). Its six files are `port/src/bt3_{zcounter2,bombar
   (it rewrites the player's characters folder), coming back from the test fight's pause menu.
 - Also: the screen reader's copy of `MainMenu` (port/src/a11y_game.c) had 12 items where the game has had 13 since
   the Mod Manager (the count and the ring's top were read 4 bytes off); it now has `MAINMENU_ITEM_MAX` (14).
+
+## Custom Character: the "Z WARRIORS" look (2026-11-06)
+
+The screen restyled after the "Z WARRIORS: Build Your Own Character" trailer, with a whole-warrior undo, the WARRIOR
+tab of the trailer, and pop-up grids that try a choice on.
+
+- **The stage.** The viewer's backdrop is a battle stage instead of the Mod Manager's sky: `PortCreator_Run`
+  (`src/menu/port_creator.c`) asks for stage `creator_stage` (setting; default 0, the grassy plain with rocks and
+  trees; -1 the Character Reference's own room) before `Mm_ViewOpen`: `Mm_ViewUseStage(0x171 + stage)` sets
+  `gPortChrViewStage`, which `ChrView_StepLoadStage` (`src/battle/view_a_d.c`) reads instead of its room 0x197, into
+  a buffer from the port's memory (`Port_GameBigAlloc`, as a fight's large stage). `Mm_ViewDraw` then draws it with
+  the model (`Mm_SceneStage`, `port_modmgr.c`: what `ChrView_Update` draws, without the pad and the stage's sounds) when
+  `Mm_ViewSetStage(1)`; no platform then. `creator_stage_on=0` gives the sky and platform back. (In widescreen the
+  stage is stretched to the picture's width like the rest of the menus' 3D.)
+- **The host** stands on the stage beside the warrior: the disc has no King Kai (no model, not in Dragon History), so
+  it is Supreme Kai (`HOST_CHARA` 58 in `creator_ui.cpp`), a battle object of its own read beside the viewer's model
+  (`Mm_ViewSetHost`: its own buffer, one read at a time, never while the viewer reads, and the viewer waits for it;
+  placed further back on the ground so that it is the height asked for). Its face is in the tip box.
+- **The look** (`port/src/gs/creator_look.cpp`, `zlook::`, used by the shared draw helpers of `creator_ui.cpp`, so
+  every screen has it): gold Greek-key strips at the sides; the warrior's face in a gold ring and its name in big
+  slanted orange letters with a dark red edge; the tabs WARRIOR / PARTS / MOVES / FORMS / PLAY as pills (gold the
+  chosen one, lavender the others, L1 R1); top right a NOT SAVED / SAVED pill, "N undo" and "EDITING COSTUME N"; the
+  list a translucent purple panel with faint stripes, its headings gold bars with a - / + (cross on a heading folds
+  its rows away: `fold_rows`), the cursor's row a bright gold bar, a row's face at its end; the tip box a dark navy
+  box with white corner brackets, the host's round face, its line (a message that came is said there too) and the
+  button prompts in its bottom right corner; the camera's buttons in a row over it. PLAY is the old SAVE & PLAY
+  (save, add to roster, test fight, summary, delete, My Fighters); START saves on any tab, circle is Back.
+- **Pop-up grids** are titled as the trailer's: a choice of a look "TRY IT ON" (one on top "LAYER ON TOP", a
+  technique "LEARN A TECHNIQUE") with what is being chosen in a gold pill ("HAIR: WHOSE?" gives Hair), round faces,
+  the cursor's fighter named under the grid, the none choice (square) as a pill. When the cursor rests on a fighter,
+  the choice is made as a dry run (`try_choice`: `sDry` stops requests, sounds, messages and new screens; the
+  screen's state put back) and, when it changes the warrior's look, the model shows the warrior wearing it ("TRYING
+  IT ON...", a card under the model) until cross wears it (the same look: no new build) or circle cancels.
+- **Undo / redo of the whole warrior**: every change of the spec, from any screen, is a step (changes within half a
+  second are one); L2 / R2 (Z / C) where nothing else has them, Ctrl+Z / Ctrl+Y; the painter keeps its own. Saving
+  keeps the history; another warrior starts a new one. (L2 / R2 no longer go through the costumes: the WARRIOR tab's
+  Editing row does, `set_editing_costume`.)
+- **The WARRIOR tab**: WARRIOR (Name, Title); LOOK (Body: the whole look of the costume being edited; Stance: whose
+  stance and animations, the moveset's donor; Stance maker: "N bones posed" from `stance_pose`, its screen opens
+  from it; Voice); PORTRAITS (Render: the big portrait, triangle a photo of the model; Small portrait: Automatic or a
+  character's, spec `chip`; HUD face: the face beside the health bar, spec `hud`); COSTUMES (Costumes: on / off and
+  how many, up to 16; Editing: costume N of M); BATTLE DAMAGE (Damaged look: the fighter's own, none, another
+  fighter's: spec `damaged`); STATS (health, ki, blast stocks, Fights like: the base).
+- **Photo of the model** (triangle on Render or Small portrait): for one frame the game draws the model alone on
+  magenta (`PortCreator_Get` 13: no stage, platform or host); the render thread reads that frame of the window's
+  picture (`Creator_WantGrab` / `Creator_Grabbed`, `gs_gpu.c`, at the shape it is shown), the key is taken out (edges
+  unmixed), cropped, and `/api/portraitshot` makes the portrait, chip and team pictures of it (`portrait_image`).
+- **In the package** (`custom_fighter.py`): `chip` writes that character's chip as `chip.bin` (over the one made from
+  the portrait); `hud` puts that character's model entry 1 (the HUD face) in every model; `damaged` = "none" writes
+  each costume's clean model as its `_dmg.pak`, a character its damaged model with the fighter's moves, voice and HUD
+  face (without the costume's pieces and colours); `replace` and the BT4 install do the same.
 
 ## The title screen's logo replaced (2026-11-05)
 

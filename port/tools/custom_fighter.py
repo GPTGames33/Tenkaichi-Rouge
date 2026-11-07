@@ -31,6 +31,14 @@ A fighter file (JSON). Every part is optional except "name"; a character is {"ch
       "names": {"blast2_1": "Galick Kamehameha", "ultimate": "Rose Spirit Bomb"},
       "voice": {"chara": "Goku (End)"},          spoken lines, bank, lip sync, pre-fight lines (default: base)
       "portrait": {"chara": "Goku (End)"},       the menus' picture and the team picture (default: base)
+      "chip": {"chara": "Vegeta"},               the roster's small square (default: made from the portrait or
+                                                 "portrait_image", else the portrait character's own)
+      "hud": {"chara": "Goku (End)"},            the face beside the health bar in battle (model entry 1; default:
+                                                 each costume's own)
+      "damaged": "none" | {"chara": "Broly"},    the torn-up look late in a fight: "none" stays clean (the costume's
+                                                 model), a character: its damaged model (with the fighter's moves,
+                                                 voice and HUD face; without the costume's pieces and colours)
+                                                 (default: the costume's own damaged model, pieces and colours on)
       "health": 50000, "ki": 20000, "blast": 5,  10000 a bar; 100000 a full ki gauge; stocks 0..7
       "forms": {"up": "my_other_fighter.json"},  left / up / right: transformations (R3 + direction), down: back
                                                  (another fighter file, "disc:<chara>", or none: a direction not
@@ -1039,6 +1047,10 @@ class Fighter:
         self.moveset = ref(spec.get("moveset"), self.look)
         self.voice = ref(spec.get("voice"), self.base)
         self.portrait = ref(spec.get("portrait"), self.base)
+        self.chip = ref(spec["chip"]) if spec.get("chip") else None
+        self.hud = ref(spec["hud"]) if spec.get("hud") else None
+        dmg = spec.get("damaged")  # (None / "own": the costume's own; "none": clean; a character: its damaged model)
+        self.damaged = None if dmg in (None, "", "own") else "none" if dmg == "none" else ref(dmg)
         self.melee = ref(spec.get("melee"))
         self.kiblasts = ref(spec.get("ki_blasts"))
         order = ("head", "hair", "torso", "tail", "arms", "hands", "legs", "feet")  # later ones win where they overlap
@@ -1085,14 +1097,31 @@ class Fighter:
                 raise Fail(f"move name {v!r}: 1 to 40 characters on one line")
             self.names[SLOTS[key]] = v
 
-    def model(self, costume, damaged):
-        """One model (a costume, or its damaged version) with the fighter's moves, names and voice."""
+    def damaged_model(self, costume, clean=None):
+        """The damaged model of a costume, as "damaged" has it: the costume's own (default), the clean model ("none":
+        `clean`, the one built already, if given) or another character's damaged model with the fighter's moves."""
+        if self.damaged == "none":
+            return clean if clean is not None else self.model(costume, False)
+        if self.damaged is not None:
+            return self.model(self.damaged, True, own_look=False)
+        return self.model(costume, True)
+
+    def model(self, costume, damaged, own_look=True):
+        """One model (a costume, or its damaged version) with the fighter's moves, names and voice (own_look: the
+        pieces, workshop, colours and paint of the fighter's look on it; not for another character's damaged look)."""
         d = self.disc
         m = d.model(*costume, damaged)
-        if self.parts or self.body:  # pieces of other characters' models, workshop (port/tools/creator/mix.py)
+        if own_look and (self.parts or self.body):  # pieces of other characters' models, workshop (port/tools/creator/mix.py)
             m = self.mixed(m, damaged)
         pre = self.pre_colours = {e: m[e] for e in PAINT_ENTRIES}  # (the textures before the colour changes)
-        if self.colours:
+        if self.hud:  # the face beside the health bar (entry 1) of another character
+            try:
+                face = d.model(*self.hud, False)[1]
+                if face:
+                    m[1] = face
+            except Fail:
+                pass
+        if self.colours and own_look:
             # (the colour changes name the textures of the costume's model, as the creator shows it; the damaged
             # model gets them on its own textures that are the same)
             plain = getattr(self, "_plain", None)
@@ -1111,7 +1140,7 @@ class Fighter:
                 tmap = texture_map(tex, m[0xC], face, face_texture(m))
                 changes = [(tmap[t], ref, to, rng) for t, ref, to, rng in changes if t in tmap]
             m = recolour_model(m, changes)
-        if self.paint:
+        if self.paint and own_look:
             self.painted(m, costume, damaged, pre)
         ms = d.model(*self.moveset, damaged)
         for e in MOVESET_ENTRIES + tuple(TEXT_ENTRIES):
@@ -1344,8 +1373,9 @@ def write_package(disc, spec_path, chars_dir, done):
         old.unlink()
     stem = re.sub(r"[^A-Za-z0-9]+", "_", spec["name"]).strip("_")[:24] or "fighter"
     for i, costume in enumerate(f.costumes):
-        (out / f"{stem}_{i + 1}p.pak").write_bytes(f.model(costume, False).bytes())
-        (out / f"{stem}_{i + 1}p_dmg.pak").write_bytes(f.model(costume, True).bytes())
+        clean = f.model(costume, False)
+        (out / f"{stem}_{i + 1}p.pak").write_bytes(clean.bytes())
+        (out / f"{stem}_{i + 1}p_dmg.pak").write_bytes(f.damaged_model(costume, clean).bytes())
     (out / f"{stem}_anm.pak").write_bytes(f.anims().bytes())
     (out / f"{stem}_eff.pak").write_bytes(f.effects().bytes())
     bank_us, bank_jp, lines_us, lines_jp = disc.voice_files(f.voice[0])
@@ -1383,6 +1413,10 @@ def write_package(disc, spec_path, chars_dir, done):
             chip = disc.chip(p)
             if chip:
                 (out / "chip.bin").write_bytes(chip)
+    if f.chip:  # the small portrait chosen: that character's chip, over the one made
+        chip = disc.chip(f.chip[0])
+        if chip:
+            (out / "chip.bin").write_bytes(chip)
     manifest = ["# made by port/tools/custom_fighter.py from " + spec_path.name, "format=1",
                 f"name={spec['name'][:63]}", f"form={spec.get('title', '')[:95]}", f"base={f.base[0]}",
                 "author=Custom Character", "about=" + " / ".join(
@@ -1486,8 +1520,9 @@ def replace_files(disc, spec):
     if slot[1] >= 4:
         raise Fail("the place a fighter takes is one of the disc's four costumes (more: `build` a package)")
     out = {}
-    for damaged in (False, True):
-        out[("pzs3us1", chara_file(*slot) + (4 if damaged else 0) - 1)] = f.model(f.look, damaged).bytes()
+    clean = f.model(f.look, False)
+    out[("pzs3us1", chara_file(*slot) - 1)] = clean.bytes()
+    out[("pzs3us1", chara_file(*slot) + 4 - 1)] = f.damaged_model(f.look, clean).bytes()
     if f.changes_motions() or f.moveset[0] != slot[0]:
         out[("pzs3us1", chara_file(slot[0], 8) - 1)] = f.anims().bytes()
         out[("pzs3us1", chara_file(slot[0], 9) - 1)] = f.effects().bytes()
@@ -1515,8 +1550,9 @@ def bt4_stage(disc, spec, folder):
     f = Fighter(disc, spec, "fighter")
     folder = pathlib.Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / "model.pak").write_bytes(f.model(f.look, False).bytes())
-    (folder / "damaged.pak").write_bytes(f.model(f.look, True).bytes())
+    clean = f.model(f.look, False)
+    (folder / "model.pak").write_bytes(clean.bytes())
+    (folder / "damaged.pak").write_bytes(f.damaged_model(f.look, clean).bytes())
     (folder / "anim.pak").write_bytes(f.anims().bytes())
     (folder / "effect.pak").write_bytes(f.effects().bytes())
     shot = spec.get("portrait_image")

@@ -181,6 +181,11 @@ void Mm_ViewTurn(f32 d);
 s32 Mm_ViewReady(void);
 s32 Mm_ViewKey(void);
 void Mm_ViewDraw(f32 cx, f32 feet, f32 height);
+/* ... the Custom Character screen's: a battle stage around the model, a host beside it (port_modmgr.c) */
+void Mm_ViewUseStage(s32 file);
+void Mm_ViewSetStage(s32 on);
+void Mm_ViewSetHost(s32 chara, f32 cx, f32 feet, f32 height, f32 yaw);
+s32 Mm_ViewHostReading(void);
 void Mm_TexReset(void);
 f32 Mm_Ease(f32 t);
 f32 Mm_In(s32 delay);

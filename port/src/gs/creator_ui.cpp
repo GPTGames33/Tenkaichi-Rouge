@@ -49,6 +49,7 @@ extern char **environ;
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "ui.h"
+#include "creator_look.h"
 extern "C" {
 #include "../../include/plat_charas.h"
 }
@@ -551,6 +552,7 @@ static SDL_Condition *sJobWake, *sFaceWake;
 static std::deque<Job> sJobs, sFaceJobs;
 static std::deque<Result> sResults;
 static int sBusy;              // requests sent and not answered (not portraits)
+static bool sDry;              // a choice is being tried, not made (try_choice): no requests, sounds, lines or screens
 static bool sThreads;
 
 static uint8_t *decode_png(const void *data, size_t size, int *w, int *h) {
@@ -653,6 +655,7 @@ static void post_job(const Job &j) {
 }
 
 static void api(const char *path, const J *body, Done done, int timeout = 60000, int kind = 0) {
+    if (sDry) { return; }
     Job j;
     j.method = body != NULL ? "POST" : "GET";
     j.path = path;
@@ -678,10 +681,14 @@ static struct {
     int testChara, testCostume;
     float camZoom, camFocus, camPanX, camPanY; // the camera: how close, the point of the model it stays on (0 feet,
                                                // 1 top), moved (mockup pixels); set on the render thread
+    int photo;                 // 1: the model alone on a key colour (the "photo of the model": Creator_WantGrab)
+    int host;                  // the host beside the warrior (a disc character), -1 none
+    int stage;                 // 1: the battle stage around it
 } sSh;
-#define CAM_X 1030.0f    // where the model stands at zoom 1 (mockup pixels: port_creator.c): across, its feet, its height
-#define CAM_FEET 605.0f
-#define CAM_H 390.0f
+#define CAM_X 915.0f     // where the model stands at zoom 1 (mockup pixels: port_creator.c): across, its feet, its height
+#define CAM_FEET 635.0f  // (on the stage, as large as the trailer has it: its feet behind the tip box)
+#define CAM_H 530.0f
+#define HOST_CHARA 58    // the host: Supreme Kai (the disc has no King Kai), on the stage beside the warrior and in the tip box
 
 extern "C" void PortCreator_Open(void) {
     if (sShare == NULL) { sShare = SDL_CreateMutex(); }
@@ -693,6 +700,9 @@ extern "C" void PortCreator_Open(void) {
     sSh.turn = 0;
     sSh.sounds = 0;
     sSh.testChara = -1;
+    sSh.photo = 0;
+    sSh.host = -1;
+    sSh.stage = Port_Setting("creator_stage_on", 1) != 0;
     if (sSh.camZoom <= 0.0f) { sSh.camZoom = 1.0f; sSh.camFocus = 0.5f; }
     sOpenGen++;
     sActive = 1;
@@ -735,6 +745,9 @@ extern "C" int PortCreator_Get(int what) {
         break;
     }
     case 12: v = sSh.camZoom < 1.6f; break; // (the platform under it: not in a close shot)
+    case 13: v = sSh.photo; break;
+    case 14: v = sSh.photo || sSh.camZoom >= 1.6f ? -1 : sSh.host; break; // (not in a close shot: it would be in the way)
+    case 15: v = sSh.stage; break;
     }
     SDL_UnlockMutex(sShare);
     return v;
@@ -769,6 +782,7 @@ extern "C" int PortCreator_ApplyPreview(int key) {
 extern "C" int PortCreator_Active(void) { return sActive; }
 
 static void sound(int id) { // 0 move, 1 choose, 2 back
+    if (sDry) { return; }
     SDL_LockMutex(sShare);
     if (sSh.sounds < 16) { sSh.sound[sSh.sounds++] = id; }
     SDL_UnlockMutex(sShare);
@@ -777,7 +791,7 @@ static void sound(int id) { // 0 move, 1 choose, 2 back
 // =============================================================================================== the screen's state
 enum { SC_CONNECT, SC_FAIL, SC_HOME, SC_EDIT };
 enum { TAB_WARRIOR, TAB_PARTS, TAB_MOVES, TAB_FORMS, TAB_FINISH, TAB_COUNT };
-static const char *const kTabs[TAB_COUNT] = {"WARRIOR", "PARTS", "MOVES", "FORMS", "SAVE & PLAY"};
+static const char *const kTabs[TAB_COUNT] = {"WARRIOR", "PARTS", "MOVES", "FORMS", "PLAY"};
 static const char *const kSlots[5] = {"blast1_1", "blast1_2", "blast2_1", "blast2_2", "ultimate"};
 static const char *const kSlotLabel[5] = {"Blast 1 (1)", "Blast 1 (2)", "Blast 2 (1)", "Blast 2 (2)", "Ultimate"};
 
@@ -800,6 +814,7 @@ static std::string sPendingFolder;
 static int sPendingAs = -1;
 
 static void toast(const std::string &t, bool err = false) {
+    if (sDry) { return; }
     sToast = t;
     sToastErr = err;
     sToastUntil = sFrames + (err ? 60 * 8 : 60 * 5);
@@ -886,6 +901,10 @@ static bool on_roster(const std::string &file) {
     return false;
 }
 static void touch(void) { sDirty = true; }
+// the Z WARRIORS shell (its section near the end of the file)
+static void set_editing_costume(int k);
+static void photo_of_model(void);
+static void open_stance_maker(void);
 static void clean_empty(const char *key) { // (an empty object or list of the spec goes)
     J *v = sSpec.find(key);
     if (v != NULL && (v->isObj() || v->isArr()) && v->size() == 0) { sSpec.erase(key); }
@@ -1103,6 +1122,7 @@ static void read_input(bool live) {
 struct Row {
     std::string label, value, sub, tip;
     bool sec = false, locked = false;
+    bool folded = false;                 // a heading whose rows are folded away (fold_rows: cross on it)
     int face = -1;                       // a portrait on the row
     std::function<void()> ok, sq, tri;   // cross, square, triangle
     std::function<void(int)> lr;         // left / right
@@ -1123,6 +1143,7 @@ struct Overlay {
     std::vector<int> moveKinds;          // pick a technique of these slots
     std::string none;                    // the "none" choice (square), "" none
     std::function<void(const J *)> picked;
+    std::string pill;                    // what is being chosen, in the gold pill by the title ("" from the title)
     std::string search;
     int stage = 0;                       // 0 the faces, 1 the costumes, 2 the techniques
     int chosen = -1;                     // the roster entry chosen (stages 1, 2)
@@ -1153,7 +1174,7 @@ struct Overlay {
 };
 static std::vector<Overlay> sOv;
 static int sOvIds;
-static void ov_push(Overlay &o) { o.id = ++sOvIds; sOv.push_back(o); }
+static void ov_push(Overlay &o) { if (!sDry) { o.id = ++sOvIds; sOv.push_back(o); } }
 
 static void painter_close(void);
 static void ov_close(void) {
@@ -1302,7 +1323,7 @@ static void save(std::function<void()> then = nullptr) {
         sFile = r["file"].text();
         sDirty = false;
         refresh_fighters();
-        if (then) { then(); } else { toast("Saved! custom_fighters/" + sFile); }
+        if (then) { then(); } else { toast("Saved! Your warrior is ready to fight. (custom_fighters/" + sFile + ")"); }
     });
 }
 
@@ -1384,7 +1405,7 @@ static void load_fighter(const J &f) {
     sScreen = SC_EDIT;
     sTab = TAB_WARRIOR;
     sShownCostume = 0;
-    for (int i = 1; i < 8; i++) { sCur[i] = sTop[i] = 0; }
+    for (int i = 1; i < 8; i++) { sCur[i] = 1; sTop[i] = 0; } // (on the first row under the heading)
     sound(1);
 }
 
@@ -1410,7 +1431,7 @@ static void new_fighter(void) {
         sScreen = SC_EDIT;
         sTab = TAB_WARRIOR;
         sShownCostume = 0;
-        for (int i = 1; i < 8; i++) { sCur[i] = sTop[i] = 0; }
+        for (int i = 1; i < 8; i++) { sCur[i] = 1; sTop[i] = 0; }
         open_keys("EVERY GREAT WARRIOR NEEDS A GREAT NAME!", "", 63, [](const std::string &t) { sSpec.set("name", J::str(t)); touch(); });
     }, true);
 }
@@ -1738,6 +1759,36 @@ static std::string fmt_health(int v) { char b[32]; snprintf(b, sizeof(b), "%.1f 
 static std::string fmt_ki(int v) { return std::to_string(v / 1000) + "%"; }
 static std::string fmt_blast(int v) { return std::to_string(v) + " stocks"; }
 
+// ---- the WARRIOR tab (as the trailer's: WARRIOR, LOOK, PORTRAITS, COSTUMES, BATTLE DAMAGE, STATS)
+static const char *number_word(int n) {
+    static const char *const k[] = {"no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+                                    "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen"};
+    return n >= 0 && n <= 16 ? k[n] : "many";
+}
+static int costume_count(void) { return sSpec["costumes"].size() ? (int)sSpec["costumes"].size() : 1; }
+static J costume_look(int k) { return sSpec["costumes"].size() > (size_t)k ? sSpec["costumes"][(size_t)k] : look(); }
+static void set_costume_look(int k, const J &ref) { // the whole look of costume k (0: also the warrior's "look")
+    if (sSpec["costumes"].size()) {
+        J a = sSpec["costumes"];
+        if ((size_t)k < a.size()) { a.a[(size_t)k] = ref; } else { a.push(ref); }
+        sSpec.set("costumes", a);
+        if (k == 0) { sSpec.set("look", ref); }
+    } else {
+        sSpec.set("look", ref);
+    }
+    touch();
+}
+static void set_costume_count(int n) { // 1..16: costumes added are a copy of the last one; taken off from the end
+    int have = costume_count();
+    n = n < 1 ? 1 : n > 16 ? 16 : n;
+    if (n == have) { return; }
+    J a = J::arr();
+    for (int i = 0; i < n; i++) { a.push(costume_look(i < have ? i : have - 1)); }
+    if (n == 1) { sSpec.erase("costumes"); sSpec.set("look", a[0]); } else { sSpec.set("costumes", a); sSpec.set("look", a[0]); }
+    if (sShownCostume >= n) { set_editing_costume(n - 1); }
+    touch();
+}
+
 static void rows_warrior(std::vector<Row> &rows) {
     rows.push_back(sec("WARRIOR"));
     Row r;
@@ -1752,40 +1803,167 @@ static void rows_warrior(std::vector<Row> &rows) {
     r.tip = "The line under the name on the roster: \"Super Saiyan\", \"Ultimate Form\"...";
     r.ok = [] { open_keys("THE TITLE UNDER THE NAME", sSpec["title"].text(), 95, [](const std::string &t) { sSpec.set("title", J::str(t)); touch(); }); };
     rows.push_back(r);
+
+    rows.push_back(sec("LOOK"));
     r = Row();
-    r.label = "Base";
-    r.value = nm(sSpec["base"], "the look's");
-    r.sub = "AI and roster tables";
-    r.face = chara_id(sSpec["base"]);
-    r.tip = "The computer plays your warrior like this character.";
-    r.ok = [] { open_grid("WHOSE FIGHTING SPIRIT?", [](const J *p) { if (p) { sSpec.set("base", *p); touch(); } }, false, NULL, true); };
+    int k = sShownCostume < costume_count() ? sShownCostume : 0;
+    r.label = "Body";
+    r.value = nm(costume_look(k), "?");
+    r.face = chara_id(costume_look(k));
+    r.tip = costume_count() > 1 ? "Whose body costume " + std::to_string(k + 1) + " fights in: hair, face and clothes. Layer pieces on top in PARTS."
+                                : std::string("Whose body your warrior fights in: hair, face and clothes. Layer pieces on top in PARTS.");
+    r.ok = [k] { open_grid(k ? "COSTUME " + std::to_string(k + 1) + ": WHOSE BODY?" : std::string("BODY: WHOSE?"), [k](const J *p) { if (p) { set_costume_look(k, *p); } }, true); };
     rows.push_back(r);
+    r = Row();
+    r.label = "Stance";
+    r.value = nm(moveset(), "?");
+    r.face = chara_id(moveset());
+    r.tip = "Whose stance and animations your warrior fights with (the moves you do not change are theirs too).";
+    // (the moveset's donor: its stance, its animations; the MOVES tab's Moveset row is the same choice)
+    r.ok = [] {
+        open_grid("STANCE: WHOSE?", [](const J *p) {
+            if (!p) { return; }
+            J m = J::obj();
+            m.set("chara", (*p)["chara"]);
+            sSpec.set("moveset", m);
+            touch();
+        });
+    };
+    rows.push_back(r);
+    r = Row();
+    r.label = "Stance maker";
+    {
+        const J &pose = sSpec["stance_pose"];
+        int n = pose.isObj() || pose.isArr() ? (int)pose.size() : 0;
+        if (pose.isObj() && (pose["bones"].isObj() || pose["bones"].isArr())) { n = (int)pose["bones"].size(); } // (as the stance maker keeps it)
+        r.value = n ? std::to_string(n) + (n == 1 ? " bone posed" : " bones posed") : "Not posed";
+    }
+    r.tip = "Grab the dots and pose your warrior right on the model, then fight in that stance.";
+    r.ok = [] { open_stance_maker(); };
+    rows.push_back(r);
+    r = Row();
+    r.label = "Voice";
+    r.value = nm(sSpec["voice"], "The base's");
+    r.face = chara_id(sSpec["voice"]);
+    r.tip = "Shouts, callouts, intros and wins, with the mouth moving to match.";
+    r.ok = [] {
+        open_grid("VOICE: WHOSE?", [](const J *p) { if (p) { sSpec.set("voice", *p); } else { sSpec.erase("voice"); } touch(); }, false, "Default");
+    };
+    r.sqLabel = "Default";
+    r.sq = [] { sSpec.erase("voice"); touch(); sound(2); };
+    rows.push_back(r);
+
+    rows.push_back(sec("PORTRAITS"));
+    r = Row();
+    r.label = "Render";
+    r.value = sSpec.has("portrait_image") ? "Photo of the model" : nm(sSpec["portrait"], "The base's");
+    r.face = sSpec.has("portrait_image") ? -1 : chara_id(sSpec["portrait"]);
+    r.tip = "The big picture of the menus and the character select. Triangle: a photo of your warrior as the model shows it now.";
+    r.ok = [] {
+        open_grid("RENDER: WHOSE?", [](const J *p) {
+            sSpec.erase("portrait_image");
+            if (p) { sSpec.set("portrait", *p); } else { sSpec.erase("portrait"); }
+            touch();
+        }, false, "Default");
+    };
+    r.sqLabel = "Default";
+    r.sq = [] { sSpec.erase("portrait_image"); sSpec.erase("portrait"); touch(); sound(2); };
+    r.triLabel = "Photo of the model";
+    r.tri = photo_of_model;
+    rows.push_back(r);
+    r = Row();
+    r.label = "Small portrait";
+    r.value = sSpec.has("chip") ? nm(sSpec["chip"], "?") : "Automatic";
+    r.face = chara_id(sSpec["chip"]);
+    r.tip = "The small square of the roster. Automatic: made from the render (or its character's own).";
+    r.ok = [] { open_grid("SMALL PORTRAIT: WHOSE?", [](const J *p) { if (p) { sSpec.set("chip", *p); } else { sSpec.erase("chip"); } touch(); }, false, "Automatic"); };
+    r.sqLabel = "Automatic";
+    r.sq = [] { sSpec.erase("chip"); touch(); sound(2); };
+    r.triLabel = "Photo of the model";
+    r.tri = [] { sSpec.erase("chip"); photo_of_model(); };
+    rows.push_back(r);
+    r = Row();
+    r.label = "HUD face";
+    r.value = sSpec.has("hud") ? nm(sSpec["hud"], "?") : "The body's own";
+    r.face = chara_id(sSpec["hud"]);
+    r.tip = "The face beside the health bar in battle.";
+    r.ok = [] { open_grid("HUD FACE: WHOSE?", [](const J *p) { if (p) { sSpec.set("hud", *p); } else { sSpec.erase("hud"); } touch(); }, false, "Default"); };
+    r.sqLabel = "Default";
+    r.sq = [] { sSpec.erase("hud"); touch(); sound(2); };
+    rows.push_back(r);
+
+    rows.push_back(sec("COSTUMES"));
+    int n = costume_count();
+    r = Row();
+    r.label = "Costumes";
+    r.value = n > 1 ? std::string("On: ") + number_word(n) + " outfits" : std::string("Off: one outfit");
+    r.tip = "Up to sixteen outfits, each one built on its own. Left / right: how many; cross: on / off.";
+    r.lrLabel = "How many";
+    r.lr = [](int d) { set_costume_count(costume_count() + d); sound(0); };
+    r.ok = [n] {
+        if (n > 1) { confirm("KEEP ONLY COSTUME 1?", [] { set_costume_count(1); }); }
+        else { set_costume_count(2); toast("Costume 2 is a copy of costume 1: give it a look of its own!"); }
+    };
+    rows.push_back(r);
+    r = Row();
+    r.label = "Editing";
+    r.value = "Costume " + std::to_string(k + 1) + " of " + std::to_string(n);
+    r.tip = "The costume the model shows and your changes go to. Left / right: another one.";
+    if (n > 1) {
+        r.lrLabel = "Costume";
+        r.lr = [n](int d) { set_editing_costume((sShownCostume + d + n) % n); sound(0); };
+        r.ok = [n] {
+            std::vector<Row> list;
+            for (int i = 0; i < n; i++) {
+                Row c;
+                c.label = "Costume " + std::to_string(i + 1);
+                c.value = nm(costume_look(i), "?");
+                c.face = chara_id(costume_look(i));
+                c.ok = [i] { ov_close(); set_editing_costume(i); };
+                list.push_back(c);
+            }
+            open_list("EDIT WHICH COSTUME?", list);
+            if (!sOv.empty()) { sOv.back().cur = sShownCostume < n ? sShownCostume : 0; }
+        };
+    } else {
+        r.locked = true;
+    }
+    rows.push_back(r);
+
+    rows.push_back(sec("BATTLE DAMAGE"));
+    r = Row();
+    r.label = "Damaged look";
+    const J &dm = sSpec["damaged"];
+    r.value = dm.isStr() && dm.s == "none" ? std::string("None: stays clean") : dm.isObj() ? nm(dm, "?") + "'s" : std::string("The fighter's own");
+    r.face = dm.isObj() ? chara_id(dm) : -1;
+    r.tip = "How your warrior looks torn up late in a fight: its own clothes torn, always clean, or another fighter's.";
+    r.ok = [] {
+        std::vector<Row> list(3);
+        list[0].label = "The fighter's own";
+        list[0].value = "its own clothes, torn";
+        list[0].ok = [] { ov_close(); sSpec.erase("damaged"); touch(); };
+        list[1].label = "None";
+        list[1].value = "stays clean";
+        list[1].ok = [] { ov_close(); sSpec.set("damaged", J::str("none")); touch(); };
+        list[2].label = "Another fighter's";
+        list[2].value = "pick one";
+        list[2].ok = [] { ov_close(); open_grid("DAMAGED LOOK: WHOSE?", [](const J *p) { if (p) { sSpec.set("damaged", *p); touch(); } }, true); };
+        open_list("DAMAGED LOOK", list);
+    };
+    r.sqLabel = "Default";
+    r.sq = [] { sSpec.erase("damaged"); touch(); sound(2); };
+    rows.push_back(r);
+
     rows.push_back(sec("STATS"));
     rows.push_back(stat_row("Health", "health", 10000, 150000, 5000, 50000, "Health: 10000 is one bar. Left / right change it, square: the base's own.", fmt_health));
     rows.push_back(stat_row("Ki at start", "ki", 0, 100000, 5000, 20000, "Ki at the start of a fight. Left / right change it, square: the base's own.", fmt_ki));
     rows.push_back(stat_row("Blast stocks", "blast", 0, 7, 1, 5, "How many blast stocks. Left / right change it, square: the base's own.", fmt_blast));
-    rows.push_back(sec("VOICE & FACE"));
     r = Row();
-    r.label = "Voice";
-    r.value = nm(sSpec["voice"], "the base's");
-    r.face = chara_id(sSpec["voice"]);
-    r.tip = "Shouts, callouts, intros and wins, with the mouth moving to match.";
-    r.ok = [] {
-        open_grid("WHOSE VOICE?", [](const J *p) { if (p) { sSpec.set("voice", *p); } else { sSpec.erase("voice"); } touch(); }, false, "Base's own");
-    };
-    rows.push_back(r);
-    r = Row();
-    r.label = "Portrait";
-    r.value = sSpec.has("portrait_image") ? "Your own picture" : nm(sSpec["portrait"], "the base's");
-    r.face = chara_id(sSpec["portrait"]);
-    r.tip = "The big picture of the menus, the roster chip and the team picture in fights.";
-    r.ok = [] {
-        open_grid("WHOSE PORTRAIT?", [](const J *p) {
-            sSpec.erase("portrait_image");
-            if (p) { sSpec.set("portrait", *p); } else { sSpec.erase("portrait"); }
-            touch();
-        }, false, "Base's own");
-    };
+    r.label = "Fights like";
+    r.value = nm(sSpec["base"], "The body's");
+    r.face = chara_id(sSpec["base"]);
+    r.tip = "The computer plays your warrior like this character (and the roster's tables are its).";
+    r.ok = [] { open_grid("FIGHTING SPIRIT: WHOSE?", [](const J *p) { if (p) { sSpec.set("base", *p); touch(); } }, false, NULL, true); };
     rows.push_back(r);
 }
 
@@ -2199,11 +2377,10 @@ static void outlined(ImFont *f, float size, ImVec2 at, ImU32 c, ImU32 edge, cons
     }
     sDl->AddText(f, size, at, c, t.c_str());
 }
-static void panel(ImVec2 a, ImVec2 b) {
-    sDl->AddRectFilled(ImVec2(a.x, a.y + S(5)), ImVec2(b.x, b.y + S(5)), IM_COL32(0, 0, 0, 70), S(12));
-    sDl->AddRectFilled(a, b, IM_COL32(46, 26, 92, 228), S(12));
-    sDl->AddRect(a, b, IM_COL32(185, 165, 255, 255), S(12), 0, S(3));
-}
+static ImFont *bold_font(void) { return sBold != NULL ? sBold : sFont; }
+// the list's panel (and every box of the screen): translucent purple, faint stripes, a light rim (creator_look.cpp)
+static void panel(ImVec2 a, ImVec2 b) { zlook::panel(sDl, a, b, S(14), sS); }
+
 static void face_at(int id, ImVec2 a, ImVec2 b, float round) {
     ImTextureID t = face_tex(id);
     sDl->AddRectFilled(a, b, IM_COL32(255, 255, 255, 22), round);
@@ -2249,82 +2426,105 @@ static float glyph(int b, ImVec2 c, float r) { // -> its width
     return r * 2.0f;
 }
 struct Prompt { int b; std::string label; };
+// The buttons of what is up, in the tip box's bottom right corner.
 static void prompts(const std::vector<Prompt> &ps) {
-    float r = S(12), size = S(17), gap = S(22);
+    float r = S(10), size = S(15), gap = S(18);
     float total = 0;
     for (const Prompt &p : ps) {
-        float gw = sKeyboardLast ? text_w(sFont, r * 1.1f, p.b == B_CROSS ? "Enter" : "Esc") : 0; // (an estimate for the width)
-        (void)gw;
-        total += S(70) + text_w(sFont, size, p.label.c_str()) + gap;
+        float gw = p.b >= B_L1R1 || sKeyboardLast ? text_w(sFont, r * 1.1f, "L1 R1") + r * 1.2f : r * 2.0f;
+        total += gw + S(6) + text_w(bold_font(), size, p.label.c_str()) + gap;
     }
-    ImVec2 at = P(1336, 742);
+    float room = P(1284, 0).x - P(560, 0).x;
+    if (total > room && total > 0) { float k = room / total; size *= std::max(k, 0.75f); gap *= std::max(k, 0.6f); }
+    ImVec2 at = P(1280, 721);
     float x = at.x - total;
-    if (x < P(40, 0).x) { x = P(40, 0).x; }
+    if (x < P(220, 0).x) { x = P(220, 0).x; }
     for (const Prompt &p : ps) {
         float w = glyph(p.b, ImVec2(x, at.y), r);
         x += w + S(6);
-        outlined(sFont, size, ImVec2(x, at.y - size * 0.55f), kInk, IM_COL32(20, 8, 40, 255), p.label, S(1.2f));
-        x += text_w(sFont, size, p.label.c_str()) + gap;
+        outlined(bold_font(), size, ImVec2(x, at.y - size * 0.55f), IM_COL32(236, 238, 255, 255), IM_COL32(6, 10, 30, 255), p.label, S(1.0f));
+        x += text_w(bold_font(), size, p.label.c_str()) + gap;
     }
 }
 
+// The tip box: a dark navy box with white corner brackets, the host's round face, its line (a toast in its place).
 static void tip_box(const std::string &line) {
-    ImVec2 a = P(40, 664), b = P(1336, 720);
-    sDl->AddRectFilled(a, b, IM_COL32(30, 18, 70, 235), S(8));
-    sDl->AddRect(a, b, IM_COL32(199, 180, 255, 255), S(8), 0, S(2));
-    float r = (b.y - a.y) * 0.5f - S(4);
-    ImVec2 c(a.x + S(10) + r, (a.y + b.y) * 0.5f);
-    sDl->AddCircleFilled(c, r + S(3), IM_COL32(255, 255, 255, 255));
-    ImTextureID t = face_tex(3); // (the host: Goku)
-    if (t) { sDl->AddImageRounded(ImTextureRef(t), ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), ImVec2(0.18f, 0.02f), ImVec2(0.82f, 0.66f), IM_COL32_WHITE, r); }
-    else { sDl->AddCircleFilled(c, r, IM_COL32(44, 123, 214, 255)); }
-    float size = S(19);
-    std::string l = line;
-    sDl->PushClipRect(a, b, true);
-    sDl->AddText(sFont, size, ImVec2(c.x + r + S(16), c.y - size * 0.55f - (text_w(sFont, size, l.c_str()) > (b.x - a.x) - r * 2 - S(40) ? size * 0.5f : 0)),
-                 kInk, l.c_str(), NULL, (b.x - c.x) - r - S(30));
+    ImVec2 a = P(100, 632), b = P(1297, 744);
+    sDl->AddRectFilled(ImVec2(a.x + S(3), a.y + S(5)), ImVec2(b.x + S(3), b.y + S(5)), IM_COL32(0, 0, 10, 90), S(6));
+    grad(a, b, IM_COL32(24, 34, 84, 238), IM_COL32(10, 14, 46, 246), S(6));
+    sDl->AddRect(a, b, IM_COL32(110, 130, 220, 140), S(6), 0, S(1.5f));
+    zlook::brackets(sDl, ImVec2(a.x - S(5), a.y - S(5)), ImVec2(b.x + S(5), b.y + S(5)), S(18), S(2.6f), IM_COL32(255, 255, 255, 240));
+    float r = S(34);
+    ImVec2 c(a.x + S(16) + r, a.y + S(14) + r);
+    zlook::face_ring(sDl, face_tex(HOST_CHARA), c, r, false, ImVec2(0.2f, 0.03f), ImVec2(0.8f, 0.63f), sS);
+    bool err = sToastErr && sFrames < sToastUntil && line == sToast;
+    float x = c.x + r + S(22), wrap = b.x - x - S(24);
+    float size = S(21);
+    ImFont *f = bold_font();
+    ImVec2 ts = f->CalcTextSizeA(size, FLT_MAX, wrap, line.c_str());
+    if (ts.y > size * 2.2f) { size = S(17); ts = f->CalcTextSizeA(size, FLT_MAX, wrap, line.c_str()); }
+    if (ts.y > size * 3.2f) { size = S(14); }
+    sDl->PushClipRect(a, ImVec2(b.x, b.y - S(26)), true);
+    sDl->AddText(f, size, ImVec2(x + S(1), a.y + S(17)), IM_COL32(0, 0, 0, 160), line.c_str(), NULL, wrap);
+    sDl->AddText(f, size, ImVec2(x, a.y + S(16)), err ? IM_COL32(255, 150, 150, 255) : IM_COL32(255, 255, 255, 255), line.c_str(), NULL, wrap);
     sDl->PopClipRect();
 }
 
-static void title_and_tabs(const char *heading) {
-    ImVec2 e = P(76, 56);
-    float er = S(30);
-    sDl->AddCircleFilled(ImVec2(e.x, e.y + S(3)), er, IM_COL32(107, 58, 0, 255));
-    sDl->AddCircleFilled(e, er, kGold2);
-    sDl->AddCircleFilled(ImVec2(e.x - er * 0.25f, e.y - er * 0.3f), er * 0.55f, IM_COL32(255, 230, 128, 160));
-    sDl->AddCircle(e, er, IM_COL32(255, 242, 176, 255), 0, S(3));
-    ImFont *big = sBold != NULL ? sBold : sFont;
-    float zs = S(34);
-    sDl->AddText(big, zs, ImVec2(e.x - text_w(big, zs, "Z") * 0.5f, e.y - zs * 0.55f), IM_COL32(122, 43, 0, 255), "Z");
-    float hs = S(46);
-    outlined(big, hs, P(120, 30), IM_COL32(255, 214, 70, 255), IM_COL32(90, 29, 0, 255), heading, S(2.5f));
+// The gold Greek-key strips at the screen's sides.
+static void border_strips(void) {
+    zlook::meander_strip(sDl, P(40, 0), ImVec2(P(40, 0).x + S(27), P(0, 768).y));
+    zlook::meander_strip(sDl, ImVec2(P(1336, 0).x - S(27), P(0, 0).y), P(1336, 768));
 }
 
+// The emblem and the title: the warrior's face in a gold ring, its name in big slanted orange letters.
+static void title_and_tabs(const char *heading) {
+    ImVec2 e = P(132, 36);
+    float er = S(28);
+    int face = -1;
+    if (sScreen == SC_EDIT) { face = chara_id(sSpec.has("portrait") ? sSpec["portrait"] : look()); }
+    if (face >= 0) {
+        zlook::face_ring(sDl, face_tex(face), e, er, false, ImVec2(0.2f, 0.03f), ImVec2(0.8f, 0.63f), sS);
+    } else {
+        sDl->AddCircleFilled(ImVec2(e.x, e.y + S(3)), er + S(3), IM_COL32(107, 58, 0, 255));
+        grad(ImVec2(e.x - er, e.y - er), ImVec2(e.x + er, e.y + er), IM_COL32(255, 214, 90, 255), IM_COL32(232, 130, 10, 255), er);
+        sDl->AddCircle(e, er, IM_COL32(255, 242, 176, 255), 0, S(3));
+        float zs = S(32);
+        sDl->AddText(bold_font(), zs, ImVec2(e.x - text_w(bold_font(), zs, "Z") * 0.5f, e.y - zs * 0.55f), IM_COL32(122, 43, 0, 255), "Z");
+    }
+    float hs = S(52);
+    std::string h = heading;
+    float room = P(1090, 0).x - P(176, 0).x;
+    while (text_w(bold_font(), hs, h.c_str()) > room && hs > S(30)) { hs -= S(2); }
+    zlook::title(sDl, bold_font(), hs, ImVec2(P(176, 0).x, P(0, 34).y - hs * 0.6f), h.c_str(), IM_COL32(255, 240, 110, 255),
+                IM_COL32(255, 128, 16, 255), IM_COL32(110, 18, 8, 255), S(3.2f), 0.16f);
+}
+
+// The tabs: rounded pills, the chosen one gold, the others lavender, the L1 R1 hint after them.
 static void draw_tabs(int on, const char *const *names, int count) {
-    float x = P(40, 0).x, y0 = P(0, 98).y, h = S(32), size = S(16);
+    float x = P(100, 0).x, y0 = P(0, 66).y, h = S(28), size = S(14.5f);
     for (int i = 0; i < count; i++) {
-        float w = text_w(sFont, size, names[i]) + S(36);
+        float w = text_w(bold_font(), size, names[i]) + S(34);
         ImVec2 a(x, y0), b(x + w, y0 + h);
-        if (i == on) { grad(a, b, kGold1, kGold2, h * 0.5f); }
-        else { grad(a, b, IM_COL32(198, 181, 245, 255), IM_COL32(125, 100, 200, 255), h * 0.5f); }
-        sDl->AddRect(a, b, i == on ? IM_COL32(255, 241, 176, 255) : IM_COL32(231, 220, 255, 255), h * 0.5f, 0, S(2));
-        sDl->AddText(sBold != NULL ? sBold : sFont, size, ImVec2(x + S(18), y0 + (h - size) * 0.5f), i == on ? IM_COL32(74, 26, 0, 255) : IM_COL32(43, 22, 96, 255), names[i]);
+        zlook::pill(sDl, a, b, i == on, sS);
+        sDl->AddText(bold_font(), size, ImVec2(x + S(17), y0 + (h - size) * 0.5f), i == on ? zlook::kGoldInk : zlook::kLavInk, names[i]);
         if (click_in(a, b) && count > 1 && sOv.empty()) {
             sTab = i;
             sound(0);
         }
-        x += w + S(8);
+        x += w + S(7);
     }
-    if (count > 1) { // (L1 / R1 at its ends)
-        glyph(B_L1R1, ImVec2(x + S(4), y0 + h * 0.5f), S(11));
+    if (count > 1) { // (L1 / R1 at its end)
+        glyph(B_L1R1, ImVec2(x + S(4), y0 + h * 0.5f), S(10));
     }
 }
 
-// A list of rows in a box: the cursor's row gold. Returns the row under the mouse that was clicked, -1 none.
+// A list of rows in a box: the headings gold bars (a + / - when they fold), the cursor's row a bright gold bar, the
+// labels left and the values right of them, a row's face at its end. Returns the row under the mouse that was
+// clicked, -1 none.
 static std::vector<std::pair<int, ImRect>> sBars; // the sliders' tracks drawn by the last draw_rows (for the mouse)
 static int draw_rows(ImVec2 a, ImVec2 b, const std::vector<Row> &rows, int cur, int &top, bool active) {
     sBars.clear();
-    float rh = S(40), gap = S(4), pad = S(8);
+    float rh = S(37), gap = S(2), pad = S(10);
     int fits = (int)((b.y - a.y - pad * 2) / (rh + gap));
     if (fits < 1) { fits = 1; }
     if (cur < top) { top = cur; }
@@ -2335,34 +2535,37 @@ static int draw_rows(ImVec2 a, ImVec2 b, const std::vector<Row> &rows, int cur, 
     int clicked = -1;
     sDl->PushClipRect(a, b, true);
     float y = a.y + pad;
-    float labelW = (b.x - a.x) * 0.32f;
+    float labelW = (b.x - a.x) * 0.31f;
+    float pulse = 0.5f + 0.5f * sinf(sFrames * 0.09f);
     for (int i = top; i < (int)rows.size() && i < top + fits; i++) {
         const Row &r = rows[i];
-        ImVec2 ra(a.x + pad, y), rb(b.x - pad, y + rh);
-        if (r.sec) {
-            float size = S(15), w = text_w(sBold != NULL ? sBold : sFont, size, r.label.c_str()) + S(32);
-            ImVec2 sa(ra.x + S(4), y + S(10)), sb(ra.x + S(4) + w, y + rh - S(4));
-            grad(sa, sb, kGold1, kGold2, (sb.y - sa.y) * 0.5f);
-            sDl->AddText(sBold != NULL ? sBold : sFont, size, ImVec2(sa.x + S(16), sa.y + (sb.y - sa.y - size) * 0.5f), IM_COL32(74, 26, 0, 255), r.label.c_str());
+        ImVec2 ra(a.x + pad, y), rb(b.x - pad - S(6), y + rh);
+        bool sel = i == cur && active;
+        if (r.sec) { // a gold bar, as wide as the labels' column (or its words)
+            float size = S(14);
+            float w = std::max(labelW + S(10), text_w(bold_font(), size, r.label.c_str()) + S(64));
+            if (w > rb.x - ra.x) { w = rb.x - ra.x; }
+            ImVec2 sa(ra.x + S(2), y + S(8)), sb(ra.x + S(2) + w, y + rh - S(3));
+            if (sel) { sDl->AddRectFilled(ImVec2(sa.x - S(3), sa.y - S(3)), ImVec2(sb.x + S(3), sb.y + S(3)), IM_COL32(255, 250, 200, (int)(120 + 100 * pulse)), (sb.y - sa.y) * 0.5f + S(3)); }
+            zlook::pill(sDl, sa, sb, true, sS);
+            sDl->AddText(bold_font(), size, ImVec2(sa.x + S(16), sa.y + (sb.y - sa.y - size) * 0.5f), zlook::kGoldInk, r.label.c_str());
+            if (r.ok) { zlook::fold_sign(sDl, ImVec2(sb.x - S(16), (sa.y + sb.y) * 0.5f), S(5), r.folded, zlook::kGoldInk); }
+            if (click_in(sa, sb)) { clicked = i; }
             y += rh + gap;
             continue;
         }
-        bool sel = i == cur && active;
-        if (sel) {
-            grad(ra, rb, kGold1, kGold2, rh * 0.5f);
-        } else {
-            sDl->AddRectFilled(ra, rb, IM_COL32(255, 255, 255, r.locked ? 8 : 16), rh * 0.5f);
-        }
+        if (sel) { zlook::cursor_bar(sDl, ra, rb, sS, pulse); }
         float x = ra.x + S(14);
-        float size = S(18);
-        ImU32 ink = r.locked ? IM_COL32(170, 160, 200, 200) : sel ? kDark : kInk;
-        if (r.face >= 0) {
-            float fs = rh - S(8);
-            face_at(r.face, ImVec2(x - S(6), y + S(4)), ImVec2(x - S(6) + fs, y + S(4) + fs), fs * 0.5f);
-            x += fs + S(2);
-        }
+        float size = S(17);
+        ImU32 ink = r.locked ? IM_COL32(176, 166, 210, 210) : sel ? kDark : kInk;
         text(sFont, size, ImVec2(x, y + (rh - size) * 0.5f), ink, r.label, ra.x + labelW - x);
         float vx = ra.x + labelW + S(8), vmax = rb.x - vx - S(16);
+        if (r.face >= 0) { // (its face at the row's end)
+            float fr = (rh - S(12)) * 0.5f;
+            ImTextureID t = face_tex(r.face);
+            zlook::face_ring(sDl, t, ImVec2(rb.x - S(10) - fr, y + rh * 0.5f), fr, false, ImVec2(0.2f, 0.03f), ImVec2(0.8f, 0.63f), sS * 0.6f);
+            vmax -= fr * 2 + S(8);
+        }
         if (r.bar >= 0.0f) { // a slider: its track, the default's tick, the knob; the value after it
             float tx0 = vx + S(6), tx1 = rb.x - S(104), my = y + rh * 0.5f;
             sDl->AddRectFilled(ImVec2(tx0, my - S(3)), ImVec2(tx1, my + S(3)), sel ? IM_COL32(107, 58, 0, 120) : IM_COL32(0, 0, 0, 110), S(3));
@@ -2376,20 +2579,20 @@ static int draw_rows(ImVec2 a, ImVec2 b, const std::vector<Row> &rows, int cur, 
             ImVec2 k(tx0 + (tx1 - tx0) * f, my);
             sDl->AddCircleFilled(k, S(9), sel ? IM_COL32(255, 255, 255, 255) : kGold1);
             sDl->AddCircle(k, S(9), sel ? kDark : IM_COL32(107, 58, 0, 255), 0, S(2));
-            text(sBold != NULL ? sBold : sFont, size, ImVec2(tx1 + S(14), y + (rh - size) * 0.5f), sel ? kDark : kInk, r.value, rb.x - tx1 - S(20));
+            text(bold_font(), size, ImVec2(tx1 + S(14), y + (rh - size) * 0.5f), sel ? kDark : kInk, r.value, rb.x - tx1 - S(20));
             sBars.push_back({i, ImRect(ImVec2(tx0 - S(8), y), ImVec2(tx1 + S(8), y + rh))});
             if (click_in(ra, rb)) { clicked = i; }
             y += rh + gap;
             continue;
         }
         std::string sub = r.sub;
-        float subSize = S(13);
+        float subSize = S(12.5f);
         float subW = sub.empty() ? 0 : std::min(text_w(sFont, subSize, sub.c_str()) + S(10), vmax * 0.45f);
-        text(sBold != NULL ? sBold : sFont, size, ImVec2(vx, y + (rh - size) * 0.5f), sel ? kDark : r.locked ? ink : IM_COL32(255, 255, 255, 255), r.value, vmax - subW);
+        text(sFont, size, ImVec2(vx, y + (rh - size) * 0.5f), sel ? kDark : r.locked ? ink : IM_COL32(255, 255, 255, 255), r.value, vmax - subW);
         if (!sub.empty()) {
-            text(sFont, subSize, ImVec2(rb.x - S(16) - subW + S(10), y + (rh - subSize) * 0.5f), sel ? IM_COL32(107, 58, 0, 255) : kDim, sub, subW - S(10));
+            text(sFont, subSize, ImVec2(vx + vmax - subW + S(10), y + (rh - subSize) * 0.5f), sel ? IM_COL32(107, 58, 0, 255) : kDim, sub, subW - S(10));
         }
-        if (r.lr && sel) { // (left / right change it: arrows at its ends)
+        if (r.lr && sel) { // (left / right change it: an arrow before the value)
             ImU32 c = IM_COL32(107, 58, 0, 255);
             float mx = vx - S(10), my = y + rh * 0.5f, k = S(5);
             sDl->AddTriangleFilled(ImVec2(mx - k, my), ImVec2(mx + k * 0.3f, my - k), ImVec2(mx + k * 0.3f, my + k), c);
@@ -2398,9 +2601,13 @@ static int draw_rows(ImVec2 a, ImVec2 b, const std::vector<Row> &rows, int cur, 
         y += rh + gap;
     }
     sDl->PopClipRect();
-    if ((int)rows.size() > fits) { // the scroll bar
+    if ((int)rows.size() > fits) { // the scroll bar, and arrows where more rows are
         float h = b.y - a.y - pad * 2, k = h * fits / rows.size(), at = a.y + pad + h * top / rows.size();
-        sDl->AddRectFilled(ImVec2(b.x - S(7), at), ImVec2(b.x - S(3), at + k), IM_COL32(245, 197, 66, 255), S(2));
+        sDl->AddRectFilled(ImVec2(b.x - S(9), a.y + pad), ImVec2(b.x - S(5), b.y - pad), IM_COL32(0, 0, 0, 60), S(2));
+        sDl->AddRectFilled(ImVec2(b.x - S(9), at), ImVec2(b.x - S(5), at + k), IM_COL32(255, 214, 90, 255), S(2));
+        float mx = (a.x + b.x) * 0.5f, t = S(6);
+        if (top > 0) { sDl->AddTriangleFilled(ImVec2(mx, a.y - S(1)), ImVec2(mx + t, a.y + t), ImVec2(mx - t, a.y + t), IM_COL32(255, 220, 100, 255)); }
+        if (top + fits < (int)rows.size()) { sDl->AddTriangleFilled(ImVec2(mx, b.y + S(1)), ImVec2(mx - t, b.y - t), ImVec2(mx + t, b.y - t), IM_COL32(255, 220, 100, 255)); }
     }
     return clicked;
 }
@@ -2410,7 +2617,7 @@ static void move_cursor(const std::vector<Row> &rows, int &cur, int d) {
     int n = (int)rows.size(), c = cur;
     for (int i = 0; i < n; i++) {
         c = (c + d + n) % n;
-        if (!rows[c].sec) { break; }
+        if (!rows[c].sec || rows[c].ok) { break; } // (a heading that folds is a stop of its own)
     }
     if (c != cur) { cur = c; sound(0); }
 }
@@ -2418,14 +2625,14 @@ static void fix_cursor(const std::vector<Row> &rows, int &cur) {
     if (rows.empty()) { cur = 0; return; }
     if (cur >= (int)rows.size()) { cur = (int)rows.size() - 1; }
     if (cur < 0) { cur = 0; }
-    if (rows[cur].sec) { int c = cur; move_cursor(rows, c, 1); cur = c; }
+    if (rows[cur].sec && !rows[cur].ok) { int c = cur; move_cursor(rows, c, 1); cur = c; }
 }
 static void list_input(std::vector<Row> &rows, int &cur, int clicked) {
     fix_cursor(rows, cur);
     if (rows.empty()) { return; }
     if (sIn.up) { move_cursor(rows, cur, -1); }
     if (sIn.down) { move_cursor(rows, cur, 1); }
-    if (clicked >= 0 && !rows[clicked].sec) {
+    if (clicked >= 0 && (!rows[clicked].sec || rows[clicked].ok)) {
         cur = clicked;
         sIn.ok = true;
     }
@@ -2441,24 +2648,57 @@ static void list_input(std::vector<Row> &rows, int &cur, int clicked) {
 static ImVec2 sBoxA, sBoxB; // the left box the overlays are drawn in (the model stays to be seen beside it)
 static float sOvRight;      // the right edge of the box on top this frame (the mouse beyond it is on the model)
 
+// A grid's heading as the trailer has it: a choice of a look is "TRY IT ON" (one layered on another "LAYER ON TOP"),
+// of a technique "LEARN A TECHNIQUE", and what is being chosen goes in the gold pill ("HAIR: WHOSE?" -> Hair).
+static void grid_heading(const Overlay &o, std::string &title, std::string &pill) {
+    title = o.title;
+    pill = o.pill;
+    if (o.kind != OV_GRID) { return; }
+    size_t colon = title.find(": ");
+    std::string what = colon != std::string::npos ? title.substr(0, colon) : "";
+    if (pill.empty() && !what.empty()) {
+        pill = what;
+        for (size_t i = 1; i < pill.size(); i++) { // (Title case: "COSTUME 2" -> "Costume 2", "BLAST 1 (1)" -> "Blast 1 (1)")
+            bool start = pill[i - 1] == ' ' || pill[i - 1] == '(';
+            if (!start) { pill[i] = (char)SDL_tolower((unsigned char)pill[i]); }
+        }
+    }
+    if (!o.moveKinds.empty()) { title = "LEARN A TECHNIQUE"; }
+    else if (title.find("LAYER") != std::string::npos) { title = "LAYER ON TOP"; }
+    else if (o.costume && sScreen == SC_EDIT && what != "DAMAGED LOOK") { title = "TRY IT ON"; }
+    else if (!what.empty()) { title = title.substr(colon + 2); }
+}
+
 static void ov_title(const Overlay &o) {
-    ImFont *big = sBold != NULL ? sBold : sFont;
-    outlined(big, S(28), ImVec2(sBoxA.x + S(18), sBoxA.y + S(12)), IM_COL32(255, 210, 63, 255), IM_COL32(90, 29, 0, 255), o.title, S(1.5f));
+    std::string t, pill;
+    grid_heading(o, t, pill);
+    float pw = 0, ph = S(26), size = S(15);
+    if (!pill.empty()) { // the gold pill: what is being chosen
+        pw = std::min(text_w(bold_font(), size, pill.c_str()) + S(56), (sBoxB.x - sBoxA.x) * 0.4f);
+        ImVec2 a(sBoxB.x - S(16) - pw, sBoxA.y + S(12)), b(sBoxB.x - S(16), sBoxA.y + S(12) + ph);
+        zlook::pill(sDl, a, b, true, sS);
+        text(bold_font(), size, ImVec2((a.x + b.x) * 0.5f - std::min(text_w(bold_font(), size, pill.c_str()), pw - S(24)) * 0.5f, a.y + (ph - size) * 0.5f),
+             zlook::kGoldInk, pill, pw - S(24));
+    }
+    float ts = S(36), room = sBoxB.x - sBoxA.x - pw - S(48);
+    while (text_w(bold_font(), ts, t.c_str()) > room && ts > S(20)) { ts -= S(2); }
+    zlook::title(sDl, bold_font(), ts, ImVec2(sBoxA.x + S(16), sBoxA.y + S(26) - ts * 0.62f), t.c_str(), IM_COL32(255, 214, 90, 255),
+                IM_COL32(255, 92, 24, 255), IM_COL32(96, 12, 6, 255), S(2.6f), 0.14f);
 }
 
 static void grid_frame(Overlay &o, std::vector<Prompt> &ps) {
     std::vector<const J *> items = grid_items(o);
-    float top0 = sBoxA.y + S(56);
+    float top0 = sBoxA.y + S(50);
     // the game filter and the search
     bool games = sHaveBt4 && !o.bt3only && o.stage == 0;
     float x = sBoxA.x + S(18);
     if (games) {
         static const char *const kG[3] = {"ALL", "BT3", "BT4"};
         for (int g = 0; g < 3; g++) {
-            float w = text_w(sFont, S(14), kG[g]) + S(24), h = S(24);
+            float w = text_w(bold_font(), S(13), kG[g]) + S(24), h = S(22);
             ImVec2 a(x, top0), b(x + w, top0 + h);
-            if (g == o.game) { grad(a, b, kGold1, kGold2, h * 0.5f); } else { grad(a, b, IM_COL32(198, 181, 245, 255), IM_COL32(125, 100, 200, 255), h * 0.5f); }
-            sDl->AddText(sFont, S(14), ImVec2(x + S(12), top0 + (h - S(14)) * 0.5f), g == o.game ? IM_COL32(74, 26, 0, 255) : IM_COL32(43, 22, 96, 255), kG[g]);
+            zlook::pill(sDl, a, b, g == o.game, sS);
+            sDl->AddText(bold_font(), S(13), ImVec2(x + S(12), top0 + (h - S(13)) * 0.5f), g == o.game ? zlook::kGoldInk : zlook::kLavInk, kG[g]);
             if (click_in(a, b)) { o.game = g; o.cur = 0; o.top = 0; }
             x += w + S(6);
         }
@@ -2466,12 +2706,20 @@ static void grid_frame(Overlay &o, std::vector<Prompt> &ps) {
     }
     if (o.stage == 0) {
         std::string s = o.search.empty() ? "type to search" : "search: " + o.search + ((sFrames / 20) % 2 ? "_" : " ");
-        sDl->AddText(sFont, S(15), ImVec2(x, top0 + S(3)), o.search.empty() ? kDim : kInk, s.c_str());
+        sDl->AddText(sFont, S(14), ImVec2(x, top0 + S(3)), o.search.empty() ? kDim : kInk, s.c_str());
+        if (!o.none.empty()) { // (the none choice: a lavender pill at the end of the line, square)
+            float w = text_w(bold_font(), S(13), o.none.c_str()) + S(44), h = S(22);
+            ImVec2 a(sBoxB.x - S(18) - w, top0), b(sBoxB.x - S(18), top0 + h);
+            zlook::pill(sDl, a, b, false, sS);
+            glyph(B_SQUARE, ImVec2(a.x + S(6), top0 + h * 0.5f), S(8));
+            sDl->AddText(bold_font(), S(13), ImVec2(a.x + S(28), top0 + (h - S(13)) * 0.5f), zlook::kLavInk, o.none.c_str());
+            if (click_in(a, b)) { sIn.sq = true; }
+        }
     }
     if (o.stage == 0) {
         // the faces
-        ImVec2 ga(sBoxA.x + S(14), top0 + S(34)), gb(sBoxB.x - S(14), sBoxB.y - S(12));
-        float cw = S(104), ch = S(122);
+        ImVec2 ga(sBoxA.x + S(14), top0 + S(32)), gb(sBoxB.x - S(14), sBoxB.y - S(70));
+        float cw = S(61), ch = S(60);
         int cols = (int)((gb.x - ga.x) / cw);
         if (cols < 1) { cols = 1; }
         cw = (gb.x - ga.x) / cols;
@@ -2499,22 +2747,30 @@ static void grid_frame(Overlay &o, std::vector<Prompt> &ps) {
             int cx = i % cols, cy = i / cols - o.top;
             ImVec2 a(ga.x + cx * cw + S(3), ga.y + cy * ch + S(3)), b(ga.x + (cx + 1) * cw - S(3), ga.y + (cy + 1) * ch - S(3));
             bool sel = i == o.cur;
-            if (sel) { grad(a, b, IM_COL32(255, 207, 77, 255), IM_COL32(232, 138, 0, 255), S(8)); }
-            else { grad(a, b, IM_COL32(90, 63, 168, 255), IM_COL32(44, 27, 98, 255), S(8)); }
-            sDl->AddRect(a, b, sel ? IM_COL32(255, 226, 122, 255) : IM_COL32(143, 122, 224, 255), S(8), 0, S(2));
-            float fs = (b.x - a.x) - S(14);
-            if (fs > ch - S(42)) { fs = ch - S(42); }
-            ImVec2 fa((a.x + b.x - fs) * 0.5f, a.y + S(5));
-            face_at((int)(*items[i])["id"].number(0), fa, ImVec2(fa.x + fs, fa.y + fs), S(6));
-            std::string name = (*items[i])["name"].text();
-            float size = S(12.5f);
-            sDl->PushClipRect(a, b, true);
-            sDl->AddText(sFont, size, ImVec2(a.x + S(5), fa.y + fs + S(2)), sel ? kDark : kInk, name.c_str(), NULL, b.x - a.x - S(10));
-            sDl->PopClipRect();
+            float r = std::min(b.x - a.x, b.y - a.y) * 0.5f - S(4);
+            zlook::face_ring(sDl, face_tex((int)(*items[i])["id"].number(0)), ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f), sel ? r * 1.08f : r, sel,
+                            ImVec2(0.2f, 0.03f), ImVec2(0.8f, 0.63f), sS);
             if (click_in(a, b)) { clicked = i; }
         }
         sDl->PopClipRect();
         if (clicked >= 0) { o.cur = clicked; sIn.ok = true; }
+        { // the arrows where more faces are; under the grid, the one the cursor is on
+            float mx = (ga.x + gb.x) * 0.5f, t = S(7);
+            if (o.top > 0) { sDl->AddTriangleFilled(ImVec2(mx, ga.y - S(4) - t), ImVec2(mx + t, ga.y - S(4)), ImVec2(mx - t, ga.y - S(4)), IM_COL32(255, 220, 100, 255)); }
+            if ((o.top + rowsFit) * cols < n) { sDl->AddTriangleFilled(ImVec2(mx, gb.y + S(2) + t), ImVec2(mx - t, gb.y + S(2)), ImVec2(mx + t, gb.y + S(2)), IM_COL32(255, 220, 100, 255)); }
+            if (o.cur < n) {
+                const J &c = *items[o.cur];
+                std::string name = c["name"].text();
+                float ns = S(22);
+                while (text_w(bold_font(), ns, name.c_str()) > gb.x - ga.x && ns > S(14)) { ns -= S(1); }
+                outlined(bold_font(), ns, ImVec2(mx - text_w(bold_font(), ns, name.c_str()) * 0.5f, gb.y + S(14)), IM_COL32(255, 226, 120, 255), IM_COL32(60, 16, 4, 255), name, S(1.6f));
+                int nc = (int)c["costumes"].size();
+                std::string line = c["game"].text() == "BT4" ? "from BT4" : "";
+                if (o.costume && nc > 1) { line += std::string(line.empty() ? "" : " - ") + std::to_string(nc) + " costumes: cross picks one"; }
+                else if (o.costume) { line += std::string(line.empty() ? "" : " - ") + "Costume: its own"; }
+                if (!line.empty()) { sDl->AddText(sFont, S(14), ImVec2(mx - text_w(sFont, S(14), line.c_str()) * 0.5f, gb.y + S(14) + ns + S(3)), kDim, line.c_str()); }
+            }
+        }
         // the keyboard's letters search
         ImGuiIO &io = ImGui::GetIO();
         for (int i = 0; i < io.InputQueueCharacters.Size; i++) {
@@ -2532,10 +2788,11 @@ static void grid_frame(Overlay &o, std::vector<Prompt> &ps) {
         if (sIn.esc) { sIn.back = true; }
         if (sIn.enter) { sIn.ok = true; }
         if (games && (sIn.l1 || sIn.r1)) { o.game = (o.game + (sIn.r1 ? 1 : 2)) % 3; o.cur = 0; o.top = 0; sound(0); }
-        ps.push_back({B_CROSS, "Choose"});
-        ps.push_back({B_CIRCLE, "Back"});
+        ps.push_back({B_DPAD, "Fighter"});
+        ps.push_back({B_CROSS, o.costume && sScreen == SC_EDIT ? "Wear it" : "Choose"});
         if (!o.none.empty()) { ps.push_back({B_SQUARE, o.none}); }
         if (games) { ps.push_back({B_L1R1, "BT3 / BT4"}); }
+        ps.push_back({B_CIRCLE, "Cancel"});
         if (sIn.back) { ov_close(); sound(2); return; }
         if (sIn.sq && !o.none.empty()) {
             std::function<void(const J *)> f = o.picked;
@@ -4065,27 +4322,23 @@ static void cam_frame(float boxRight, bool padZoom) {
     if (overModel && io.MouseWheel != 0.0f) { nz *= powf(1.15f, io.MouseWheel); }
     if (overModel && ImGui::IsMouseDragging(1) && k > 0) { npx += io.MouseDelta.x / k; npy += io.MouseDelta.y / k; }
     if (nz != z || npx != px || npy != py) { cam_set(nz, f, npx, npy); }
-    // the chips: FULL / HEAD, the zoom, the buttons
-    static const char *const kV[2] = {"FULL", "HEAD"};
-    float x = P(1222, 0).x, y = P(0, 150).y, w = S(52), h = S(26);
-    bool atPreset = (sCamPreset == 0 && fabsf(z - 1.0f) < 0.01f && px == 0 && py == 0) || (sCamPreset == 1 && fabsf(z - 3.0f) < 0.01f && px == 0);
-    for (int i = 0; i < 2; i++) {
-        ImVec2 a(x + i * (w + S(6)), y), b(a.x + w, a.y + h);
-        bool on = atPreset && sCamPreset == i;
-        if (on) { grad(a, b, kGold1, kGold2, h * 0.5f); } else { grad(a, b, IM_COL32(198, 181, 245, 230), IM_COL32(125, 100, 200, 230), h * 0.5f); }
-        sDl->AddText(sBold != NULL ? sBold : sFont, S(13), ImVec2(a.x + (w - text_w(sBold != NULL ? sBold : sFont, S(13), kV[i])) * 0.5f, a.y + S(6)),
-                     on ? IM_COL32(74, 26, 0, 255) : IM_COL32(43, 22, 96, 255), kV[i]);
-        if (click_in(a, b)) { cam_preset(i); sound(0); }
-    }
+    // the hints in a row over the tip box, under the model (as the trailer has them): the camera's buttons, the zoom
+    // when it is not the whole warrior; "Full / Head" goes to the other preset when clicked
     char zl[32];
-    snprintf(zl, sizeof(zl), "ZOOM %.1fx", z);
-    outlined(sFont, S(13), ImVec2(x, y + h + S(6)), kInk, IM_COL32(30, 10, 50, 255), zl, S(1));
-    float gy = y + h + S(34), r = S(9);
-    struct { int b; const char *t; } lines[3] = {{B_RSTICK, "Zoom"}, {B_R3, "Move"}, {B_L3, "Full / Head"}};
-    for (auto &l : lines) {
-        float gw = glyph(l.b, ImVec2(x, gy), r);
-        outlined(sFont, S(13), ImVec2(x + gw + S(5), gy - S(8)), kInk, IM_COL32(30, 10, 50, 255), l.t, S(1));
-        gy += S(24);
+    snprintf(zl, sizeof(zl), "Zoom %.1fx", z);
+    struct { int b; const char *t; } lines[4] = {{B_RSTICK, "Turn / look"}, {B_R3, "Move"}, {B_L3, sCamPreset == 1 ? "Full" : "Head"}, {-1, zl}};
+    int count = fabsf(z - 1.0f) < 0.01f && px == 0 && py == 0 ? 3 : 4;
+    float r = S(8), size = S(13), gap = S(14), total = 0;
+    for (int i = 0; i < count; i++) { total += (lines[i].b >= 0 ? text_w(sFont, r, "R-STICK") + r * 1.4f + S(5) : 0) + text_w(bold_font(), size, lines[i].t) + gap; }
+    float x = P(CAM_X, 0).x - total * 0.5f, y = P(0, 612).y;
+    if (x + total > P(1300, 0).x) { x = P(1300, 0).x - total; }
+    for (int i = 0; i < count; i++) {
+        float x0 = x;
+        if (lines[i].b >= 0) { x += glyph(lines[i].b, ImVec2(x, y), r) + S(5); }
+        outlined(bold_font(), size, ImVec2(x, y - size * 0.55f), kInk, IM_COL32(16, 8, 40, 255), lines[i].t, S(1.1f));
+        x += text_w(bold_font(), size, lines[i].t);
+        if (lines[i].b == B_L3 && click_in(ImVec2(x0, y - r), ImVec2(x, y + r))) { cam_preset(sCamPreset == 1 ? 0 : 1); sound(0); }
+        x += gap;
     }
 }
 
@@ -4108,9 +4361,338 @@ static void want_disc(const J &ref) { // a disc character's own model (key 1 + i
     costume = costume < 0 || costume > 15 ? 0 : costume;
     want_model(1 + id * 16 + costume, id, costume, "");
 }
+// =============================================================================================== the Z WARRIORS shell
+// What the trailer's screen has over the lists: the costume being edited, the whole warrior's undo, a choice of the
+// grid tried on before it is made, the photo of the model, the sections of a list that fold.
+
+// ---- the costume being edited (the model shows it; the PARTS tab's per-costume editing hooks in here)
+static void set_editing_costume(int k) {
+    int n = costume_count();
+    sShownCostume = k < 0 ? 0 : k >= n ? n - 1 : k;
+}
+
+// ---- the Stance Maker (its own screen opens from the WARRIOR tab's row)
+static void open_stance_maker(void) {
+    toast("The Stance Maker is not in this build yet.", true);
+    sound(2);
+}
+
+// ---- undo / redo of the whole warrior: every change, whichever screen made it, is a step (changes coming within
+// half a second of each other are one: a slider held, a name typed). L2 / R2 (Z / C) where nothing else has them,
+// Ctrl+Z / Ctrl+Y; not in the painter, which has its own. Saving keeps them; another warrior starts afresh.
+static std::vector<std::string> sUndo, sRedo;
+static std::string sUndoNow, sUndoFile;
+static int sUndoAt = -1000;
+static bool sUndoOn;
+static int undo_count(void) { return (int)sUndo.size(); }
+static void undo_limit(std::vector<std::string> &v) {
+    size_t total = 0;
+    for (const std::string &s : v) { total += s.size(); }
+    while (v.size() > 1 && (v.size() > 300 || total > (size_t)96 << 20)) { total -= v.front().size(); v.erase(v.begin()); }
+}
+static void undo_track(void) {
+    if (sScreen != SC_EDIT) { sUndoOn = false; sUndo.clear(); sRedo.clear(); return; }
+    std::string now = js_text(sSpec);
+    if (!sUndoOn || (sFile != sUndoFile && !sUndoFile.empty())) { // (another warrior, or a form of it opened)
+        sUndoOn = true;
+        sUndo.clear();
+        sRedo.clear();
+        sUndoNow = now;
+        sUndoFile = sFile;
+        return;
+    }
+    sUndoFile = sFile;
+    if (now == sUndoNow) { return; }
+    if (sFrames - sUndoAt > 30 || sUndo.empty()) { sUndo.push_back(sUndoNow); undo_limit(sUndo); }
+    sUndoNow = now;
+    sUndoAt = sFrames;
+    sRedo.clear();
+}
+static void undo_step(bool redo) {
+    std::vector<std::string> &from = redo ? sRedo : sUndo, &to = redo ? sUndo : sRedo;
+    if (from.empty()) { toast(redo ? "Nothing to redo." : "Nothing to undo."); sound(2); return; }
+    J v;
+    if (!js_read(from.back(), v)) { from.pop_back(); return; }
+    to.push_back(sUndoNow);
+    sUndoNow = from.back();
+    from.pop_back();
+    sSpec = v;
+    sDirty = true;
+    sUndoAt = -1000;
+    if (sShownCostume >= costume_count()) { sShownCostume = 0; }
+    sound(redo ? 1 : 2);
+    toast(redo ? "Redone! Back the way it was." : "Undone! Change your mind as often as you like.");
+}
+static void undo_input(void) {
+    if (sScreen != SC_EDIT) { return; }
+    int top = sOv.empty() ? -1 : sOv.back().kind;
+    if (top == OV_PAINT || top == OV_WHEEL || top == OV_KEYS || top == OV_GRID || top == OV_TEXT) { return; } // (their own buttons)
+    bool pad = top < 0 || top == OV_WORKSHOP || top == OV_COLOURS || top == OV_FX || top == OV_TEXPICK;
+    if (sIn.undo || (pad && sIn.l2)) { undo_step(false); sIn.l2 = sIn.undo = false; }
+    else if (sIn.redo || (pad && sIn.r2)) { undo_step(true); sIn.r2 = sIn.redo = false; }
+}
+
+// ---- trying a choice on: the grid's choice under the cursor made as a dry run (sDry: no requests, sounds, lines or
+// screens), the warrior's spec afterwards kept and the screen's own put back; when it changed the warrior's look, the
+// model shows the warrior wearing it ("TRYING IT ON...") until the choice is made (the same look: shown at once) or
+// cancelled.
+struct Trial {
+    std::string at;      // the cursor's place it is for ("" none)
+    bool look = false;   // it changes the look
+    J spec;
+    int costume = 0;     // the costume it changes (the one shown)
+    int face = -1;
+    std::string name;
+};
+static Trial sTry;
+static std::string look_text(const J &sp) {
+    static const char *const kKeys[] = {"look", "costumes", "parts", "colours", "body", "paint", "costume_edits", "shading"};
+    J k = J::arr();
+    for (const char *key : kKeys) { k.push(sp[key]); }
+    return js_text(k);
+}
+static void try_choice(const Overlay &o, const J &ref, const std::string &at, const std::string &name, int face) {
+    if (sTry.at == at) { return; }
+    sTry = Trial();
+    sTry.at = at;
+    sTry.name = name;
+    sTry.face = face;
+    if (!o.picked || sScreen != SC_EDIT || !o.moveKinds.empty()) { return; }
+    J keep = sSpec;
+    bool dirty = sDirty;
+    std::string file = sFile;
+    int tab = sTab, shown = sShownCostume, screen = sScreen;
+    std::function<void(const J *)> f = o.picked;
+    sDry = true;
+    f(&ref);
+    sDry = false;
+    J trial = sSpec;
+    sSpec = keep;
+    sDirty = dirty;
+    sFile = file;
+    sTab = tab;
+    sShownCostume = shown;
+    sScreen = screen;
+    if (look_text(trial) == look_text(keep)) { return; }
+    sTry.look = true;
+    sTry.spec = trial;
+    sTry.costume = shown;
+    size_t n = std::max(trial["costumes"].size(), keep["costumes"].size());
+    for (size_t i = 0; i < n; i++) { // (a costume of its own changed: that one is shown)
+        if (js_text(trial["costumes"][i]) != js_text(keep["costumes"][i])) { sTry.costume = (int)i; break; }
+    }
+    int count = trial["costumes"].size() ? (int)trial["costumes"].size() : 1;
+    if (sTry.costume >= count) { sTry.costume = count - 1; }
+}
+// the grid on top, its cursor rested: what it would try on (stage 0 a fighter in its first costume, 1 the costume)
+static const Trial *trial_now(void) {
+    if (sOv.empty() || sOv.back().kind != OV_GRID || sScreen != SC_EDIT) { sTry = Trial(); return NULL; }
+    Overlay &o = sOv.back();
+    if (o.stage == 0) {
+        if (o.rest < 12) { return NULL; }
+        std::vector<const J *> items = grid_items(o);
+        if (o.cur >= (int)items.size()) { return NULL; }
+        const J &c = *items[(size_t)o.cur];
+        try_choice(o, ref_of(c), "g" + std::to_string((int)c["id"].number(-1)), c["name"].text(), (int)c["id"].number(-1));
+    } else if (o.stage == 1) {
+        J idj = J::num(o.chosen);
+        const J *c = entry_of(idj);
+        if (c == NULL || o.cur < 0 || o.cur >= (int)(*c)["costumes"].size()) { return NULL; }
+        int k = (int)(*c)["costumes"][(size_t)o.cur].number(1);
+        try_choice(o, ref_of(*c, k), "c" + std::to_string(o.chosen) + ":" + std::to_string(k), (*c)["name"].text() + " (costume " + std::to_string(k) + ")", o.chosen);
+    } else {
+        return NULL;
+    }
+    return sTry.look ? &sTry : NULL;
+}
+
+// ---- the photo of the model: one frame of the game with the model alone on a key colour (port_creator.c, PC_PHOTO),
+// read from the window's picture (gs_gpu.c: Creator_WantGrab / Creator_Grabbed), the key taken out, made the warrior's
+// portrait by the creator (/api/portraitshot: the render, the small portrait and the team pictures of it).
+static int sPhotoWait; // frames the picture has been waited for, 0 none
+static void photo_end(void) {
+    sPhotoWait = 0;
+    SDL_LockMutex(sShare);
+    sSh.photo = 0;
+    SDL_UnlockMutex(sShare);
+}
+static void photo_of_model(void) {
+    if (sPhotoWait) { return; }
+    if (sSpec["name"].text().empty()) { toast("Give your warrior a name first!", true); sound(2); return; }
+    if (sBuiltKey < 0 || sPreviewBusy || sPreviewKey != sPreviewSent) { toast("Wait until your warrior's model is built, then smile!", true); sound(2); return; }
+    sPhotoWait = 1;
+    SDL_LockMutex(sShare);
+    sSh.photo = 1;
+    SDL_UnlockMutex(sShare);
+    sound(1);
+}
+extern "C" int Creator_WantGrab(void) { return sActive && sPhotoWait > 0; }
+extern "C" void Creator_Grabbed(const unsigned char *px, int w, int h, int bgr) {
+    if (!sActive || sPhotoWait <= 0 || w < 16 || h < 16) { return; }
+    auto rgb = [&](int x, int y, int *r, int *g, int *b) {
+        const unsigned char *q = px + ((size_t)y * (size_t)w + (size_t)x) * 4;
+        *r = q[bgr ? 2 : 0];
+        *g = q[1];
+        *b = q[bgr ? 0 : 2];
+    };
+    auto keyed = [&](int x, int y) { int r, g, b; rgb(x, y, &r, &g, &b); return r > 200 && b > 200 && g < 70; };
+    if (!keyed(3, 3) || !keyed(w - 4, 3) || !keyed(3, h - 4) || !keyed(w - 4, h - 4)) { // (not that frame yet)
+        if (++sPhotoWait > 300) { photo_end(); toast("The photo did not come out: try again.", true); }
+        return;
+    }
+    std::vector<uint8_t> a((size_t)w * h);
+    int x0 = w, y0 = h, x1 = -1, y1 = -1;
+    std::vector<int> todo;
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            bool k = keyed(x, y);
+            a[(size_t)y * w + x] = k ? 0 : 255;
+            if (k) { todo.push_back(y * w + x); }
+        }
+    }
+    // the model's shadow on the key is a darker magenta: what joins the key through magenta-ish pixels goes too (the
+    // model's own purples are inside its outline, not joined to the key)
+    auto dim_key = [&](int i) {
+        int r, g, b;
+        rgb(i % w, i / w, &r, &g, &b);
+        return std::min(r, b) - g > 28 && abs(r - b) < 60 && g < 110;
+    };
+    while (!todo.empty()) {
+        int i = todo.back();
+        todo.pop_back();
+        int x = i % w, y = i / w;
+        int nb[4] = {x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, y > 0 ? i - w : -1, y < h - 1 ? i + w : -1};
+        for (int j : nb) {
+            if (j >= 0 && a[(size_t)j] && dim_key(j)) { a[(size_t)j] = 0; todo.push_back(j); }
+        }
+    }
+    std::vector<uint8_t> out((size_t)w * h * 4);
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            int r, g, b;
+            rgb(x, y, &r, &g, &b);
+            size_t i = (size_t)y * w + x;
+            int al = a[i];
+            if (al && ((x > 0 && !a[i - 1]) || (x < w - 1 && !a[i + 1]) || (y > 0 && !a[i - w]) || (y < h - 1 && !a[i + w]))) {
+                // an edge: how much of the key is mixed in, taken out
+                float m = (float)(std::min(r, b) - g) / 255.0f;
+                if (m > 0.05f) {
+                    m = m > 0.95f ? 0.95f : m;
+                    al = (int)(255.0f * (1.0f - m));
+                    r = (int)((r - 255.0f * m) / (1.0f - m));
+                    b = (int)((b - 255.0f * m) / (1.0f - m));
+                    r = r < 0 ? 0 : r > 255 ? 255 : r;
+                    b = b < 0 ? 0 : b > 255 ? 255 : b;
+                }
+            }
+            uint8_t *o = &out[i * 4];
+            o[0] = (uint8_t)r;
+            o[1] = (uint8_t)g;
+            o[2] = (uint8_t)b;
+            o[3] = (uint8_t)al;
+            if (al > 0) { x0 = std::min(x0, x); y0 = std::min(y0, y); x1 = std::max(x1, x); y1 = std::max(y1, y); }
+        }
+    }
+    photo_end();
+    if (x1 < x0 || y1 < y0) { toast("Nobody in the picture: wait for the model, then try again.", true); return; }
+    int m = 8; // (a little room around it)
+    x0 = std::max(0, x0 - m); y0 = std::max(0, y0 - m); x1 = std::min(w - 1, x1 + m); y1 = std::min(h - 1, y1 + m);
+    int cw = x1 - x0 + 1, ch = y1 - y0 + 1;
+    std::vector<uint8_t> crop((size_t)cw * ch * 4);
+    for (int y = 0; y < ch; y++) { memcpy(&crop[(size_t)y * cw * 4], &out[((size_t)(y + y0) * w + x0) * 4], (size_t)cw * 4); }
+    std::string png = png_b64(crop.data(), cw, ch);
+    if (png.empty()) { toast("The photo could not be made.", true); return; }
+    fprintf(stderr, "bt3: creator: photo of the model, %d x %d\n", cw, ch);
+    auto shot = [png] {
+        J body = J::obj();
+        body.set("file", J::str(sFile));
+        body.set("png", J::str(png));
+        toast("Developing the photo...");
+        api("/api/portraitshot", &body, [](int st, const J &r) {
+            if (st != 200) { toast(error_of(st, r), true); return; }
+            bool dirty = sDirty;
+            sSpec.set("portrait_image", r["file"]);
+            sDirty = dirty; // (its file has it already)
+            toast("Click! Your warrior's portraits are a photo of the model now.");
+        });
+    };
+    if (sDirty || sFile.empty()) { save(shot); } else { shot(); }
+}
+
+// ---- the sections of a list fold: cross on a heading folds its rows away (a "+" on it) and opens them again
+static std::vector<std::string> sFolded; // "<list>:<heading>"
+static void fold_rows(std::vector<Row> &rows, int list) {
+    std::vector<Row> out;
+    bool skip = false;
+    for (Row &r : rows) {
+        if (r.sec) {
+            std::string key = std::to_string(list) + ":" + r.label;
+            bool folded = std::find(sFolded.begin(), sFolded.end(), key) != sFolded.end();
+            r.folded = folded;
+            r.tip = folded ? "This part of the list is folded away: cross opens it." : "Cross folds this part of the list away.";
+            r.ok = [key] {
+                auto it = std::find(sFolded.begin(), sFolded.end(), key);
+                if (it != sFolded.end()) { sFolded.erase(it); } else { sFolded.push_back(key); }
+                sound(0);
+            };
+            skip = folded;
+            out.push_back(r);
+        } else if (!skip) {
+            out.push_back(r);
+        }
+    }
+    rows.swap(out);
+}
+
+// ---- the top right: NOT SAVED, the undo count, the costume being edited; over the model, a choice tried on
+static void status_frame(const Trial *tr) {
+    ImFont *bf = bold_font();
+    if (sScreen == SC_EDIT || sScreen == SC_HOME) {
+        char chip[64];
+        if (sScreen == SC_HOME) { snprintf(chip, sizeof(chip), "%d SAVED", (int)sFighters.size()); }
+        else { snprintf(chip, sizeof(chip), "%s", sDirty ? "NOT SAVED" : on_roster(sFile) ? "SAVED - ON THE ROSTER" : "SAVED"); }
+        float size = S(14), w = text_w(bf, size, chip) + S(40), h = S(28);
+        ImVec2 b = P(1296, 52), a(b.x - w, b.y), bb(b.x, b.y + h);
+        zlook::pill(sDl, a, bb, true, sS);
+        sDl->AddText(bf, size, ImVec2(a.x + S(20), a.y + (h - size) * 0.5f), zlook::kGoldInk, chip);
+    }
+    if (sScreen != SC_EDIT) { return; }
+    float y = P(0, 86).y, rx = P(1296, 0).x, size = S(13.5f);
+    auto line = [&](const std::string &t) {
+        outlined(bf, size, ImVec2(rx - text_w(bf, size, t.c_str()), y), IM_COL32(255, 214, 80, 255), IM_COL32(40, 12, 0, 255), t, S(1.2f));
+        y += size + S(8);
+    };
+    int n = undo_count();
+    if (n > 0 || !sRedo.empty()) { line(std::to_string(n) + " undo" + (sRedo.empty() ? "" : " - " + std::to_string(sRedo.size()) + " redo")); }
+    int count = costume_count();
+    line("EDITING COSTUME " + std::to_string((sShownCostume < count ? sShownCostume : 0) + 1) + (count > 1 ? " OF " + std::to_string(count) : ""));
+    // over the model: building it, or trying a choice on
+    bool building = sPreviewBusy || (sPreviewKey != sPreviewSent && !sNoPreview);
+    if (tr != NULL || building) {
+        const char *b = tr != NULL ? "TRYING IT ON..." : "BUILDING YOUR WARRIOR...";
+        float bs = S(17);
+        ImVec2 at = P(CAM_X, 132);
+        outlined(bf, bs, ImVec2(at.x - text_w(bf, bs, b) * 0.5f, at.y), IM_COL32(255, 226, 96, 170 + (int)(85 * fabsf(sinf(sFrames * 0.08f)))), IM_COL32(40, 10, 0, 255), b, S(1.4f));
+    }
+    if (tr != NULL) { // the card of what is tried on, under the model
+        std::string pill, t;
+        if (!sOv.empty()) { grid_heading(sOv.back(), t, pill); }
+        float fs = S(15), w = std::max(text_w(bf, fs, tr->name.c_str()), text_w(sFont, S(13), pill.c_str())) + S(76), h = S(48);
+        ImVec2 a(P(CAM_X, 0).x - w * 0.5f, P(0, 556).y), b(a.x + w, a.y + h);
+        sDl->AddRectFilled(a, b, IM_COL32(30, 22, 60, 225), S(8));
+        sDl->AddRect(a, b, IM_COL32(150, 130, 220, 200), S(8), 0, S(1.5f));
+        zlook::face_ring(sDl, face_tex(tr->face), ImVec2(a.x + S(26), (a.y + b.y) * 0.5f), S(16), false, ImVec2(0.2f, 0.03f), ImVec2(0.8f, 0.63f), sS * 0.7f);
+        sDl->AddText(bf, fs, ImVec2(a.x + S(52), a.y + S(7)), IM_COL32(255, 236, 150, 255), tr->name.c_str());
+        sDl->AddText(sFont, S(13), ImVec2(a.x + S(52), a.y + S(27)), kDim, pill.c_str());
+    }
+}
+
 static void model_frame(void) {
-    // the grid's cursor, once it rested on a character of the disc: that one
-    if (!sOv.empty() && sOv.back().kind == OV_GRID && sOv.back().stage == 0 && sOv.back().rest >= 12) {
+    // the grid's cursor, once it rested on a character of the disc: the warrior wearing it when the choice is a look
+    // (trial_now: "TRY IT ON"), else that character itself
+    const Trial *tr = trial_now();
+    if (tr == NULL && sScreen == SC_EDIT && !sOv.empty() && sOv.back().kind == OV_GRID && sOv.back().stage == 0 && sOv.back().rest < 12) { return; }
+    if (tr == NULL && !sOv.empty() && sOv.back().kind == OV_GRID && sOv.back().stage == 0 && sOv.back().rest >= 12) {
         std::vector<const J *> items = grid_items(sOv.back());
         if (sOv.back().cur < (int)items.size()) {
             const J &c = *items[(size_t)sOv.back().cur];
@@ -4145,12 +4727,15 @@ static void model_frame(void) {
         want_disc(g);
         return;
     }
-    // the warrior as it is: built by the creator once its look has rested a moment
+    // the warrior as it is (or with the choice tried on): built by the creator once its look has rested a moment
+    const J &sp = tr != NULL ? tr->spec : sSpec;
+    int costume = tr != NULL ? tr->costume : sShownCostume;
     J key = J::arr();
-    key.push(look());
-    static const char *const kLook[] = {"costumes", "parts", "colours", "body", "paint", "moveset", "moves", "melee", "ki_blasts", "voice", "names"};
-    for (const char *k : kLook) { key.push(sSpec[k]); }
-    key.push(J::num(sShownCostume));
+    key.push(sp.has("look") ? sp["look"] : sp["costumes"].size() ? sp["costumes"][0] : sp.has("base") ? sp["base"] : look());
+    static const char *const kLook[] = {"costumes", "parts", "colours", "body", "paint", "moveset", "moves", "melee", "ki_blasts", "voice", "names",
+                                        "costume_edits", "shading", "stance", "stance_pose"};
+    for (const char *k : kLook) { key.push(sp[k]); }
+    key.push(J::num(costume));
     std::string text = js_text(key);
     if (text != sPreviewKey) {
         sPreviewKey = text;
@@ -4158,18 +4743,18 @@ static void model_frame(void) {
     }
     if (sNoPreview) { // (an older creator, without /api/preview: the look's own character)
         J lk = look();
-        if (sSpec["costumes"].size() > (size_t)sShownCostume) { lk = sSpec["costumes"][(size_t)sShownCostume]; }
-        if (chara_id(lk) >= 0 && chara_id(lk) < 161) { want_disc(lk); } else { want_disc(sSpec["base"]); }
+        if (sp["costumes"].size() > (size_t)costume) { lk = sp["costumes"][(size_t)costume]; }
+        if (chara_id(lk) >= 0 && chara_id(lk) < 161) { want_disc(lk); } else { want_disc(sp["base"]); }
         return;
     }
     if (sPreviewKey != sPreviewSent && !sPreviewBusy && sFrames - sPreviewChanged >= 20) {
         sPreviewSent = sPreviewKey;
         sPreviewBusy = true;
         J body = J::obj();
-        J spec = sSpec;
+        J spec = sp;
         if (spec["name"].text().empty()) { spec.set("name", J::str("preview")); }
         body.set("spec", spec);
-        body.set("costume", J::num(sShownCostume));
+        body.set("costume", J::num(costume));
         api("/api/preview", &body, [](int st, const J &r) {
             sPreviewBusy = false;
             if (st == 404) { sNoPreview = true; toast("This creator is older than the game: its look is shown as the body's character.", true); return; }
@@ -4262,6 +4847,7 @@ bool Creator_Frame(bool input) {
     sTyping = !sOv.empty() && (sOv.back().kind == OV_KEYS || (sOv.back().kind == OV_GRID && sOv.back().stage == 0));
     read_input(input);
     sMouse = input && !ImGui::GetIO().WantCaptureMouse;
+    undo_input(); // (L2 / R2, Ctrl+Z / Ctrl+Y: before anything else has the buttons)
 
     ImGuiIO &io = ImGui::GetIO();
     sX0 = (float)gUiPresentX;
@@ -4273,9 +4859,10 @@ bool Creator_Frame(bool input) {
     sDl = ImGui::GetBackgroundDrawList();
     sFont = ImGui::GetFont();
     sBold = Ui_FontBold();
-    sBoxA = P(40, 138);
-    sBoxB = P(720, 650);
+    sBoxA = P(100, 112); // (the list: as the trailer has it, under the tabs, left of the warrior)
+    sBoxB = P(660, 566);
     sOvRight = sBoxB.x;
+    border_strips();
 
     std::vector<Prompt> ps;
     std::string tipLine = sTipLine;
@@ -4295,50 +4882,13 @@ bool Creator_Frame(bool input) {
         case TAB_FORMS: rows_forms(rows); break;
         default: rows_finish(rows); break;
         }
-        headingText = sSpec["name"].text().empty() ? std::string("NEW WARRIOR") : sSpec["name"].text();
-        for (char &c : headingText) { c = (char)SDL_toupper((unsigned char)c); }
-        if (headingText.size() > 22) { headingText = headingText.substr(0, 22); }
+        fold_rows(rows, listKey);
+        headingText = sSpec["name"].text().empty() ? std::string("New Warrior") : sSpec["name"].text();
         heading = headingText.c_str();
     }
     title_and_tabs(heading);
     if (sScreen == SC_HOME) { static const char *const kHome[1] = {"MY FIGHTERS"}; draw_tabs(0, kHome, 1); }
     else if (sScreen == SC_EDIT) { draw_tabs(sTab, kTabs, TAB_COUNT); }
-
-    // the saved chip, the name over the model
-    if (sScreen == SC_EDIT || sScreen == SC_HOME) {
-        char chip[64];
-        if (sScreen == SC_HOME) { snprintf(chip, sizeof(chip), "%d SAVED", (int)sFighters.size()); }
-        else { snprintf(chip, sizeof(chip), "%s", sDirty ? "NOT SAVED" : on_roster(sFile) ? "SAVED - ON THE ROSTER" : "SAVED"); }
-        float size = S(15), w = text_w(sBold != NULL ? sBold : sFont, size, chip) + S(36);
-        ImVec2 b = P(1336, 30), a(b.x - w, b.y), bb(b.x, b.y + S(30));
-        grad(a, bb, kGold1, kGold2, S(15));
-        sDl->AddRect(a, bb, IM_COL32(255, 243, 192, 255), S(15), 0, S(2));
-        sDl->AddText(sBold != NULL ? sBold : sFont, size, ImVec2(a.x + S(18), a.y + (S(30) - size) * 0.5f), IM_COL32(74, 26, 0, 255), chip);
-    }
-    if (sScreen == SC_EDIT) {
-        ImFont *big = sBold != NULL ? sBold : sFont;
-        std::string n = sSpec["name"].text().empty() ? std::string("New Warrior") : sSpec["name"].text();
-        float size = S(36);
-        ImVec2 c = P(1030, 86);
-        outlined(big, size, ImVec2(c.x - text_w(big, size, n.c_str()) * 0.5f, c.y), kInk, IM_COL32(58, 22, 96, 255), n, S(2));
-        std::string t = sSpec["title"].text();
-        if (!t.empty()) { outlined(sFont, S(18), ImVec2(c.x - text_w(sFont, S(18), t.c_str()) * 0.5f, c.y + size + S(2)), IM_COL32(255, 236, 160, 255), IM_COL32(40, 14, 70, 255), t, S(1.2f)); }
-        if (sPreviewBusy || (sPreviewKey != sPreviewSent && !sNoPreview)) {
-            const char *b = "BUILDING YOUR WARRIOR...";
-            float bs = S(16);
-            ImVec2 at = P(1030, 170);
-            outlined(sFont, bs, ImVec2(at.x - text_w(sFont, bs, b) * 0.5f, at.y), IM_COL32(255, 220, 90, 160 + (int)(95 * fabsf(sinf(sFrames * 0.08f)))), IM_COL32(30, 10, 50, 255), b, S(1.2f));
-        }
-        int costumes = sSpec["costumes"].size() ? (int)sSpec["costumes"].size() : 1;
-        if (costumes > 1) {
-            char line[48];
-            snprintf(line, sizeof(line), "COSTUME %d / %d", sShownCostume + 1, costumes);
-            ImVec2 at = P(1030, 628);
-            float x = at.x - S(80);
-            x += glyph(B_L2R2, ImVec2(x, at.y + S(9)), S(10)) + S(8);
-            outlined(sFont, S(15), ImVec2(x, at.y), kInk, IM_COL32(30, 10, 50, 255), line, S(1));
-        }
-    }
 
     // the list
     if (sScreen == SC_HOME || sScreen == SC_EDIT) {
@@ -4349,22 +4899,19 @@ bool Creator_Frame(bool input) {
         if (!rows.empty() && tipLine.empty() && cur < (int)rows.size()) { tipLine = rows[cur].tip; }
         if (sOv.empty()) {
             const Row *r = cur < (int)rows.size() ? &rows[cur] : NULL;
-            ps.push_back({B_CROSS, sScreen == SC_HOME ? "Choose" : "Change"});
+            ps.push_back({B_CROSS, sScreen == SC_HOME ? "Choose" : r != NULL && r->sec ? (r->folded ? "Open" : "Fold") : "Change"});
             if (r != NULL && r->lr) { ps.push_back({B_LR, r->lrLabel != NULL ? r->lrLabel : "Change"}); }
             if (r != NULL && r->sq) { ps.push_back({B_SQUARE, r->sqLabel != NULL ? r->sqLabel : ""}); }
             if (r != NULL && r->tri) { ps.push_back({B_TRIANGLE, r->triLabel != NULL ? r->triLabel : ""}); }
-            ps.push_back({B_CIRCLE, sScreen == SC_HOME ? "Main menu" : "My Fighters"});
             if (sScreen == SC_EDIT) { ps.push_back({B_L1R1, "Tab"}); ps.push_back({B_START, "Save"}); }
+            if (sScreen == SC_EDIT && (undo_count() || !sRedo.empty())) { ps.push_back({B_L2R2, "Undo / redo"}); }
+            ps.push_back({B_CIRCLE, sScreen == SC_HOME ? "Main menu" : "Back"});
             // the screen's own buttons
             if (sScreen == SC_EDIT && (sIn.l1 || sIn.r1)) {
                 sTab = (sTab + (sIn.r1 ? 1 : TAB_COUNT - 1)) % TAB_COUNT;
                 sound(0);
             } else if (sScreen == SC_EDIT && sIn.start) {
                 save();
-            } else if (sScreen == SC_EDIT && (sIn.l2 || sIn.r2)) {
-                int costumes = sSpec["costumes"].size() ? (int)sSpec["costumes"].size() : 1;
-                sShownCostume = (sShownCostume + (sIn.r2 ? 1 : costumes - 1)) % costumes;
-                sound(0);
             } else if (sIn.back) {
                 sound(2);
                 if (sScreen == SC_HOME) { leave(); }
@@ -4419,17 +4966,26 @@ bool Creator_Frame(bool input) {
             b = P(1076, 560);
             sDl->AddRectFilled(P(0, 0), P(1376, 768), IM_COL32(10, 5, 30, 130));
         }
-        if (kind == OV_PAINT) { b = P(880, 650); } // (the texture large, its tools beside it: the model still to be seen)
+        else { b.y = P(0, 604).y; } // (over the tabs, down to the tip box: as the trailer's pop-ups)
+        if (kind == OV_PAINT) { b = P(880, 604); } // (the texture large, its tools beside it: the model still to be seen)
         ImVec2 keepA = sBoxA, keepB = sBoxB;
-        sBoxA = ImVec2(a.x, P(0, 98).y);
+        sBoxA = ImVec2(a.x, P(0, 40).y);
         sBoxB = b;
         sOvRight = b.x;
         if (kind == OV_TEXT || (kind == OV_LIST && o.rows.size() <= 2)) { sBoxA = a; }
-        sDl->AddRectFilled(ImVec2(sBoxA.x, sBoxA.y + S(5)), ImVec2(sBoxB.x, sBoxB.y + S(5)), IM_COL32(0, 0, 0, 90), S(12));
-        sDl->AddRectFilled(sBoxA, sBoxB, IM_COL32(40, 22, 82, 255), S(12));
-        sDl->AddRect(sBoxA, sBoxB, IM_COL32(245, 197, 66, 255), S(12), 0, S(3));
+        zlook::panel(sDl, sBoxA, sBoxB, S(14), sS);
+        grad(sBoxA, sBoxB, IM_COL32(44, 26, 96, 215), IM_COL32(30, 16, 72, 225), S(14)); // (darker than the list it is over)
+        sDl->AddRect(sBoxA, sBoxB, IM_COL32(236, 226, 255, 200), S(14), 0, S(2.5f));
         ov_title(o);
-        if (kind == OV_GRID) { tipLine = o.stage == 0 ? "Pick a character! The model shows whom the cursor is on." : "And which one?"; }
+        if (kind == OV_GRID) {
+            std::string t, pill;
+            grid_heading(o, t, pill);
+            tipLine = t == "TRY IT ON" ? "Pick the " + (pill.empty() ? std::string("look") : pill) + " your warrior fights in! Your warrior tries it on."
+                    : t == "LAYER ON TOP" ? "Whose " + (pill.empty() ? std::string("piece") : pill) + "? It goes on top of what your warrior has."
+                    : t == "LEARN A TECHNIQUE" ? std::string("Whose technique should your warrior learn?")
+                    : o.stage == 0 ? std::string("Pick a character! The model shows whom the cursor is on.") : std::string("And which one?");
+            if (o.stage == 1) { tipLine = "And which costume?"; }
+        }
         else if (kind == OV_KEYS) { tipLine = "Type with the keys (or your keyboard). START or Enter when it is right."; }
         else if (kind == OV_COLOURS) { tipLine = "Pick a colour of one of your warrior's textures, then its new colour."; }
         else if (kind == OV_PALETTE) { tipLine = "Pick the new colour."; }
@@ -4480,21 +5036,19 @@ bool Creator_Frame(bool input) {
         if ((sScreen == SC_EDIT || sScreen == SC_HOME) && beside) { cam_frame(std::max(sOvRight, P(740, 0).x), top != OV_PAINT); }
     }
     model_frame();
+    status_frame(trial_now());
+    SDL_LockMutex(sShare);
+    sSh.host = sScreen == SC_EDIT || sScreen == SC_HOME ? HOST_CHARA : -1;
+    SDL_UnlockMutex(sShare);
+    undo_track();
 
-    // the tip box, the prompts, a line that came
+    // the tip box (the host's line: a line that came, else what the cursor is on), the prompts in its corner
     if (tipLine.empty()) { tipLine = sScreen == SC_HOME ? "Make your own warrior! Mix the looks, moves and voices of the whole roster." : "Change anything: the model shows your warrior as it is."; }
     if (sBusy > 0 && sScreen != SC_CONNECT) { tipLine = "Working on it..." + std::string(sBusy > 1 ? " (" + std::to_string(sBusy) + ")" : ""); if (sPreviewBusy && sBusy == 1) { tipLine = "Building your warrior's model..."; } }
+    if (sPhotoWait) { tipLine = "Say cheese!"; }
+    if (!sToast.empty() && sFrames < sToastUntil) { tipLine = sToast; }
     tip_box(tipLine);
     prompts(ps);
-    if (!sToast.empty() && sFrames < sToastUntil) {
-        float size = S(17), wrap = P(1100, 0).x - P(300, 0).x;
-        ImVec2 ts = sFont->CalcTextSizeA(size, FLT_MAX, wrap, sToast.c_str());
-        ImVec2 c = P(688, 24);
-        ImVec2 a(c.x - ts.x * 0.5f - S(18), c.y), b(c.x + ts.x * 0.5f + S(18), c.y + ts.y + S(20));
-        sDl->AddRectFilled(a, b, IM_COL32(28, 16, 64, 240), S(10));
-        sDl->AddRect(a, b, sToastErr ? IM_COL32(255, 107, 107, 255) : IM_COL32(245, 197, 66, 255), S(10), 0, S(2));
-        sDl->AddText(sFont, size, ImVec2(a.x + S(18), a.y + S(10)), kInk, sToast.c_str(), NULL, wrap);
-    }
     return true;
 }
 
