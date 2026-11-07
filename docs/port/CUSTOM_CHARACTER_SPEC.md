@@ -49,6 +49,22 @@ One file per fighter (JSON), so it's easy to share:
 Everything in it points at existing game data by character id and part id. No game data is copied into the
 file, so fighter files can be shared without sharing the game.
 
+Each costume is built on its own (port/tools/custom_fighter.py `costume_spec`): the top level holds costume 1's
+look, `"costume_edits": [null, {...}, ...]` holds costume n + 1's own look in item n (item 0 is unused; null, `{}` or
+a missing item: the costume wears the top level's look). A costume's value of a look key K is its item's K when the
+item has it, else the top level's: `parts`, `body`, `colours`, `paint` (keys `"<costume>:<texture>"`, and
+`"<costume>:<texture>@<entry>"` for an expression's own texture: 13 the blink frames, 14..17 the mouth textures),
+`extra_layers` (`[{chara, costume, piece, adjust}]`: any piece of any fighter stacked on top, "MORE LAYERS"), and
+the other tools' keys (`shading`, `stance_pose`). The game's creator (port/src/gs/creator_ui.cpp) reads them through
+`edit_view()` and writes them through `edit_spec()` (`set_edit_costume(n)`: the costume edited and shown); the first
+write to a costume without a look of its own copies costume 1's.
+
+The workshop's keys (port/tools/creator/mix.py `mix`): a layer's `adjust` and the body's `body` both take
+`"nodes": {"<node>": {stretch, size, move, turn, shown}}` and `"copies": [{node, stretch, size, move, turn, shown}]`
+(a strand duplicated: a new record beside it); a layer's adjust also `shown: false` (the whole layer taken off); the
+body also `"regions": {"hair" | "head" | "torso" | ...: {...}}` (its own nodes of a piece at once), `"build"`, and
+`"patch": false` (no strips or caps closing the gaps between pieces).
+
 ## Build phases (each one is playable before the next starts)
 
 1. Load character files from a mods folder instead of the disc (the foundation).

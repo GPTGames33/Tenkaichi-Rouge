@@ -27,6 +27,16 @@
 #include "sys/gfxm_d_c.h"
 #include "battle/btl_cam.h"
 
+#ifdef PORT
+/* PC only: the Custom Character screen's workshop makes the parts of these nodes blink on the model it shows
+   (port/src/gs/creator_ui.cpp; on only while that screen is open) */
+extern volatile s32 gPortBlinkOn;
+extern volatile u8 gPortBlinkNodes[256];
+#define PART_BLINKED(p) (gPortBlinkOn && (p)->node < 256 && gPortBlinkNodes[(p)->node])
+#else
+#define PART_BLINKED(p) 0
+#endif
+
 extern void Vec4_Copy(Vec4 *dst, Vec4 *src);
 extern void Vec4_Add(Vec4 *dst, Vec4 *a, Vec4 *b);
 extern void Vec4_Sub(Vec4 *dst, Vec4 *a, Vec4 *b);
@@ -531,7 +541,7 @@ void ObjDraw_DrawParts(ObjDrawObj *obj, ObjDrawView *view, s32 mode, u64 tex0, u
     mdl = &obj->mdl;
     k = 128.0f;
     while (1) {
-        if (part->enabled) {
+        if (part->enabled && !PART_BLINKED(part)) {
             node = BtlObj_GetNode(obj, part->node);
             if (node->active) {
                 if (mode == 0) {

@@ -1738,6 +1738,9 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
     for L in layers:
         lo = {k: v for k, v in L.opts.items() if k != "nodes"}
         for n in [n for n in kind if layer_of.get(n) is L and kind[n] in ("core", "adopt")]:
+            if L.opts.get("shown", True) is False:   # (the whole layer taken off)
+                hide_clone(n)
+                continue
             if not is_identity(lo) and n in meshes:
                 M, Ni, t = ui_xform(lo)
                 meshes[n].apply(M, Ni, t, pivot_of_core(L, n.node), weighted=_is_piece_root(L, by_node, n.node))
@@ -1768,7 +1771,7 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
     for n in [n for n in kind if kind[n] == "base"]:
         if n.node not in CORE:
             continue
-        o = node_key(adjust, n.node)
+        o = base_opts(adjust, n.node)
         if o is None:
             continue
         if o.get("shown", True) is False:
@@ -1892,6 +1895,10 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
     for L in layers:
         lo = {k: v for k, v in L.opts.items() if k not in ("nodes", "copies")}
         mine = [n for n in kind if kind[n] == "extra" and layer_of.get(n) is L]
+        if L.opts.get("shown", True) is False:   # (the whole layer taken off)
+            for n in mine:
+                hide_clone(n)
+            continue
         if not is_identity(lo):
             M, Ni, t = ui_xform(lo)
             for n in [n for n in mine if layer_of.get(n.parent) is not L]:
@@ -1925,7 +1932,7 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
     for n in [n for n in kind if kind[n] == "base"]:
         if n.node in CORE:
             continue
-        o = node_key(adjust, n.node)
+        o = base_opts(adjust, n.node)
         if o is None:
             continue
         if o.get("shown", True) is False:
@@ -2128,6 +2135,13 @@ def node_key(d, node):
         if k in d:
             return d[k]
     return None
+
+
+def base_opts(adjust, node):
+    """The workshop's edits of a base node: adjust[node], or adjust["nodes"][node] (as the creators write them, like a
+    layer's opts)."""
+    o = node_key(adjust, node)
+    return o if o is not None else node_key(adjust.get("nodes") or {}, node)
 
 
 def head_ratio(bpts, dpts):
@@ -2657,7 +2671,7 @@ def _replay(m, face_clone, meshes, build, by_node, origin, adjust, layers, layer
         if o and not is_identity(o):
             M, Ni, t = ui_xform(o)
             m.apply(M, Ni, t, origin(face_clone), weighted=True)
-    o = node_key(adjust, 0x30)
+    o = base_opts(adjust, 0x30)
     if L is None and o and not is_identity(o):
         M, Ni, t = ui_xform(o)
         m.apply(M, Ni, t, origin(face_clone), weighted=True)

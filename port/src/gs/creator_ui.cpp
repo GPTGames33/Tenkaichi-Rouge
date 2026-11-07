@@ -699,10 +699,12 @@ extern "C" void PortCreator_Open(void) {
     SDL_UnlockMutex(sShare);
 }
 
+extern "C" volatile int gPortBlinkOn; // (the workshop's blinking part: off when the screen closes)
 extern "C" void PortCreator_Close(void) {
     SDL_LockMutex(sShare);
     sActive = 0;
     SDL_UnlockMutex(sShare);
+    gPortBlinkOn = 0;
     PortCharas_Preview(NULL, -1);
 }
 
@@ -889,6 +891,72 @@ static void touch(void) { sDirty = true; }
 static void clean_empty(const char *key) { // (an empty object or list of the spec goes)
     J *v = sSpec.find(key);
     if (v != NULL && (v->isObj() || v->isArr()) && v->size() == 0) { sSpec.erase(key); }
+}
+
+// ---- the costume being edited: each costume is built on its own (custom_fighter.py costume_spec). The spec's top
+// level is costume 1's look (and that of every costume without one of its own); "costume_edits"[n] is costume n + 1's
+// own look: its "parts", "body", "colours", "paint", "extra_layers" (and the other look keys: "shading",
+// "stance_pose"...). Every screen of the look reads edit_view() and writes edit_spec(): the first write to a costume
+// without a look of its own starts one, a copy of costume 1's (its paint: what was painted on it).
+static int sEditCostume;       // 0..: the costume edited (and shown on the model)
+static const char *const kLookKeys[] = {"parts", "body", "colours", "extra_layers", "shading", "stance_pose"};
+static int costume_count(void) { return sSpec["costumes"].size() ? (int)sSpec["costumes"].size() : 1; }
+static bool has_own_look(int i) {
+    const J &e = sSpec["costume_edits"][(size_t)(i < 0 ? 0 : i)];
+    return i > 0 && e.isObj() && e.size() > 0;
+}
+static const J &edit_view(void) { return has_own_look(sEditCostume) ? sSpec["costume_edits"][(size_t)sEditCostume] : sSpec; }
+static int edit_costume(void) { return sEditCostume; }
+static J &edit_spec(void) {
+    if (sEditCostume <= 0) { return sSpec; }
+    if (!has_own_look(sEditCostume)) { // (its own look starts as costume 1's)
+        J own = J::obj();
+        for (const char *k : kLookKeys) { if (sSpec.has(k)) { own.set(k, sSpec[k]); } }
+        // its paint: what was painted on it, and what was painted on a costume of the same look (custom_fighter.py
+        // paints that on every costume of the look), named by its own number
+        J paint = J::obj();
+        const J &old = sSpec["paint"];
+        std::string me = std::to_string(sEditCostume + 1) + ":", myLook = js_text(sSpec["costumes"][(size_t)sEditCostume]);
+        for (int pass = 0; pass < 2; pass++) {
+            for (size_t i = 0; i < old.k.size(); i++) {
+                const std::string &key = old.k[i];
+                size_t colon = key.find(':');
+                int n = atoi(key.c_str()) - 1;
+                if (colon == std::string::npos) { continue; }
+                std::string mine = me + key.substr(colon + 1);
+                if (pass == 0 && n == sEditCostume) { paint.set(mine.c_str(), old.a[i]); }
+                if (pass == 1 && n != sEditCostume && !has_own_look(n) && js_text(sSpec["costumes"][(size_t)n]) == myLook && !paint.has(mine.c_str())) {
+                    paint.set(mine.c_str(), old.a[i]);
+                }
+            }
+        }
+        own.set("paint", paint); // (always there, even empty: the top level's paint is not its)
+        J *ce = sSpec.find("costume_edits");
+        if (ce == NULL || !ce->isArr()) { ce = &sSpec.set("costume_edits", J::arr()); }
+        while ((int)ce->a.size() <= sEditCostume) { ce->a.push_back(J()); }
+        ce->a[(size_t)sEditCostume] = own;
+    }
+    return sSpec.find("costume_edits")->a[(size_t)sEditCostume];
+}
+static void set_edit_costume(int i) { // the costume the look's screens change (and the model shows)
+    int n = costume_count();
+    sEditCostume = i < 0 ? 0 : i >= n ? n - 1 : i;
+    sShownCostume = sEditCostume;
+}
+static void edit_clean(const char *key) { // (an empty object or list of the edited look goes; a costume's own paint stays)
+    J &e = edit_spec();
+    J *v = e.find(key);
+    if (v != NULL && (v->isObj() || v->isArr()) && v->size() == 0 && !(sEditCostume > 0 && strcmp(key, "paint") == 0)) { e.erase(key); }
+}
+static void costume_removed(int i) { // costume i taken away: its own look too, the later ones move up
+    J *ce = sSpec.find("costume_edits");
+    if (ce != NULL && ce->isArr() && i > 0 && i < (int)ce->a.size()) { ce->a.erase(ce->a.begin() + i); }
+    if (ce != NULL && ce->isArr()) {
+        bool any = false;
+        for (size_t k = 1; k < ce->a.size(); k++) { any |= ce->a[k].isObj() && ce->a[k].size() > 0; }
+        if (!any) { sSpec.erase("costume_edits"); }
+    }
+    set_edit_costume(sEditCostume >= i && sEditCostume > 0 ? sEditCostume - 1 : sEditCostume);
 }
 
 // The package's folder (custom_fighter.py folder_name): the name without the characters a file name cannot have.
@@ -1103,6 +1171,7 @@ static void read_input(bool live) {
 struct Row {
     std::string label, value, sub, tip;
     bool sec = false, locked = false;
+    bool head = false;                   // a heading that can be chosen (the workshop's pieces: folded / open)
     int face = -1;                       // a portrait on the row
     std::function<void()> ok, sq, tri;   // cross, square, triangle
     std::function<void(int)> lr;         // left / right
@@ -1111,8 +1180,19 @@ struct Row {
     std::function<void(float)> setFrac;  // ... set by the mouse (0..1)
 };
 
+// A place in the workshop's edits (of the look being edited: edit_spec()): a layer's adjust or the body's, and in it
+// the whole of it, a node's edits, a piece of the body's own nodes at once, its build, or a copy of a strand.
+struct WsPath {
+    bool layer = false;     // a layer's "adjust" (tag), else the body's ("body")
+    std::string tag;        // the layer: "hair.0" (the first of parts.hair), "x.1" (the second extra layer)
+    std::string node;       // a node's edits ("nodes"), "" the whole part
+    std::string region;     // the body: a piece of its own nodes at once ("regions"), "" none
+    bool build = false;     // the body: its build ("build")
+    int copy = -1;          // a copy of a strand ("copies")
+};
+
 // ---- the screens over the list (the grid, the keyboard, lists, the colours): a stack
-enum { OV_GRID, OV_LIST, OV_KEYS, OV_COLOURS, OV_PALETTE, OV_TEXT, OV_FX, OV_WORKSHOP, OV_TEXPICK, OV_PAINT, OV_WHEEL };
+enum { OV_GRID, OV_LIST, OV_KEYS, OV_COLOURS, OV_PALETTE, OV_TEXT, OV_FX, OV_WORKSHOP, OV_TEXPICK, OV_PAINT, OV_WHEEL, OV_WSEDIT };
 struct Overlay {
     int kind = OV_LIST;
     int id = 0;                          // (which one: a choice may close it and open another in its place)
@@ -1122,6 +1202,8 @@ struct Overlay {
     bool bt3only = false, costume = false;
     std::vector<int> moveKinds;          // pick a technique of these slots
     std::string none;                    // the "none" choice (square), "" none
+    bool noneCell = false;               // ... also the grid's first cell
+    std::string pill;                    // a pill beside the title: what the choice is for ("Hair")
     std::function<void(const J *)> picked;
     std::string search;
     int stage = 0;                       // 0 the faces, 1 the costumes, 2 the techniques
@@ -1146,6 +1228,8 @@ struct Overlay {
     // the workshop: the piece (kPieces, -1 the body), its layer, the part (-1 the whole layer / the build)
     int piece = -1, layer = 0, node = -1;
     J info;                              // /api/layernodes
+    WsPath ws;                           // the workshop's sliders (OV_WSEDIT): what they change
+    std::string region;                  // the workshop: the piece it opened on
     // the colour wheel
     float hue = 0, sat = 0, val = 1;
     unsigned startRgb = 0;
@@ -1167,6 +1251,7 @@ static void ov_close_all(void) { while (!sOv.empty()) { ov_close(); } }
 
 static std::vector<const J *> grid_items(const Overlay &o) {
     std::vector<const J *> out;
+    if (o.noneCell && o.search.empty() && o.game == 0) { out.push_back(NULL); } // (the none cell first: NULL)
     for (size_t i = 0; i < sRoster.size(); i++) {
         const J &c = sRoster[i];
         if (c["costumes"].size() == 0) { continue; }
@@ -1383,7 +1468,7 @@ static void load_fighter(const J &f) {
     sDirty = false;
     sScreen = SC_EDIT;
     sTab = TAB_WARRIOR;
-    sShownCostume = 0;
+    sShownCostume = sEditCostume = 0;
     for (int i = 1; i < 8; i++) { sCur[i] = sTop[i] = 0; }
     sound(1);
 }
@@ -1409,7 +1494,7 @@ static void new_fighter(void) {
         sDirty = true;
         sScreen = SC_EDIT;
         sTab = TAB_WARRIOR;
-        sShownCostume = 0;
+        sShownCostume = sEditCostume = 0;
         for (int i = 1; i < 8; i++) { sCur[i] = sTop[i] = 0; }
         open_keys("EVERY GREAT WARRIOR NEEDS A GREAT NAME!", "", 63, [](const std::string &t) { sSpec.set("name", J::str(t)); touch(); });
     }, true);
@@ -1479,6 +1564,7 @@ static void colours_load(Overlay *o) {
     o->loading = true;
     J body = J::obj();
     body.set("spec", sSpec);
+    body.set("costume", J::num(sEditCostume));
     int depth = (int)sOv.size();
     api("/api/colours", &body, [depth](int st, const J &r) {
         if ((int)sOv.size() < depth || sOv[depth - 1].kind != OV_COLOURS) { return; } // (closed meanwhile)
@@ -1548,7 +1634,9 @@ static void add_recent(unsigned rgb) {
     if (sRecent.size() > 12) { sRecent.resize(12); }
 }
 static void open_wheel(const std::string &title, unsigned start, std::function<void(unsigned)> picked);
-static void open_workshop(int piece);
+static void open_workshop(const char *region);
+static Row ws_slider(const WsPath &w, const char *label, const char *k, int axis, double lo, double hi, double step, double def, int fmt, const char *tip);
+enum { WF_PCT, WF_PCT100, WF_DEG, WF_NUM };
 static void open_texpick(int texture = -1);
 
 // ---- an attack's colours (the web page's 🎨: /api/fxcolours, the spec's attack_colours, as index.html writes them)
@@ -1799,24 +1887,106 @@ static const char *const kPieces[8][3] = {
     {"feet", "Feet", "Feet and boots."},
     {"tail", "Tail", "A tail (only some characters have one)."}};
 
-static std::vector<J> layers(const char *k) {
+static int ws_edits(void);
+static std::vector<J> layers(const char *k) { // a piece's layers, in the costume being edited
     std::vector<J> out;
-    const J &v = sSpec["parts"][k];
+    const J &v = edit_view()["parts"][k];
     if (v.isArr()) { for (size_t i = 0; i < v.size(); i++) { out.push_back(v[i]); } }
     else if (v.isObj()) { out.push_back(v); }
     return out;
 }
 static void set_layers(const char *k, const std::vector<J> &list) {
-    J &parts = sSpec.at("parts");
+    J &parts = edit_spec().at("parts");
     if (list.empty()) { parts.erase(k); }
     else if (list.size() == 1) { parts.set(k, list[0]); }
     else { J a = J::arr(); for (const J &l : list) { a.push(l); } parts.set(k, a); }
-    clean_empty("parts");
+    edit_clean("parts");
     touch();
 }
+static const char *piece_label(const std::string &k) {
+    for (int i = 0; i < 8; i++) { if (k == kPieces[i][0]) { return kPieces[i][1]; } }
+    return "Hair";
+}
+
+// ---- MORE LAYERS: any piece of any fighter stacked on top ("extra_layers": [{chara, costume, piece, adjust}, ...])
+enum { EXTRA_LAYERS = 4 };
+static const J &extra_layer(int i) { return edit_view()["extra_layers"][(size_t)i]; }
+static void set_extra_layer(int i, const J *l) {
+    J &e = edit_spec();
+    J *x = e.find("extra_layers");
+    J list = x != NULL && x->isArr() ? *x : J::arr();
+    list.t = J::ARR;
+    while ((int)list.a.size() <= i) { list.a.push_back(J()); }
+    list.a[(size_t)i] = l != NULL ? *l : J();
+    while (!list.a.empty() && !list.a.back().isObj()) { list.a.pop_back(); }
+    if (list.a.empty()) { e.erase("extra_layers"); } else { e.set("extra_layers", list); }
+    touch();
+}
+// The grid of the layers (the trailer's LAYER ON TOP): the pill says what it is for, its first cell takes it away.
+static void open_layer_grid(const std::string &pill, std::function<void(const J *)> picked) {
+    open_grid("LAYER ON TOP", picked, true, "None: taken away");
+    sOv.back().noneCell = true;
+    sOv.back().pill = pill;
+}
+static void pick_extra_layer(int i) {
+    open_layer_grid("Extra layer " + std::to_string(i + 1), [i](const J *p) {
+        if (p == NULL) { set_extra_layer(i, NULL); sound(2); return; }
+        J who = *p;
+        static const char *const kWhat[7][2] = {{"hair", "Hair: spikes, bangs, the lot"}, {"torso", "Torso: clothes, armour, capes"},
+                                                {"arms", "Arms: sleeves, arm guards"}, {"hands", "Hands: gloves, gear"},
+                                                {"legs", "Legs: trousers, leg guards"}, {"feet", "Feet: boots"}, {"tail", "Tail"}};
+        std::vector<Row> rows;
+        rows.push_back(sec(("WHICH OF " + nm(who, "?") + "?").c_str()));
+        for (auto &w : kWhat) {
+            Row r;
+            r.label = w[1];
+            r.tip = "Its extra pieces of this part (hair locks, capes, armour...) go on top of your warrior's own.";
+            std::string piece = w[0];
+            r.ok = [i, who, piece] {
+                ov_close();
+                J l = who;
+                l.set("piece", J::str(piece));
+                set_extra_layer(i, &l);
+                toast("Layered on top! Mix and match.");
+            };
+            rows.push_back(r);
+        }
+        open_list("EXTRA LAYER " + std::to_string(i + 1) + ": WHICH PIECE?", rows);
+    });
+}
+
+static J costume_look(int i) { return sSpec["costumes"].size() > (size_t)i ? sSpec["costumes"][(size_t)i] : look(); }
 
 static void rows_parts(std::vector<Row> &rows) {
+    int ncos = costume_count();
+    std::string editing = "Costume " + std::to_string(sEditCostume + 1) + " of " + std::to_string(ncos);
     rows.push_back(sec("WHOLE LOOK"));
+    {
+        Row r;
+        r.label = "Editing";
+        r.value = editing;
+        r.sub = sEditCostume == 0 ? "costume 1's look" : has_own_look(sEditCostume) ? "built on its own" : "costume 1's look so far";
+        r.tip = "Each costume is built on its own: the layers, pieces, workshop, colours and paint below are this costume's. Left / right (or L2 / R2): another costume.";
+        if (ncos > 1) {
+            r.lrLabel = "Costume";
+            r.lr = [](int d) { int n = costume_count(); set_edit_costume((sEditCostume + d + n) % n); sound(0); };
+        }
+        if (has_own_look(sEditCostume)) {
+            r.sqLabel = "Costume 1's look";
+            r.sq = [] {
+                int n = sEditCostume;
+                confirm("COSTUME " + std::to_string(n + 1) + ": BACK TO COSTUME 1'S LOOK?", [n] {
+                    J *ce = sSpec.find("costume_edits");
+                    if (ce != NULL && ce->isArr() && n < (int)ce->a.size()) { ce->a[(size_t)n] = J(); }
+                    bool any = false;
+                    for (int k = 1; ce != NULL && k < (int)ce->a.size(); k++) { any |= has_own_look(k); }
+                    if (!any) { sSpec.erase("costume_edits"); }
+                    touch();
+                });
+            };
+        }
+        rows.push_back(r);
+    }
     std::vector<J> cos;
     if (sSpec["costumes"].size()) { for (size_t i = 0; i < sSpec["costumes"].size(); i++) { cos.push_back(sSpec["costumes"][i]); } }
     else { cos.push_back(look()); }
@@ -1826,52 +1996,81 @@ static void rows_parts(std::vector<Row> &rows) {
         Row r;
         r.label = "Costume " + std::to_string(i + 1);
         r.value = i < (int)cos.size() ? nm(cos[i], "?") : "none";
-        r.sub = i == 0 ? "the look of your warrior" : i == sShownCostume && i < (int)cos.size() ? "shown" : "";
+        r.sub = i == sEditCostume && i < (int)cos.size() ? "editing" : i == 0 ? "the look of your warrior" : has_own_look(i) ? "its own look" : "";
         r.face = i < (int)cos.size() ? chara_id(cos[i]) : -1;
-        r.tip = "Body, hair and clothes of a whole character. A warrior can have up to 16 costumes (L2 / R2 show them).";
+        r.tip = "Body, hair and clothes of a whole character. A warrior can have up to 16 costumes, each built on its own.";
         r.ok = [i] {
             open_grid("COSTUME " + std::to_string(i + 1) + ": WHOSE LOOK?", [i](const J *p) {
                 std::vector<J> list;
                 if (sSpec["costumes"].size()) { for (size_t k = 0; k < sSpec["costumes"].size(); k++) { list.push_back(sSpec["costumes"][k]); } }
                 else { list.push_back(look()); }
+                bool removed = false;
                 if (p) { if (i < (int)list.size()) { list[i] = *p; } else { list.push_back(*p); } }
-                else if (i < (int)list.size()) { list.erase(list.begin() + i); }
+                else if (i < (int)list.size()) { list.erase(list.begin() + i); removed = true; }
                 if (list.empty()) { return; }
                 J a = J::arr();
                 for (const J &l : list) { a.push(l); }
                 sSpec.set("costumes", a);
                 sSpec.set("look", list[0]);
-                if (sShownCostume >= (int)list.size()) { sShownCostume = 0; }
+                if (removed) { costume_removed(i); } else { set_edit_costume(i); }
                 touch();
             }, true, i ? "No costume" : NULL);
         };
         rows.push_back(r);
     }
-    rows.push_back(sec("MIX PIECES (on top of costume 1)"));
+    rows.push_back(sec("MORE LAYERS"));
+    for (int i = 0; i < EXTRA_LAYERS; i++) {
+        const J &l = extra_layer(i);
+        Row r;
+        r.label = "Extra layer " + std::to_string(i + 1);
+        r.value = l.isObj() ? nm(l, "?") : "None";
+        if (l.isObj()) { r.sub = piece_label(l["piece"].text("hair")); }
+        r.face = l.isObj() ? chara_id(l) : -1;
+        r.tip = "Stack hair, armour and gear from any fighter on top of each other!";
+        r.ok = [i] { pick_extra_layer(i); };
+        if (l.isObj()) {
+            r.triLabel = "Take off";
+            r.tri = [i] { set_extra_layer(i, NULL); sound(2); };
+        }
+        rows.push_back(r);
+    }
+    rows.push_back(sec("BODY"));
+    {
+        static const char *const kBuild[3][2] = {{"torso", "Torso build"}, {"arms", "Arm build"}, {"legs", "Leg build"}};
+        WsPath b;
+        b.build = true;
+        for (auto &k : kBuild) {
+            rows.push_back(ws_slider(b, k[1], k[0], -1, 50, 160, 1, 100, WF_PCT100,
+                                     "Stockier or slimmer: thicker or thinner around the bones (the joints stay). Triangle: back to 100%."));
+        }
+    }
+    rows.push_back(sec("PIECES"));
+    std::string own = nm(costume_look(sEditCostume), "?");
     for (int i = 0; i < 8; i++) {
         const char *k = kPieces[i][0];
         std::vector<J> ls = layers(k);
         Row r;
         r.label = kPieces[i][1];
-        if (ls.empty()) { r.value = "The body's own"; }
+        if (ls.empty()) { r.value = own; }
         else {
-            r.value = ls[0]["add"].truthy() ? "The body's own + " : "";
+            r.value = ls[0]["add"].truthy() ? own + " + " : "";
             for (size_t l = 0; l < ls.size(); l++) { r.value += (l ? " + " : "") + nm(ls[l], "?"); }
         }
         r.face = ls.empty() ? -1 : chara_id(ls.back());
-        r.tip = std::string(kPieces[i][2]) + " Square layers another one on top, triangle takes the top one off.";
+        r.tip = std::string(kPieces[i][2]) + " Cross: whose it is on top, square: another layer on top, triangle takes the top one off.";
         std::string key = k, label = kPieces[i][1];
-        for (char &c : label) { c = (char)SDL_toupper((unsigned char)c); }
         r.ok = [key, label] {
-            open_grid(label + ": WHOSE?", [key](const J *p) {
-                std::vector<J> list;
-                if (p) { list.push_back(*p); }
+            open_layer_grid(label, [key](const J *p) { // (the top layer: worn instead; none takes it away)
+                std::vector<J> list = layers(key.c_str());
+                if (p == NULL) { if (!list.empty()) { list.pop_back(); } }
+                else if (list.empty()) { list.push_back(*p); }
+                else { J l = *p; if (list.back()["add"].truthy()) { l.set("add", J::boolean(true)); } list.back() = l; }
                 set_layers(key.c_str(), list);
-            }, true, "The body's own");
+            });
         };
         r.sqLabel = "+ Layer";
         r.sq = [key, label] {
-            open_grid(label + ": LAYER ANOTHER ON TOP", [key](const J *p) {
+            open_grid("LAYER ON TOP", [key](const J *p) {
                 if (!p) { return; }
                 std::vector<J> list = layers(key.c_str());
                 J l = *p;
@@ -1879,6 +2078,7 @@ static void rows_parts(std::vector<Row> &rows) {
                 list.push_back(l);
                 set_layers(key.c_str(), list);
             }, true);
+            sOv.back().pill = label;
         };
         if (!ls.empty()) {
             r.triLabel = "Take off";
@@ -1891,33 +2091,19 @@ static void rows_parts(std::vector<Row> &rows) {
         }
         rows.push_back(r);
     }
-    // the workshop (the web page's 🔧): move, turn and stretch a piece's layers or the body's own parts, and its build
-    rows.push_back(sec("WORKSHOP: MOVE, TURN, STRETCH"));
+    rows.push_back(sec("WORKSHOP"));
     {
         Row w;
-        w.label = "Body";
-        int nb = (int)sSpec["body"].size();
-        w.value = nb ? "Build and parts changed" : "Build, and its own parts";
-        w.sub = "build: torso, arms, legs, head";
-        w.tip = "Make your warrior stockier or slimmer, a bigger head... and move, turn or stretch any part of its body.";
-        w.ok = [] { open_workshop(-1); };
-        rows.push_back(w);
-    }
-    for (int i = 0; i < 8; i++) {
-        std::vector<J> ls = layers(kPieces[i][0]);
-        if (ls.empty()) { continue; }
-        Row w;
-        w.label = std::string(kPieces[i][1]);
-        bool changed = false;
-        for (const J &l : ls) { changed |= l["adjust"].size() > 0; }
-        w.value = (changed ? "Changed: " : "Place it: ") + nm(ls.back(), "?") + (ls.size() > 1 ? " (+" + std::to_string(ls.size() - 1) + ")" : "");
-        w.face = chara_id(ls.back());
-        w.tip = "Move it, turn it, stretch it! Your warrior changes as you go.";
-        w.ok = [i] { open_workshop(i); };
+        w.label = "Workshop";
+        int n = ws_edits();
+        w.value = n ? std::to_string(n) + (n > 1 ? " edits" : " edit") : "Keep only the strands you want";
+        w.sub = "move, take off, copy";
+        w.tip = "Every piece of your warrior, strand by strand: move, turn, stretch, take off or copy any of them.";
+        w.ok = [] { open_workshop(""); };
         rows.push_back(w);
     }
     rows.push_back(sec("COLOURS"));
-    int nc = (int)sSpec["colours"].size();
+    int nc = (int)edit_view()["colours"].size();
     Row c;
     c.label = "Recolour";
     c.value = nc ? std::to_string(nc) + (nc > 1 ? " colour changes" : " colour change") : "Original colours";
@@ -1925,19 +2111,25 @@ static void rows_parts(std::vector<Row> &rows) {
     c.ok = open_colours;
     if (nc) {
         c.sqLabel = "All original";
-        c.sq = [] { sSpec.erase("colours"); touch(); sound(2); };
+        c.sq = [] { edit_spec().erase("colours"); touch(); sound(2); };
     }
     rows.push_back(c);
-    int np = (int)sSpec["paint"].size();
+    int np = (int)edit_view()["paint"].size();
     Row p;
-    p.label = "Paint texture...";
-    p.value = np ? std::to_string(np) + (np > 1 ? " textures painted" : " texture painted") : "Paint on a texture";
-    p.sub = "brush, fill, colour wheel";
-    p.tip = "Bring a texture up and paint on it: aim with the crosshair, fill spots, pick colours from it.";
+    p.label = "Textures";
+    p.value = np ? std::to_string(np) + (np > 1 ? " textures painted" : " texture painted") : "Paint on the face and outfit";
+    p.sub = "every expression too";
+    p.tip = "Paint straight onto the face and outfit, including every expression, even the blink.";
     p.ok = [] { open_texpick(); };
     if (np) {
         p.sqLabel = "Remove all paint";
-        p.sq = [] { confirm("REMOVE ALL THE PAINT?", [] { sSpec.erase("paint"); touch(); sound(2); }); };
+        p.sq = [] {
+            confirm("REMOVE ALL THE PAINT OF COSTUME " + std::to_string(sEditCostume + 1) + "?", [] {
+                if (sEditCostume > 0) { edit_spec().set("paint", J::obj()); } else { sSpec.erase("paint"); }
+                touch();
+                sound(2);
+            });
+        };
     }
     rows.push_back(p);
 }
@@ -2211,9 +2403,9 @@ static void face_at(int id, ImVec2 a, ImVec2 b, float round) {
 }
 
 // a button of the pad: ✕ ○ □ △ in their colours, the shoulder buttons and START as plates; the keyboard's key
-enum { B_CROSS, B_CIRCLE, B_SQUARE, B_TRIANGLE, B_L1R1, B_L2R2, B_START, B_DPAD, B_LR, B_RSTICK, B_R3, B_L3, B_LSTICK };
+enum { B_CROSS, B_CIRCLE, B_SQUARE, B_TRIANGLE, B_L1R1, B_L2R2, B_START, B_DPAD, B_LR, B_RSTICK, B_R3, B_L3, B_LSTICK, B_L1, B_R1, B_L2, B_R2, B_MOUSE };
 static float glyph(int b, ImVec2 c, float r) { // -> its width
-    static const char *const kKeys[] = {"Enter", "Esc", "F", "R", "Q/E", "Z/C", "Ctrl+S", "Arrows", "Left/Right", "+/- Wheel", "Right drag", "V", "Mouse"};
+    static const char *const kKeys[] = {"Enter", "Esc", "F", "R", "Q/E", "Z/C", "Ctrl+S", "Arrows", "Left/Right", "+/- Wheel", "Right drag", "V", "Mouse", "Q", "E", "Z", "C", "Mouse"};
     if (sKeyboardLast) {
         const char *k = kKeys[b];
         float tw = text_w(sFont, r * 1.1f, k), w = tw + r * 1.2f;
@@ -2223,7 +2415,7 @@ static float glyph(int b, ImVec2 c, float r) { // -> its width
         return w;
     }
     if (b >= B_L1R1) {
-        const char *k = b == B_L1R1 ? "L1 R1" : b == B_L2R2 ? "L2 R2" : b == B_START ? "START" : b == B_DPAD ? "D-PAD" : b == B_RSTICK ? "R-STICK"
+        const char *k = b == B_L1 ? "L1" : b == B_R1 ? "R1" : b == B_L2 ? "L2" : b == B_R2 ? "R2" : b == B_MOUSE ? "MOUSE" : b == B_L1R1 ? "L1 R1" : b == B_L2R2 ? "L2 R2" : b == B_START ? "START" : b == B_DPAD ? "D-PAD" : b == B_RSTICK ? "R-STICK"
                         : b == B_R3 ? "R3 + R" : b == B_L3 ? "L3" : b == B_LSTICK ? "L-STICK" : "< >";
         float tw = text_w(sFont, r * 1.0f, k), w = tw + r * 1.2f;
         sDl->AddRectFilled(ImVec2(c.x, c.y - r * 0.85f), ImVec2(c.x + w, c.y + r * 0.85f), IM_COL32(42, 26, 85, 255), r * 0.8f);
@@ -2344,6 +2536,21 @@ static int draw_rows(ImVec2 a, ImVec2 b, const std::vector<Row> &rows, int cur, 
             ImVec2 sa(ra.x + S(4), y + S(10)), sb(ra.x + S(4) + w, y + rh - S(4));
             grad(sa, sb, kGold1, kGold2, (sb.y - sa.y) * 0.5f);
             sDl->AddText(sBold != NULL ? sBold : sFont, size, ImVec2(sa.x + S(16), sa.y + (sb.y - sa.y - size) * 0.5f), IM_COL32(74, 26, 0, 255), r.label.c_str());
+            y += rh + gap;
+            continue;
+        }
+        if (r.head) { // a heading that is chosen (the workshop's pieces): a gold pill, its + / - at the end, a note beside it
+            bool selh = i == cur && active;
+            float size = S(15);
+            ImFont *bf = sBold != NULL ? sBold : sFont;
+            float w = std::max(text_w(bf, size, r.label.c_str()) + S(60), (b.x - a.x) * 0.42f);
+            ImVec2 sa(ra.x + S(4), y + S(6)), sb(ra.x + S(4) + w, y + rh - S(6));
+            if (selh) { sDl->AddRectFilled(ImVec2(sa.x - S(3), sa.y - S(3)), ImVec2(sb.x + S(3), sb.y + S(3)), IM_COL32(255, 255, 255, 235), (sb.y - sa.y) * 0.5f + S(3)); }
+            grad(sa, sb, kGold1, kGold2, (sb.y - sa.y) * 0.5f);
+            sDl->AddText(bf, size, ImVec2(sa.x + S(16), sa.y + (sb.y - sa.y - size) * 0.5f), IM_COL32(74, 26, 0, 255), r.label.c_str());
+            sDl->AddText(bf, S(18), ImVec2(sb.x - S(22), sa.y + (sb.y - sa.y - S(18)) * 0.5f - S(1)), IM_COL32(74, 26, 0, 255), r.value.c_str());
+            text(sFont, S(14), ImVec2(sb.x + S(14), y + (rh - S(14)) * 0.5f), kInk, r.sub, rb.x - sb.x - S(20));
+            if (click_in(ra, rb)) { clicked = i; }
             y += rh + gap;
             continue;
         }
@@ -2468,9 +2675,23 @@ static void grid_frame(Overlay &o, std::vector<Prompt> &ps) {
         std::string s = o.search.empty() ? "type to search" : "search: " + o.search + ((sFrames / 20) % 2 ? "_" : " ");
         sDl->AddText(sFont, S(15), ImVec2(x, top0 + S(3)), o.search.empty() ? kDim : kInk, s.c_str());
     }
+    if (!o.pill.empty()) { // what the choice is for, beside the title
+        ImFont *bf = sBold != NULL ? sBold : sFont;
+        float w = std::max(text_w(bf, S(15), o.pill.c_str()) + S(40), S(150)), h = S(28);
+        ImVec2 a(sBoxB.x - S(18) - w, sBoxA.y + S(14)), b(sBoxB.x - S(18), sBoxA.y + S(14) + h);
+        grad(a, b, kGold1, kGold2, h * 0.5f);
+        sDl->AddRect(a, b, IM_COL32(255, 243, 192, 255), h * 0.5f, 0, S(2));
+        sDl->AddText(bf, S(15), ImVec2((a.x + b.x - text_w(bf, S(15), o.pill.c_str())) * 0.5f, a.y + (h - S(15)) * 0.5f), IM_COL32(74, 26, 0, 255), o.pill.c_str());
+    }
     if (o.stage == 0) {
-        // the faces
-        ImVec2 ga(sBoxA.x + S(14), top0 + S(34)), gb(sBoxB.x - S(14), sBoxB.y - S(12));
+        // the faces (with a line under them: whom the cursor is on)
+        ImVec2 ga(sBoxA.x + S(14), top0 + S(34)), gb(sBoxB.x - S(14), sBoxB.y - (o.noneCell ? S(46) : S(12)));
+        if (o.noneCell) {
+            const J *at = o.cur < (int)items.size() ? items[(size_t)o.cur] : NULL;
+            std::string cap = at == NULL ? o.none : (*at)["name"].text();
+            ImFont *bf = sBold != NULL ? sBold : sFont;
+            outlined(bf, S(19), ImVec2((sBoxA.x + sBoxB.x - text_w(bf, S(19), cap.c_str())) * 0.5f, sBoxB.y - S(38)), kGold1, IM_COL32(60, 20, 0, 255), cap, S(1.2f));
+        }
         float cw = S(104), ch = S(122);
         int cols = (int)((gb.x - ga.x) / cw);
         if (cols < 1) { cols = 1; }
@@ -2502,6 +2723,16 @@ static void grid_frame(Overlay &o, std::vector<Prompt> &ps) {
             if (sel) { grad(a, b, IM_COL32(255, 207, 77, 255), IM_COL32(232, 138, 0, 255), S(8)); }
             else { grad(a, b, IM_COL32(90, 63, 168, 255), IM_COL32(44, 27, 98, 255), S(8)); }
             sDl->AddRect(a, b, sel ? IM_COL32(255, 226, 122, 255) : IM_COL32(143, 122, 224, 255), S(8), 0, S(2));
+            if (items[i] == NULL) { // (the first cell: none, taken away)
+                ImFont *bf = sBold != NULL ? sBold : sFont;
+                const char *t = "None";
+                sDl->AddCircle(ImVec2((a.x + b.x) * 0.5f, a.y + (b.y - a.y) * 0.4f), (b.x - a.x) * 0.28f, sel ? kDark : kDim, 0, S(3));
+                sDl->AddLine(ImVec2((a.x + b.x) * 0.5f - (b.x - a.x) * 0.2f, a.y + (b.y - a.y) * 0.4f + (b.x - a.x) * 0.2f),
+                             ImVec2((a.x + b.x) * 0.5f + (b.x - a.x) * 0.2f, a.y + (b.y - a.y) * 0.4f - (b.x - a.x) * 0.2f), sel ? kDark : kDim, S(3));
+                sDl->AddText(bf, S(14), ImVec2((a.x + b.x - text_w(bf, S(14), t)) * 0.5f, b.y - S(24)), sel ? kDark : kInk, t);
+                if (click_in(a, b)) { clicked = i; }
+                continue;
+            }
             float fs = (b.x - a.x) - S(14);
             if (fs > ch - S(42)) { fs = ch - S(42); }
             ImVec2 fa((a.x + b.x - fs) * 0.5f, a.y + S(5));
@@ -2538,6 +2769,13 @@ static void grid_frame(Overlay &o, std::vector<Prompt> &ps) {
         if (games) { ps.push_back({B_L1R1, "BT3 / BT4"}); }
         if (sIn.back) { ov_close(); sound(2); return; }
         if (sIn.sq && !o.none.empty()) {
+            std::function<void(const J *)> f = o.picked;
+            ov_close();
+            sound(1);
+            f(NULL);
+            return;
+        }
+        if (sIn.ok && n > 0 && items[o.cur] == NULL) { // (the none cell)
             std::function<void(const J *)> f = o.picked;
             ov_close();
             sound(1);
@@ -2771,7 +3009,6 @@ static void colours_frame(Overlay &o, std::vector<Prompt> &ps) {
     if (n == 0) { return; }
     int texture = (int)o.tex[(size_t)row]["texture"].number(0);
     if (sIn.tri) { // (the texture painter, on this texture: a secondary way to change its colours)
-        if (sShownCostume != 0) { sShownCostume = 0; } // (these are costume 1's textures)
         open_texpick(texture);
         return;
     }
@@ -2781,9 +3018,9 @@ static void colours_frame(Overlay &o, std::vector<Prompt> &ps) {
     }
     if (sIn.sq) {
         J keep = J::arr();
-        const J &all = sSpec["colours"];
+        const J &all = edit_view()["colours"];
         for (size_t i = 0; i < all.size(); i++) { if ((int)all[i]["texture"].number(-1) != texture) { keep.push(all[i]); } }
-        if (keep.size()) { sSpec.set("colours", keep); } else { sSpec.erase("colours"); }
+        if (keep.size()) { edit_spec().set("colours", keep); } else { edit_spec().erase("colours"); }
         touch();
         sound(2);
         colours_load(&o);
@@ -2928,9 +3165,9 @@ static void palette_frame(Overlay &o, std::vector<Prompt> &ps) {
             list.push(ch);
             ac.set(fx.c_str(), list);
         } else {
-            J list = sSpec["colours"].isArr() ? sSpec["colours"] : J::arr();
+            J list = edit_view()["colours"].isArr() ? edit_view()["colours"] : J::arr();
             list.push(ch);
-            sSpec.set("colours", list);
+            edit_spec().set("colours", list);
         }
         touch();
         sound(1);
@@ -2958,59 +3195,94 @@ static void text_frame(Overlay &o, std::vector<Prompt> &ps) {
 }
 
 // =============================================================================================== the workshop
-// As the web page's (index.html drawWorkshop), writing the same fields: a piece's layer is spec.parts[piece] (or its
-// n-th item).adjust {"scale": [x, y, z], "size", "move": [x, y, z], "turn": [x, y, z] degrees, "nodes": {"<node>":
-// {"stretch", "size", "move", "turn", "shown": false}}}; the body is spec.body {"build": {"torso", "arms", "legs",
-// "head", "hands", "feet": percent}, "nodes": {...}} (custom_fighter.py: mix.py mix(..., opts, adjust)).
-struct WsPath { int piece, layer; std::string node; bool build; };
-static const J &ws_read(const WsPath &w) {
+// Every piece of the warrior as a foldable outline (the trailer's WORKSHOP): the body's own pieces (HAIR, HEAD, TORSO...)
+// and each layer on them ("HAIR - LAYER"), each with its "Whole part" and every strand / part of it with its point
+// count; the one under the cursor blinks on the model. Cross: its sliders (move, turn, stretch), square: show / hide
+// (taken off: not in the built model), L1: a copy of a strand (moved on its own), R1: undo all of it, R2: patch holes
+// on / off (the strips and caps the builder closes the gaps between pieces with), START: save.
+// It writes, in the costume being edited (edit_spec()), as the web page does (index.html drawWorkshop): a layer's
+// spec.parts[piece] (or its n-th item) / spec.extra_layers[n] .adjust {"scale": [x, y, z], "size", "move": [x, y, z],
+// "turn": [x, y, z] degrees, "shown": false, "nodes": {"<node>": {"stretch", "size", "move", "turn", "shown": false}},
+// "copies": [{"node", "stretch", "size", "move", "turn", "shown"}]}; the body is spec.body {"build": {"torso", "arms",
+// "legs", "head", "hands", "feet": percent}, "nodes": {...}, "regions": {"hair": {...}, ...}, "copies": [...],
+// "patch": false} (custom_fighter.py, mix.py mix(..., opts, adjust)).
+enum { WS_MAX_EDITS = 32 };
+static J sPreviewNodes;        // the built model's node of each workshop part ("hair.0:79" -> 71: /api/preview "nodes")
+static std::vector<int> sBlink; // the nodes of the workshop's cursor (blinking on the model)
+extern "C" {
+volatile int gPortBlinkOn;                 // src/sys/gfxm_d_c.c ObjDraw_DrawParts: the parts of these nodes are not drawn
+volatile unsigned char gPortBlinkNodes[256];
+}
+
+static const J &ws_layer_r(const std::string &tag) { // a layer of the edited look ("hair.0", "x.1")
     static J none;
-    const J *o;
-    if (w.piece < 0) {
-        o = &sSpec["body"];
-        if (w.build) { return (*o)["build"]; }
-    } else {
-        const J &v = sSpec["parts"][kPieces[w.piece][0]];
-        o = &(v.isArr() ? v[(size_t)w.layer] : v)["adjust"];
-    }
-    return w.node.empty() ? *o : (*o)["nodes"][w.node.c_str()];
+    size_t dot = tag.find('.');
+    if (dot == std::string::npos) { return none; }
+    std::string piece = tag.substr(0, dot);
+    size_t n = (size_t)atoi(tag.c_str() + dot + 1);
+    if (piece == "x") { return edit_view()["extra_layers"][n]; }
+    const J &v = edit_view()["parts"][piece.c_str()];
+    return v.isArr() ? v[n] : n == 0 ? v : none;
+}
+static J *ws_layer_w(const std::string &tag) {
+    size_t dot = tag.find('.');
+    if (dot == std::string::npos) { return NULL; }
+    std::string piece = tag.substr(0, dot);
+    size_t n = (size_t)atoi(tag.c_str() + dot + 1);
+    J &e = edit_spec();
+    J *v = piece == "x" ? e.find("extra_layers") : e.find("parts") != NULL ? e.find("parts")->find(piece.c_str()) : NULL;
+    if (v == NULL) { return NULL; }
+    if (v->isArr()) { return n < v->a.size() && v->a[n].isObj() ? &v->a[n] : NULL; }
+    return n == 0 && v->isObj() ? v : NULL;
+}
+static const J &ws_read(const WsPath &w) {
+    const J &o = w.layer ? ws_layer_r(w.tag)["adjust"] : edit_view()["body"];
+    if (w.build) { return o["build"]; }
+    if (w.copy >= 0) { return o["copies"][(size_t)w.copy]; }
+    if (!w.region.empty()) { return o["regions"][w.region.c_str()]; }
+    return w.node.empty() ? o : o["nodes"][w.node.c_str()];
+}
+static J &ws_owner(const WsPath &w) { // the adjust / body object the path is in
+    static J dummy;
+    if (!w.layer) { return edit_spec().at("body"); }
+    J *l = ws_layer_w(w.tag);
+    if (l == NULL) { dummy = J::obj(); return dummy; }
+    return l->at("adjust");
 }
 static J &ws_write(const WsPath &w) {
     static J dummy;
-    J *o;
-    if (w.piece < 0) {
-        o = &sSpec.at("body");
-        if (w.build) { return o->at("build"); }
-    } else {
-        J *v = sSpec.at("parts").find(kPieces[w.piece][0]);
-        if (v == NULL) { dummy = J::obj(); return dummy; }
-        if (v->isArr()) {
-            if (v->a.empty()) { dummy = J::obj(); return dummy; }
-            v = &v->a[(size_t)std::min(w.layer, (int)v->a.size() - 1)];
-        }
-        o = &v->at("adjust");
+    J &o = ws_owner(w);
+    if (w.build) { return o.at("build"); }
+    if (w.copy >= 0) {
+        J *c = o.find("copies");
+        if (c == NULL || !c->isArr() || w.copy >= (int)c->a.size()) { dummy = J::obj(); return dummy; }
+        return c->a[(size_t)w.copy];
     }
-    return w.node.empty() ? *o : o->at("nodes").at(w.node.c_str());
+    if (!w.region.empty()) { return o.at("regions").at(w.region.c_str()); }
+    return w.node.empty() ? o : o.at("nodes").at(w.node.c_str());
 }
 static bool prune_empty(J &o) { // empty objects inside go; true when o is empty itself
     for (size_t i = o.k.size(); i-- > 0;) {
         if (o.a[i].isObj() && prune_empty(o.a[i])) { o.k.erase(o.k.begin() + i); o.a.erase(o.a.begin() + i); }
+        else if (o.a[i].isArr() && o.a[i].size() == 0) { o.k.erase(o.k.begin() + i); o.a.erase(o.a.begin() + i); }
     }
     return o.isObj() && o.size() == 0;
 }
 static void ws_prune(void) {
-    J *b = sSpec.find("body");
-    if (b != NULL && b->isObj() && prune_empty(*b)) { sSpec.erase("body"); }
-    J *parts = sSpec.find("parts");
+    J &e = edit_spec();
+    J *b = e.find("body");
+    if (b != NULL && b->isObj() && prune_empty(*b)) { e.erase("body"); }
+    auto clean = [](J &l) {
+        J *adj = l.find("adjust");
+        if (adj != NULL && adj->isObj() && prune_empty(*adj)) { l.erase("adjust"); }
+    };
+    J *parts = e.find("parts");
     for (size_t i = 0; parts != NULL && parts->isObj() && i < parts->a.size(); i++) {
         J &v = parts->a[i];
-        std::vector<J *> ls;
-        if (v.isArr()) { for (J &l : v.a) { ls.push_back(&l); } } else { ls.push_back(&v); }
-        for (J *l : ls) {
-            J *adj = l->find("adjust");
-            if (adj != NULL && adj->isObj() && prune_empty(*adj)) { l->erase("adjust"); }
-        }
+        if (v.isArr()) { for (J &l : v.a) { if (l.isObj()) { clean(l); } } } else if (v.isObj()) { clean(v); }
     }
+    J *x = e.find("extra_layers");
+    for (size_t i = 0; x != NULL && x->isArr() && i < x->a.size(); i++) { if (x->a[i].isObj()) { clean(x->a[i]); } }
 }
 static double ws_get(const WsPath &w, const char *k, int axis, double def) {
     const J &v = ws_read(w)[k];
@@ -3036,7 +3308,6 @@ static void ws_set(const WsPath &w, const char *k, int axis, double val, double 
     ws_prune();
     touch();
 }
-enum { WF_PCT, WF_PCT100, WF_DEG, WF_NUM };
 static std::string ws_fmt(double v, int f) {
     char b[32];
     if (f == WF_PCT) { snprintf(b, sizeof(b), "%d%%", (int)lround(v * 100)); }
@@ -3071,12 +3342,214 @@ static Row ws_slider(const WsPath &w, const char *label, const char *k, int axis
     r.tri = [w, key, axis, def] { ws_set(w, key.c_str(), axis, def, def); sound(2); };
     return r;
 }
+static bool ws_shown(const WsPath &w) { const J &s = ws_read(w)["shown"]; return s.nul() || s.truthy(); }
+static void ws_show(const WsPath &w, bool on) {
+    J &t = ws_write(w);
+    if (on) { t.erase("shown"); } else { t.set("shown", J::boolean(false)); }
+    ws_prune();
+    touch();
+}
+// How many things the workshop changed in the edited look (the counter: "Edits N / 32").
+static int ws_edits(void) {
+    int n = 0;
+    auto opts = [&n](const J &o) {
+        bool whole = false;
+        for (size_t i = 0; i < o.k.size(); i++) {
+            const std::string &k = o.k[i];
+            if (k == "nodes" || k == "regions" || k == "copies" || k == "build") { n += (int)o.a[i].size(); }
+            else if (k == "patch") { n++; }
+            else { whole = true; }
+        }
+        n += whole;
+    };
+    opts(edit_view()["body"]);
+    const J &parts = edit_view()["parts"];
+    for (size_t i = 0; i < parts.size(); i++) {
+        const J &v = parts[i];
+        if (v.isArr()) { for (size_t l = 0; l < v.size(); l++) { opts(v[l]["adjust"]); } } else { opts(v["adjust"]); }
+    }
+    const J &x = edit_view()["extra_layers"];
+    for (size_t i = 0; i < x.size(); i++) { opts(x[i]["adjust"]); }
+    return n;
+}
+static bool ws_patch(void) { return edit_view()["body"]["patch"].nul() || edit_view()["body"]["patch"].truthy(); }
+
+// ---- the outline
+static const char *const kRegions[9][2] = {{"hair", "HAIR"}, {"head", "HEAD"}, {"torso", "TORSO"}, {"arms", "ARMS"}, {"hands", "HANDS"},
+                                           {"legs", "LEGS"}, {"feet", "FEET"}, {"tail", "TAIL"}, {"accessories", "GEAR"}};
+static bool region_has_build(const std::string &r) { return r == "torso" || r == "arms" || r == "legs" || r == "head" || r == "hands" || r == "feet"; }
+struct WsItem {
+    int kind = 0;              // 0 a piece's heading (folds), 1 its whole part, 2 a strand / part, 3 a copy of a strand
+    WsPath path;
+    std::string fold, name;    // the heading's fold key; the part's name
+    int node = -1;             // a strand's node (its donor's, for a layer)
+    std::vector<int> blink;    // the built model's nodes it is
+};
+static std::vector<std::string> sWsOpen; // the open headings ("body:hair", "hair.0")
+static bool ws_open(const std::string &k) { return std::find(sWsOpen.begin(), sWsOpen.end(), k) != sWsOpen.end(); }
+static void ws_fold(const std::string &k, bool open) {
+    sWsOpen.erase(std::remove(sWsOpen.begin(), sWsOpen.end(), k), sWsOpen.end());
+    if (open) { sWsOpen.push_back(k); }
+}
+static int ws_built(const std::string &tag, const std::string &key, int fallback) { // the node a part became in the model
+    const J &v = sPreviewNodes[(tag + ":" + key).c_str()];
+    return v.isNum() ? (int)v.n : fallback;
+}
+static bool ws_strand(int node) { return node >= 0x37 && node != 0x40 && node != 0x41 && node != 0x42 && node != 0x43 && node != 0x6F && node != 0x76; }
+static void ws_outline(const Overlay &o, std::vector<Row> &rows, std::vector<WsItem> &items) {
+    const J &body = o.info["body"], &lays = o.info["layers"];
+    auto add = [&](const Row &r, const WsItem &it) { rows.push_back(r); items.push_back(it); };
+    auto part_row = [&](const WsPath &p, const std::string &name, int points, const std::string &extra) {
+        Row r;
+        r.label = "    " + name;
+        r.value = points > 0 ? std::to_string(points) + " pts" : "";
+        bool shown = ws_shown(p);
+        const J &e = ws_read(p);
+        bool edited = false;
+        for (size_t i = 0; i < e.k.size(); i++) { edited |= e.k[i] != "shown" && e.k[i] != "node"; }
+        r.sub = !shown ? "taken off" : edited ? "changed" : extra;
+        r.locked = false;
+        return r;
+    };
+    for (auto &reg : kRegions) {
+        std::string R = reg[0];
+        // the body's own nodes of this piece
+        std::vector<size_t> mine;
+        for (size_t i = 0; i < body.size(); i++) {
+            std::string br = body[i]["region"].text();
+            if (br == R) { mine.push_back(i); }
+        }
+        std::vector<size_t> ls;
+        for (size_t i = 0; i < lays.size(); i++) { if (lays[i]["piece"].text() == R && !ws_layer_r(lays[i]["tag"].text()).nul()) { ls.push_back(i); } }
+        if (mine.empty() && ls.empty()) { continue; }
+        if (!mine.empty()) {
+            WsItem h;
+            h.kind = 0;
+            h.fold = "body:" + R;
+            h.path.region = R;
+            for (size_t i : mine) { h.blink.push_back((int)body[i]["node"].number(-1)); }
+            const J &cp = edit_view()["body"]["copies"];
+            Row r;
+            r.head = true;
+            r.label = reg[1];
+            bool open = ws_open(h.fold);
+            r.value = open ? "-" : "+";
+            r.sub = open ? "" : "pieces folded";
+            r.tip = "The body's own " + std::string(reg[1]) + ": cross opens it, then pick a strand or the whole part.";
+            add(r, h);
+            if (open) {
+                WsItem w = h;
+                w.kind = 1;
+                w.name = std::string(reg[1]) + ": whole part";
+                Row wr = part_row(w.path, "Whole part", 0, "");
+                wr.label = "Whole part";
+                wr.tip = "All of the body's own " + std::string(reg[1]) + " at once.";
+                add(wr, w);
+                for (size_t i : mine) {
+                    WsItem s;
+                    s.kind = 2;
+                    s.node = (int)body[i]["node"].number(-1);
+                    s.path.node = std::to_string(s.node);
+                    s.name = body[i]["name"].text("Part");
+                    s.blink.push_back(s.node);
+                    Row sr = part_row(s.path, s.name, (int)body[i]["points"].number(0), "");
+                    sr.tip = ws_strand(s.node) ? "Cross: move it, square: take it off, L1: a copy of it." : "Cross: move it (its joint stays), square: take it off.";
+                    add(sr, s);
+                    for (size_t c = 0; c < cp.size(); c++) {
+                        if ((int)cp[c]["node"].number(-1) != s.node) { continue; }
+                        WsItem ci;
+                        ci.kind = 3;
+                        ci.node = s.node;
+                        ci.path.copy = (int)c;
+                        ci.name = s.name + " copy";
+                        ci.blink.push_back(ws_built("body", "c" + std::to_string(c), -1));
+                        Row crow = part_row(ci.path, ci.name, (int)body[i]["points"].number(0), "copy");
+                        crow.tip = "A copy of " + s.name + ": cross moves it, R1 takes it away.";
+                        add(crow, ci);
+                    }
+                }
+            }
+        }
+        int nth = 0;
+        for (size_t li : ls) {
+            const J &L = lays[li];
+            std::string tag = L["tag"].text();
+            const J &nodes = L["nodes"];
+            WsItem h;
+            h.kind = 0;
+            h.fold = tag;
+            h.path.layer = true;
+            h.path.tag = tag;
+            for (size_t i = 0; i < nodes.size(); i++) {
+                int dn = (int)nodes[i]["node"].number(-1);
+                h.blink.push_back(ws_built(tag, std::to_string(dn), dn));
+            }
+            Row r;
+            r.head = true;
+            nth++;
+            r.label = std::string(reg[1]) + " - LAYER" + (ls.size() > 1 ? " " + std::to_string(nth) : "");
+            bool open = ws_open(h.fold);
+            r.value = open ? "-" : "+";
+            r.sub = (open ? std::string() : std::string("pieces folded  ")) + L["who"].text();
+            r.tip = "A layer from " + L["who"].text() + ": cross opens it.";
+            add(r, h);
+            if (!open) { continue; }
+            const J &cp = ws_layer_r(tag)["adjust"]["copies"];
+            WsItem w = h;
+            w.kind = 1;
+            w.name = r.label + ": whole part";
+            Row wr = part_row(w.path, "Whole part", 0, "");
+            wr.label = "Whole part";
+            wr.tip = "The whole layer at once.";
+            add(wr, w);
+            for (size_t i = 0; i < nodes.size(); i++) {
+                WsItem s;
+                s.kind = 2;
+                s.node = (int)nodes[i]["node"].number(-1);
+                s.path.layer = true;
+                s.path.tag = tag;
+                s.path.node = std::to_string(s.node);
+                s.name = nodes[i]["name"].text("Part");
+                s.blink.push_back(ws_built(tag, s.path.node, s.node));
+                Row sr = part_row(s.path, s.name, (int)nodes[i]["points"].number(0), "");
+                sr.tip = ws_strand(s.node) ? "Cross: move it, square: take it off, L1: a copy of it." : "Cross: move it, square: take it off.";
+                add(sr, s);
+                for (size_t c = 0; c < cp.size(); c++) {
+                    if ((int)cp[c]["node"].number(-1) != s.node) { continue; }
+                    WsItem ci;
+                    ci.kind = 3;
+                    ci.node = s.node;
+                    ci.path.layer = true;
+                    ci.path.tag = tag;
+                    ci.path.copy = (int)c;
+                    ci.name = s.name + " copy";
+                    ci.blink.push_back(ws_built(tag, "c" + std::to_string(c), -1));
+                    Row crow = part_row(ci.path, ci.name, (int)nodes[i]["points"].number(0), "copy");
+                    crow.tip = "A copy of " + s.name + ": cross moves it, R1 takes it away.";
+                    add(crow, ci);
+                }
+            }
+        }
+    }
+}
+static std::string ws_info_key(void) { // (what the parts list was read for: read again when it changes)
+    J k = J::arr();
+    k.push(J::num(sEditCostume));
+    k.push(costume_look(sEditCostume));
+    k.push(edit_view()["parts"]);
+    k.push(edit_view()["extra_layers"]);
+    std::string t = js_text(k);
+    for (size_t p; (p = t.find("\"adjust\"")) != std::string::npos;) { t.replace(p, 8, "\"a\""); } // (edits do not change the list)
+    return t;
+}
 static void ws_load(Overlay *o) {
     o->loading = true;
+    o->text = ws_info_key();
     J body = J::obj();
     J spec = sSpec;
     if (spec["name"].text().empty()) { spec.set("name", J::str("preview")); }
     body.set("spec", spec);
+    body.set("costume", J::num(sEditCostume));
     int id = o->id;
     api("/api/layernodes", &body, [id](int st, const J &r) {
         Overlay *ov = NULL;
@@ -3087,123 +3560,76 @@ static void ws_load(Overlay *o) {
         ov->info = r;
     }, 300000);
 }
-static void open_workshop(int piece) {
+static void open_workshop(const char *region) {
     Overlay o;
     o.kind = OV_WORKSHOP;
-    o.piece = piece;
-    std::string what = piece < 0 ? "BODY" : kPieces[piece][1];
-    for (char &c : what) { c = (char)SDL_toupper((unsigned char)c); }
-    o.title = "WORKSHOP: " + what;
+    o.title = "WORKSHOP";
+    o.region = region != NULL ? region : "";
+    if (sWsOpen.empty()) { sWsOpen.push_back("hair.0"); } // (the first hair layer open, the rest folded)
     ov_push(o);
     ws_load(&sOv.back());
     sound(1);
 }
-static void ws_rows(Overlay &o, std::vector<Row> &rows) {
-    static J none;
-    std::vector<const J *> ls;
-    if (o.piece >= 0) {
-        const J &all = o.info["layers"];
-        for (size_t i = 0; i < all.size(); i++) { if (all[i]["piece"].text() == kPieces[o.piece][0]) { ls.push_back(&all[i]); } }
-        int have = (int)layers(kPieces[o.piece][0]).size();
-        if ((int)ls.size() > have) { ls.resize((size_t)have); }
-        if (ls.empty()) { return; }
-        o.layer = std::min(std::max(o.layer, 0), (int)ls.size() - 1);
+
+// ---- the sliders of one part (cross on it)
+static void open_wsedit(const WsPath &p, const std::string &name) {
+    Overlay o;
+    o.kind = OV_WSEDIT;
+    o.ws = p;
+    o.title = "WORKSHOP: " + name;
+    for (char &c : o.title) { c = (char)SDL_toupper((unsigned char)c); }
+    if (o.title.size() > 34) { o.title = o.title.substr(0, 34); }
+    ov_push(o);
+    sound(1);
+}
+static void wsedit_rows(const Overlay &o, std::vector<Row> &rows) {
+    WsPath w = o.ws;
+    if (!w.region.empty() && region_has_build(w.region)) {
+        rows.push_back(sec("BUILD"));
+        WsPath b;
+        b.build = true;
+        rows.push_back(ws_slider(b, "Build", w.region.c_str(), -1, 50, 160, 1, 100, WF_PCT100,
+                                 "Thicker or thinner around the bones (the joints stay where they are). Triangle: back to 100%."));
     }
-    const J &nodes = o.piece < 0 ? o.info["body"] : (*ls[(size_t)o.layer])["nodes"];
-    if (o.node >= (int)nodes.size()) { o.node = -1; }
-    WsPath w = {o.piece, o.layer, o.node >= 0 ? std::to_string((int)nodes[(size_t)o.node]["node"].number(0)) : std::string(), false};
-    int id = o.id, nn = (int)nodes.size(), nl = (int)ls.size();
-    auto self = [id]() -> Overlay * { for (Overlay &x : sOv) { if (x.id == id) { return &x; } } return NULL; };
     rows.push_back(sec("WHICH PART?"));
-    if (nl > 1) {
-        Row r;
-        r.label = "Layer";
-        r.value = (*ls[(size_t)o.layer])["label"].text();
-        r.sub = std::to_string(o.layer + 1) + " / " + std::to_string(nl);
-        r.tip = "This piece has layers on top of each other: which one to change.";
-        r.lrLabel = "Layer";
-        r.lr = [self, nl](int d) { Overlay *x = self(); if (x) { x->layer = (x->layer + d + nl) % nl; x->node = -1; sound(0); } };
-        r.ok = [self, nl] { Overlay *x = self(); if (x) { x->layer = (x->layer + 1) % nl; x->node = -1; } };
-        rows.push_back(r);
-    }
     {
         Row r;
-        r.label = "Part";
-        r.value = o.node < 0 ? std::string(o.piece < 0 ? "Build (the whole body)" : "The whole layer") : nodes[(size_t)o.node]["name"].text("?");
-        r.sub = o.node < 0 ? (nn ? std::to_string(nn) + " parts: left / right" : "") : std::to_string(o.node + 1) + " / " + std::to_string(nn);
-        if (o.piece >= 0 && o.node < 0 && nl) { r.sub = (*ls[(size_t)o.layer])["label"].text(); }
-        r.tip = "Left / right: the part to change - the whole piece, or one of its parts (a lock of hair, a sleeve...).";
-        r.lrLabel = "Part";
-        r.lr = [self, nn](int d) { Overlay *x = self(); if (x) { x->node = ((x->node + 1 + d + nn + 1) % (nn + 1)) - 1; sound(0); } };
-        r.ok = [self, nn] { Overlay *x = self(); if (x) { x->node = ((x->node + 2) % (nn + 1)) - 1; } };
+        bool shown = ws_shown(w);
+        r.label = "Shown";
+        r.value = shown ? "On" : "Taken off";
+        r.tip = "Taken off: it is not in your warrior's model at all.";
+        auto flip = [w] { ws_show(w, !ws_shown(w)); sound(0); };
+        r.ok = flip;
+        r.lr = [flip](int) { flip(); };
+        r.lrLabel = "On / off";
         rows.push_back(r);
     }
-    if (o.piece < 0 && o.node < 0) {
-        static const char *const kBuild[6][2] = {{"torso", "Torso build"}, {"arms", "Arm build"}, {"legs", "Leg build"},
-                                                 {"head", "Head size"}, {"hands", "Hand size"}, {"feet", "Foot size"}};
-        rows.push_back(sec("BUILD"));
-        WsPath b = w;
-        b.build = true;
-        for (int i = 0; i < 6; i++) {
-            rows.push_back(ws_slider(b, kBuild[i][1], kBuild[i][0], -1, 50, 160, 1, 100, WF_PCT100,
-                                     "Thicker or thinner around the bones (the joints stay where they are). Triangle: back to 100%."));
-        }
-    } else {
-        if (o.node >= 0) {
-            Row r;
-            bool shown = ws_read(w)["shown"].nul() || ws_read(w)["shown"].truthy();
-            r.label = "Shown";
-            r.value = shown ? "On" : "Off (hidden)";
-            r.tip = "Hide this part of the model (a lock of hair, a cape...).";
-            auto flip = [w] {
-                bool on = ws_read(w)["shown"].nul() || ws_read(w)["shown"].truthy();
-                J &t = ws_write(w);
-                if (on) { t.set("shown", J::boolean(false)); } else { t.erase("shown"); }
-                ws_prune();
-                touch();
-                sound(0);
-            };
-            r.ok = flip;
-            r.lr = [flip](int) { flip(); };
-            r.lrLabel = "On / off";
-            rows.push_back(r);
-        }
-        const char *sk = o.node < 0 ? "scale" : "stretch";
-        static const char *const kAx[3] = {"X", "Y", "Z"};
-        rows.push_back(sec("SHAPE"));
-        for (int i = 0; i < 3; i++) {
-            std::string l = std::string("Stretch ") + kAx[i];
-            rows.push_back(ws_slider(w, "", sk, i, 0.25, 3, 0.01, 1, WF_PCT, "Stretch it along one axis: X across, Y up, Z front to back."));
-            rows.back().label = l;
-        }
-        rows.push_back(ws_slider(w, "Size", "size", -1, 0.25, 3, 0.01, 1, WF_PCT, "Bigger or smaller, all ways at once."));
-        rows.push_back(sec("PLACE"));
-        for (int i = 0; i < 3; i++) {
-            rows.push_back(ws_slider(w, "", "move", i, -8, 8, 0.05, 0, WF_NUM, "Move it: X across, Y up, Z towards you (a fighter is about 20 high)."));
-            rows.back().label = std::string("Move ") + kAx[i];
-        }
-        for (int i = 0; i < 3; i++) {
-            rows.push_back(ws_slider(w, "", "turn", i, -180, 180, 1, 0, WF_DEG, "Turn it about an axis: X tips it forward, Y turns it round, Z tilts it."));
-            rows.back().label = std::string("Turn ") + kAx[i];
-        }
+    const char *sk = w.layer && w.node.empty() && w.copy < 0 ? "scale" : "stretch";
+    static const char *const kAx[3] = {"X", "Y", "Z"};
+    rows.push_back(sec("SHAPE"));
+    for (int i = 0; i < 3; i++) {
+        rows.push_back(ws_slider(w, "", sk, i, 0.25, 3, 0.01, 1, WF_PCT, "Stretch it along one axis: X across, Y up, Z front to back."));
+        rows.back().label = std::string("Stretch ") + kAx[i];
+    }
+    rows.push_back(ws_slider(w, "Size", "size", -1, 0.25, 3, 0.01, 1, WF_PCT, "Bigger or smaller, all ways at once."));
+    rows.push_back(sec("PLACE"));
+    for (int i = 0; i < 3; i++) {
+        rows.push_back(ws_slider(w, "", "move", i, -8, 8, 0.05, 0, WF_NUM, "Move it: X across, Y up, Z towards you (a fighter is about 20 high)."));
+        rows.back().label = std::string("Move ") + kAx[i];
+    }
+    for (int i = 0; i < 3; i++) {
+        rows.push_back(ws_slider(w, "", "turn", i, -180, 180, 1, 0, WF_DEG, "Turn it about an axis: X tips it forward, Y turns it round, Z tilts it."));
+        rows.back().label = std::string("Turn ") + kAx[i];
     }
     rows.push_back(sec("UNDO"));
     Row z;
     z.label = "Reset";
-    z.value = "Put this part back as it was";
+    z.value = "Put it back as it was";
     z.tip = "Everything of this part back as it was.";
     z.ok = [w] {
-        if (!w.node.empty()) {
-            WsPath up = w;
-            up.node.clear();
-            J *n = ws_write(up).find("nodes");
-            if (n != NULL) { n->erase(w.node.c_str()); }
-        } else if (w.piece < 0) {
-            sSpec.at("body").erase("build");
-        } else {
-            J &t = ws_write(w);
-            for (const char *k : {"scale", "size", "move", "turn"}) { t.erase(k); }
-        }
+        J &t = ws_write(w);
+        for (const char *k : {"scale", "stretch", "size", "move", "turn", "shown"}) { t.erase(k); }
+        if (!w.region.empty()) { J *b = ws_owner(w).find("build"); if (b != NULL) { b->erase(w.region.c_str()); } }
         ws_prune();
         touch();
         sound(2);
@@ -3211,21 +3637,11 @@ static void ws_rows(Overlay &o, std::vector<Row> &rows) {
     rows.push_back(z);
 }
 static int sBarDrag = -1; // the slider the mouse holds (its row)
-static void workshop_frame(Overlay &o, std::vector<Prompt> &ps) {
+static void wsedit_frame(Overlay &o, std::vector<Prompt> &ps) {
     float top0 = sBoxA.y + S(54);
     ps.push_back({B_CIRCLE, "Done"});
-    if (o.info.nul()) {
-        sDl->AddText(sFont, S(18), ImVec2(sBoxA.x + S(24), top0 + S(10)), kInk, o.loading ? "Reading the parts..." : "The parts could not be read.");
-        if (sIn.back) { ov_close(); sound(2); }
-        return;
-    }
     std::vector<Row> rows;
-    ws_rows(o, rows);
-    if (rows.empty()) {
-        sDl->AddText(sFont, S(18), ImVec2(sBoxA.x + S(24), top0 + S(10)), kInk, "This piece is the body's own: pick whose it is first.", NULL, sBoxB.x - sBoxA.x - S(48));
-        if (sIn.back) { ov_close(); sound(2); }
-        return;
-    }
+    wsedit_rows(o, rows);
     fix_cursor(rows, o.cur);
     int clicked = draw_rows(ImVec2(sBoxA.x + S(10), top0), ImVec2(sBoxB.x - S(10), sBoxB.y - S(10)), rows, o.cur, o.top, true);
     const Row &r = rows[(size_t)o.cur];
@@ -3237,8 +3653,7 @@ static void workshop_frame(Overlay &o, std::vector<Prompt> &ps) {
     for (const Prompt &p : ps) { mine.push_back(p); }
     ps = mine;
     if (sIn.back) { sBarDrag = -1; ov_close(); sound(2); return; }
-    // the mouse on a slider: it follows while held
-    if (sMouse && ImGui::IsMouseClicked(0)) {
+    if (sMouse && ImGui::IsMouseClicked(0)) { // the mouse on a slider: it follows while held
         for (const auto &b : sBars) { if (ImGui::IsMouseHoveringRect(b.second.Min, b.second.Max, false)) { sBarDrag = b.first; o.cur = b.first; clicked = -1; } }
     }
     if (sBarDrag >= 0 && (!ImGui::IsMouseDown(0) || sBarDrag >= (int)rows.size())) { sBarDrag = -1; }
@@ -3251,13 +3666,170 @@ static void workshop_frame(Overlay &o, std::vector<Prompt> &ps) {
         }
         return;
     }
-    if (sIn.sq) { // (the whole part back)
-        rows.back().ok();
-        return;
-    }
+    if (sIn.sq) { rows.back().ok(); return; } // (the whole part back)
     int cur = o.cur, id = o.id;
     list_input(rows, cur, clicked);
     for (Overlay &x : sOv) { if (x.id == id) { x.cur = cur; } }
+}
+
+// ---- the outline's screen
+static void ws_undo_all(const WsItem &it) {
+    const WsPath &w = it.path;
+    if (it.kind == 3) { // a copy: taken away
+        J *c = ws_owner(w).find("copies");
+        if (c != NULL && c->isArr() && w.copy < (int)c->a.size()) { c->a.erase(c->a.begin() + w.copy); }
+    } else if (it.kind == 2) {
+        J *n = ws_owner(w).find("nodes");
+        if (n != NULL) { n->erase(w.node.c_str()); }
+    } else if (w.layer && it.kind == 0) {
+        J *l = ws_layer_w(w.tag);
+        if (l != NULL) { l->erase("adjust"); }
+    } else if (w.layer) {
+        J &t = ws_owner(w);
+        for (const char *k : {"scale", "stretch", "size", "move", "turn", "shown"}) { t.erase(k); }
+    } else { // the body's piece: its whole part (and, from its heading, every part of it and their copies)
+        J &b = ws_owner(w);
+        J *rg = b.find("regions");
+        if (rg != NULL) { rg->erase(w.region.c_str()); }
+        J *bd = b.find("build");
+        if (bd != NULL) { bd->erase(w.region.c_str()); }
+        if (it.kind == 0) {
+            J *n = b.find("nodes"), *c = b.find("copies");
+            for (int node : it.blink) {
+                if (n != NULL) { n->erase(std::to_string(node).c_str()); }
+                for (size_t i = c != NULL && c->isArr() ? c->a.size() : 0; i-- > 0;) {
+                    if ((int)c->a[i]["node"].number(-1) == node) { c->a.erase(c->a.begin() + i); }
+                }
+            }
+        }
+    }
+    ws_prune();
+    touch();
+}
+static void workshop_frame(Overlay &o, std::vector<Prompt> &ps) {
+    float top0 = sBoxA.y + S(54);
+    // the counter, under the saved chip
+    {
+        char line[48];
+        snprintf(line, sizeof(line), "Edits %d / %d", ws_edits(), WS_MAX_EDITS);
+        float size = S(16);
+        outlined(sBold != NULL ? sBold : sFont, size, ImVec2(P(1336, 0).x - text_w(sBold != NULL ? sBold : sFont, size, line) - S(10), P(0, 68).y),
+                 kGold1, IM_COL32(60, 20, 0, 255), line, S(1.2f));
+    }
+    if (o.info.nul()) {
+        sDl->AddText(sFont, S(18), ImVec2(sBoxA.x + S(24), top0 + S(10)), kInk, o.loading ? "Reading the parts..." : "The parts could not be read.");
+        ps.push_back({B_CIRCLE, "Done"});
+        if (sIn.back || sIn.tri) { ov_close(); sound(2); }
+        return;
+    }
+    if (!o.loading && o.text != ws_info_key()) { ws_load(&o); } // (a layer came or went: its parts read again)
+    std::vector<Row> rows;
+    std::vector<WsItem> items;
+    ws_outline(o, rows, items);
+    if (!o.region.empty()) { // (opened on a piece: the cursor on it, opened)
+        for (size_t i = 0; i < items.size(); i++) {
+            if (items[i].kind == 0 && (items[i].fold == "body:" + o.region || items[i].fold.compare(0, o.region.size() + 1, o.region + ".") == 0)) {
+                ws_fold(items[i].fold, true);
+                o.cur = (int)i;
+                break;
+            }
+        }
+        o.region.clear();
+        rows.clear();
+        items.clear();
+        ws_outline(o, rows, items);
+    }
+    if (rows.empty()) {
+        sDl->AddText(sFont, S(18), ImVec2(sBoxA.x + S(24), top0 + S(10)), kInk, "Nothing to change here.", NULL, sBoxB.x - sBoxA.x - S(48));
+        ps.push_back({B_CIRCLE, "Done"});
+        if (sIn.back || sIn.tri) { ov_close(); sound(2); }
+        return;
+    }
+    fix_cursor(rows, o.cur);
+    int clicked = draw_rows(ImVec2(sBoxA.x + S(10), top0), ImVec2(sBoxB.x - S(10), sBoxB.y - S(10)), rows, o.cur, o.top, true);
+    if (clicked >= 0) { o.cur = clicked; sIn.ok = true; }
+    WsItem it = items[(size_t)o.cur];
+    sBlink = it.blink;
+    bool patch = ws_patch();
+    ps.push_back({B_CROSS, it.kind == 0 ? (ws_open(it.fold) ? "Fold" : "Open") : "Edit"});
+    if (it.kind != 0) { ps.push_back({B_SQUARE, "Show / hide"}); }
+    if (it.kind == 2 && ws_strand(it.node)) { ps.push_back({B_L1, "Duplicate"}); }
+    ps.push_back({B_R1, "Undo all of it"});
+    ps.push_back({B_R2, patch ? "Patch holes: ON" : "Patch holes: OFF"});
+    ps.push_back({B_START, "Save"});
+    ps.push_back({B_TRIANGLE, "Done"});
+    if (sIn.back || sIn.tri) { ov_close(); sound(2); return; }
+    if (sIn.start) { save(); return; }
+    if (sIn.up) { move_cursor(rows, o.cur, -1); return; }
+    if (sIn.down) { move_cursor(rows, o.cur, 1); return; }
+    if (it.kind == 0 && (sIn.ok || sIn.left || sIn.right)) {
+        ws_fold(it.fold, sIn.ok ? !ws_open(it.fold) : sIn.right);
+        sound(0);
+        return;
+    }
+    if (sIn.r2) {
+        J &b = edit_spec().at("body");
+        if (patch) { b.set("patch", J::boolean(false)); } else { b.erase("patch"); }
+        ws_prune();
+        touch();
+        toast(patch ? "Patch holes: OFF. The gaps between pieces stay open." : "Patch holes: ON. The gaps between pieces are closed.");
+        sound(0);
+        return;
+    }
+    if (sIn.r1) {
+        ws_undo_all(it);
+        toast(it.kind == 3 ? "The copy is gone." : "Back as it was.");
+        sound(2);
+        return;
+    }
+    if (it.kind == 0) { return; }
+    if (sIn.ok) { open_wsedit(it.path, it.name.empty() ? std::string("part") : it.name); return; }
+    if (sIn.sq) {
+        bool on = !ws_shown(it.path);
+        ws_show(it.path, on);
+        toast(on ? "Put back on." : "Taken off.");
+        sound(on ? 1 : 2);
+        return;
+    }
+    if (sIn.l1 && it.kind == 2) {
+        if (!ws_strand(it.node)) { toast("Only strands and extra pieces can be copied (not the body's joints).", true); sound(2); return; }
+        if (ws_edits() >= WS_MAX_EDITS) { toast("That is the most edits (32): undo some first.", true); sound(2); return; }
+        WsPath owner = it.path;
+        owner.node.clear();
+        J &ow = ws_owner(owner);
+        J *c = ow.find("copies");
+        if (c == NULL || !c->isArr()) { c = &ow.set("copies", J::arr()); }
+        J cp = J::obj();
+        cp.set("node", J::num(it.node));
+        const J &mine = ws_read(it.path); // (the copy starts where the strand is: its edits)
+        for (const char *k : {"stretch", "size", "move", "turn"}) { if (mine.has(k)) { cp.set(k, mine[k]); } }
+        c->push(cp);
+        int at = (int)c->a.size() - 1;
+        touch();
+        toast("Duplicated! Edit the copy to move it.");
+        sound(1);
+        rows.clear();
+        items.clear();
+        ws_outline(o, rows, items);
+        for (size_t i = 0; i < items.size(); i++) {
+            if (items[i].kind == 3 && items[i].path.copy == at && items[i].path.layer == it.path.layer && items[i].path.tag == it.path.tag) { o.cur = (int)i; }
+        }
+        return;
+    }
+}
+
+// The workshop's cursor blinks on the model (the game's thread draws it: gPortBlinkNodes).
+static void ws_blink_update(void) {
+    bool on = !sOv.empty() && sOv.back().kind == OV_WORKSHOP && !sBlink.empty();
+    if (on) {
+        static std::vector<int> was;
+        if (was != sBlink) {
+            memset((void *)gPortBlinkNodes, 0, sizeof(gPortBlinkNodes));
+            for (int n : sBlink) { if (n >= 0 && n < 256) { gPortBlinkNodes[n] = 1; } }
+            was = sBlink;
+        }
+    }
+    gPortBlinkOn = on && (sFrames / 14) % 2 == 1;
 }
 
 // =============================================================================================== the texture painter
@@ -3284,6 +3856,9 @@ struct Painter {
     bool stroke = false, mouseDown = false, mouseAim = false;
     float sx = 0, sy = 0;                      // where the stroke was the frame before
     int edits = 0;                             // paint changed since it was written into the spec
+    J list;                                    // the costume's textures (/api/textures): the list on the left
+    int at = 0, listTop = 0;                   // ... the one painted, the first shown
+    bool showBase = false;                     // "Picture": the texture without its paint
 };
 static Painter sPt;
 static std::vector<SDL_GPUTexture *> sFreeLater; // textures drawn this frame: freed the next one
@@ -3346,9 +3921,9 @@ static void pt_commit(void) {
     bool any = false;
     for (size_t i = 3; i < p.ov.size(); i += 4) { if (p.ov[i] >= 128) { any = true; break; } }
     if (!any) {
-        J *pa = sSpec.find("paint");
+        J *pa = edit_spec().find("paint");
         if (pa != NULL) { pa->erase(p.key.c_str()); }
-        clean_empty("paint");
+        edit_clean("paint");
         touch();
         return;
     }
@@ -3357,7 +3932,7 @@ static void pt_commit(void) {
     e.set("h", J::num(p.h));
     e.set("sig", J::str(p.sig));
     e.set("png", J::str(png_b64(p.ov.data(), p.w, p.h)));
-    sSpec.at("paint").set(p.key.c_str(), e);
+    edit_spec().at("paint").set(p.key.c_str(), e);
     touch();
 }
 static void pt_snapshot(void) {
@@ -3439,14 +4014,14 @@ static void painter_close(void) {
     pt_release();
     sPt.stroke = false;
 }
-static void open_painter(const J &t, int costume) {
+static bool pt_load(const J &t, int costume) { // a texture into the painter (the one painted before: its paint written)
     Painter &p = sPt;
     painter_close();
     int w = 0, h = 0;
     std::vector<uint8_t> base;
     if (!rgba_of_png64(t["png"].text(), base, &w, &h) || w != (int)t["w"].number(0) || h != (int)t["h"].number(0)) {
         toast("That texture could not be read.", true);
-        return;
+        return false;
     }
     bool same = p.key == t["key"].text() && p.sig == t["sig"].text() && p.w == w && p.h == h;
     p.key = t["key"].text();
@@ -3459,7 +4034,7 @@ static void open_painter(const J &t, int costume) {
     p.costume = costume;
     p.base = base;
     p.ov.assign((size_t)w * h * 4, 0);
-    const J &have = sSpec["paint"][p.key.c_str()];
+    const J &have = edit_view()["paint"][p.key.c_str()];
     if (have.isObj()) {
         std::vector<uint8_t> ov;
         int ow = 0, oh = 0;
@@ -3477,9 +4052,15 @@ static void open_painter(const J &t, int costume) {
     p.edits = 0;
     p.dirty = true;
     p.stroke = false;
+    p.showBase = false;
+    for (size_t i = 0; i < p.list.size(); i++) { if (p.list[i]["key"].text() == p.key) { p.at = (int)i; } }
+    return true;
+}
+static void open_painter(const J &t, int costume) {
+    if (!pt_load(t, costume)) { return; }
     Overlay o;
     o.kind = OV_PAINT;
-    o.title = "PAINT: TEXTURE " + std::to_string(p.index) + " (COSTUME " + std::to_string(costume) + ")";
+    o.title = "TEXTURES";
     ov_push(o);
     sound(1);
 }
@@ -3491,7 +4072,7 @@ static void texpick_load(Overlay *o) {
     J spec = sSpec;
     if (spec["name"].text().empty()) { spec.set("name", J::str("preview")); }
     body.set("spec", spec);
-    body.set("costume", J::num(sShownCostume));
+    body.set("costume", J::num(sEditCostume));
     int id = o->id;
     api("/api/textures", &body, [id](int st, const J &r) {
         Overlay *ov = NULL;
@@ -3510,12 +4091,15 @@ static void texpick_load(Overlay *o) {
             ov->pics.push_back(png64_tex(ov->tex[i]["png"].text(), &w, &h));
             ov->picW.push_back(w);
             ov->picH.push_back(h);
-            if (ov->texture >= 0 && (int)ov->tex[i]["index"].number(-1) == ov->texture) { ov->cur = (int)i; }
+            if (ov->texture >= 0 && (int)ov->tex[i]["index"].number(-1) == ov->texture && !ov->tex[i].has("entry")) { ov->cur = (int)i; }
         }
-        if (ov->texture >= 0 && ov->cur < (int)ov->tex.size()) { // (asked for one texture: straight to it)
+        if (ov->cur < (int)ov->tex.size()) { // (straight to the painter: the texture asked for, else the most used; its list beside it)
             J t = ov->tex[(size_t)ov->cur];
             int costume = ov->layer;
             ov->texture = -1;
+            sPt.list = ov->tex;
+            sPt.listTop = 0;
+            ov->text = "painter";
             open_painter(t, costume);
         }
     }, 300000);
@@ -3579,7 +4163,7 @@ static void texpick_frame(Overlay &o, std::vector<Prompt> &ps) {
             ImVec2 ca(pb.x + S(14) + c * S(17), y + S(52));
             sDl->AddRectFilled(ca, ImVec2(ca.x + S(14), ca.y + S(14)), col32(hex_rgb(pal[c].text())), S(3));
         }
-        if (sSpec["paint"].has(t["key"].text().c_str())) {
+        if (edit_view()["paint"].has(t["key"].text().c_str())) {
             const char *pt = "PAINTED";
             float w = text_w(sFont, S(13), pt) + S(16);
             ImVec2 ca(b.x - w - S(10), y + S(8));
@@ -3589,16 +4173,16 @@ static void texpick_frame(Overlay &o, std::vector<Prompt> &ps) {
         if (click_in(a, b)) { clicked = i; }
     }
     if (clicked >= 0) { o.cur = clicked; sIn.ok = true; }
-    bool painted = n > 0 && sSpec["paint"].has(o.tex[(size_t)o.cur]["key"].text().c_str());
+    bool painted = n > 0 && edit_view()["paint"].has(o.tex[(size_t)o.cur]["key"].text().c_str());
     ps.push_back({B_CROSS, "Paint on it"});
     if (painted) { ps.push_back({B_SQUARE, "Remove its paint"}); }
     ps.push_back({B_CIRCLE, "Back"});
     if (sIn.back) { ov_close(); sound(2); return; }
     if (n == 0) { return; }
     if (sIn.sq && painted) {
-        J *pa = sSpec.find("paint");
+        J *pa = edit_spec().find("paint");
         if (pa != NULL) { pa->erase(o.tex[(size_t)o.cur]["key"].text().c_str()); }
-        clean_empty("paint");
+        edit_clean("paint");
         touch();
         sound(2);
         return;
@@ -3606,20 +4190,61 @@ static void texpick_frame(Overlay &o, std::vector<Prompt> &ps) {
     if (sIn.ok) { J t = o.tex[(size_t)o.cur]; open_painter(t, o.layer); }
 }
 
-// ---- the painter itself
+// ---- the painter itself (the trailer's TEXTURES): the costume's textures on the left, named by the body part that
+// uses them (every expression too: "Face: blink"), the texture large with its own colours under it, the controls on
+// the right over the model, which is built again after each stroke.
+static void pt_wipe(void) { // all the paint of this texture away (undoable)
+    pt_snapshot();
+    std::fill(sPt.ov.begin(), sPt.ov.end(), (uint8_t)0);
+    sPt.dirty = true;
+    pt_commit();
+}
+static void pt_switch(int i) { // another texture of the list
+    if (i < 0 || i >= (int)sPt.list.size() || i == sPt.at) { return; }
+    J t = sPt.list[(size_t)i];
+    if (pt_load(t, sPt.costume)) { sound(0); }
+}
 static void painter_frame(Overlay &o, std::vector<Prompt> &ps) {
     Painter &p = sPt;
     ImGuiIO &io = ImGui::GetIO();
     if (p.w <= 0 || p.base.empty()) { ov_close(); return; }
-    // the view: a square on the left of the box; the tools beside it
-    ImVec2 va(sBoxA.x + S(16), sBoxA.y + S(54));
-    float side = std::min(sBoxB.y - S(14) - va.y, sBoxB.x - sBoxA.x - S(320));
+    ImFont *bold = sBold != NULL ? sBold : sFont;
+    // ---- the textures (left), clicked or L3 / V for the next
+    float lx0 = sBoxA.x + S(14), lx1 = lx0 + S(236), ly0 = sBoxA.y + S(54), lrh = S(25);
+    int nl = (int)p.list.size();
+    int clickList = -1;
+    {
+        sDl->AddRectFilled(ImVec2(lx0 - S(4), ly0 - S(4)), ImVec2(lx1 + S(4), sBoxB.y - S(12)), IM_COL32(20, 10, 46, 180), S(8));
+        int fits = std::max(1, (int)((sBoxB.y - S(18) - ly0) / lrh));
+        if (p.at < p.listTop) { p.listTop = p.at; }
+        if (p.at >= p.listTop + fits) { p.listTop = p.at - fits + 1; }
+        ImVec2 la(lx0, ly0), lb(lx1, sBoxB.y - S(14));
+        if (sMouse && io.MouseWheel != 0.0f && ImGui::IsMouseHoveringRect(la, lb)) { p.listTop = std::max(0, std::min(nl - fits, p.listTop - (int)io.MouseWheel)); }
+        for (int i = p.listTop; i < nl && i < p.listTop + fits; i++) {
+            const J &t = p.list[(size_t)i];
+            float y = ly0 + (i - p.listTop) * lrh;
+            ImVec2 a(lx0, y), b(lx1, y + lrh - S(3));
+            bool sel = i == p.at;
+            if (sel) { grad(a, b, kGold1, kGold2, S(6)); }
+            std::string name = t["name"].text(("Texture " + t["index"].text()).c_str());
+            char size[32];
+            snprintf(size, sizeof(size), "%dx%d", (int)t["w"].number(0), (int)t["h"].number(0));
+            ImU32 ink = sel ? kDark : kInk;
+            text(sFont, S(14), ImVec2(a.x + S(8), y + S(3)), ink, name, S(150));
+            sDl->AddText(sFont, S(13), ImVec2(b.x - S(8) - text_w(sFont, S(13), size), y + S(4)), sel ? IM_COL32(107, 58, 0, 255) : kDim, size);
+            if (edit_view()["paint"].has(t["key"].text().c_str())) { sDl->AddCircleFilled(ImVec2(a.x + S(160), y + S(11)), S(3.5f), sel ? kDark : kGold1); }
+            if (click_in(a, b)) { clickList = i; }
+        }
+    }
+    // ---- the view: a square beside the list, the texture's own colours under it
+    ImVec2 va(lx1 + S(16), sBoxA.y + S(54));
+    float side = std::min(sBoxB.y - S(58) - va.y, sBoxB.x - S(16) - va.x);
     ImVec2 vb(va.x + side, va.y + side);
     float fit = side / (float)std::max(p.w, p.h);
     bool over = sMouse && ImGui::IsMouseHoveringRect(va, vb, false);
-    // zoom: the right stick up / down, + / -, the wheel over it (about the crosshair, or the mouse)
+    // zoom: the right stick up / down, + / -, Ctrl + the wheel over it (the wheel alone: the colours)
     float dz = sIn.zoom != 0.0f && !sIn.r3 ? powf(1.03f, sIn.zoom) : 1.0f;
-    if (over && io.MouseWheel != 0.0f) { dz *= powf(1.25f, io.MouseWheel); }
+    if (over && io.MouseWheel != 0.0f && io.KeyCtrl) { dz *= powf(1.25f, io.MouseWheel); }
     if (dz != 1.0f) {
         float sc0 = fit * p.zoom;
         float ax = over ? p.ox + (io.MousePos.x - va.x) / sc0 : p.cx, ay = over ? p.oy + (io.MousePos.y - va.y) / sc0 : p.cy;
@@ -3645,132 +4270,146 @@ static void painter_frame(Overlay &o, std::vector<Prompt> &ps) {
         moved = true;
         p.mouseAim = false;
     }
-    if (over && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0 || ImGui::IsMouseClicked(0))) {
+    if (over && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0 || ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1) || ImGui::IsMouseClicked(2))) {
         p.cx = p.ox + (io.MousePos.x - va.x) / sc;
         p.cy = p.oy + (io.MousePos.y - va.y) / sc;
         p.mouseAim = true;
     }
     p.cx = std::max(0.0f, std::min((float)p.w - 0.01f, p.cx));
     p.cy = std::max(0.0f, std::min((float)p.h - 0.01f, p.cy));
-    // the view follows the crosshair (not the mouse's); the right mouse button drags it
-    if (moved) {
+    if (moved) { // (the view follows the crosshair, not the mouse)
         float m = visW * 0.12f;
         if (p.cx < p.ox + m) { p.ox = p.cx - m; }
         if (p.cx > p.ox + visW - m) { p.ox = p.cx - visW + m; }
         if (p.cy < p.oy + m) { p.oy = p.cy - m; }
         if (p.cy > p.oy + visH - m) { p.oy = p.cy - visH + m; }
     }
-    if (over && ImGui::IsMouseDragging(1)) { p.ox -= io.MouseDelta.x / sc; p.oy -= io.MouseDelta.y / sc; }
     if (sIn.r3) { p.ox += sIn.turn * visW * 0.02f; p.oy -= sIn.zoom * visH * 0.02f; }
     p.ox = visW >= p.w ? (p.w - visW) * 0.5f : std::max(0.0f, std::min(p.w - visW, p.ox));
     p.oy = visH >= p.h ? (p.h - visH) * 0.5f : std::max(0.0f, std::min(p.h - visH, p.oy));
-
-    // ---- the tools (the buttons, and the mouse on the side panel)
-    float x0 = vb.x + S(18), x1 = sBoxB.x - S(16), y = va.y;
-    ImFont *bold = sBold != NULL ? sBold : sFont;
-    int clickTool = -1, clickColour = -1;
-    unsigned clickRgb = 0;
-    bool clickWheel = false, clickUndo = false, clickRedo = false, clickMinus = false, clickPlus = false;
-    sDl->AddText(sFont, S(13), ImVec2(x0, y), kDim, "TOOL");
-    y += S(18);
-    float cw = (x1 - x0 - S(8)) * 0.5f;
-    for (int t = 0; t < T_COUNT; t++) {
-        ImVec2 a(x0 + (t % 2) * (cw + S(8)), y + (t / 2) * S(36)), b(a.x + cw, a.y + S(30));
-        if (t == p.tool) { grad(a, b, kGold1, kGold2, S(15)); } else { grad(a, b, IM_COL32(198, 181, 245, 255), IM_COL32(125, 100, 200, 255), S(15)); }
-        sDl->AddText(bold, S(15), ImVec2(a.x + (cw - text_w(bold, S(15), kTools[t])) * 0.5f, a.y + S(7)), t == p.tool ? IM_COL32(74, 26, 0, 255) : IM_COL32(43, 22, 96, 255), kTools[t]);
-        if (click_in(a, b)) { clickTool = t; }
-    }
-    y += S(78);
+    // the texture's own colours, under it (the wheel over the texture goes through them)
+    int clickPal = -1;
     {
-        char line[64];
-        if (p.tool == T_FILL) { snprintf(line, sizeof(line), "Fill tolerance: %d", p.tol); }
-        else if (p.tool == T_PICK) { snprintf(line, sizeof(line), "Takes the colour it is on"); }
-        else { snprintf(line, sizeof(line), "%s size: %d px", p.tool == T_ERASE ? "Eraser" : "Brush", p.size); }
-        float gx = x0 + glyph(B_L2R2, ImVec2(x0, y + S(10)), S(10)) + S(8);
-        sDl->AddText(sFont, S(15), ImVec2(gx, y + S(1)), kInk, line);
-        if (p.tool != T_PICK) {
-            ImVec2 ma(x1 - S(54), y - S(2)), mb(x1 - S(30), y + S(22)), pa(x1 - S(24), y - S(2)), pb(x1, y + S(22));
-            sDl->AddRectFilled(ma, mb, IM_COL32(42, 26, 85, 255), S(5));
-            sDl->AddRectFilled(pa, pb, IM_COL32(42, 26, 85, 255), S(5));
-            sDl->AddText(bold, S(16), ImVec2(ma.x + S(8), ma.y + S(2)), kInk, "-");
-            sDl->AddText(bold, S(16), ImVec2(pa.x + S(7), pa.y + S(2)), kInk, "+");
-            clickMinus = click_in(ma, mb);
-            clickPlus = click_in(pa, pb);
+        float r = S(9), gx = va.x + S(4), gy = vb.y + S(22);
+        int per = std::max(1, (int)((side - S(8)) / (r * 2 + S(6))));
+        for (size_t i = 0; i < p.pal.size() && (int)i < per; i++) {
+            ImVec2 c(gx + r + i * (r * 2 + S(6)), gy);
+            bool on = p.pal[i] == p.colour;
+            sDl->AddCircleFilled(c, on ? r + S(3) : r, col32(p.pal[i]));
+            sDl->AddCircle(c, on ? r + S(3) : r, on ? IM_COL32(255, 226, 122, 255) : IM_COL32(0, 0, 0, 160), 0, on ? S(2.5f) : S(1.2f));
+            if (click_in(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r))) { clickPal = (int)i; }
         }
     }
-    y += S(32);
-    sDl->AddText(sFont, S(13), ImVec2(x0, y), kDim, "COLOUR");
-    y += S(18);
+    if (over && io.MouseWheel != 0.0f && !io.KeyCtrl && !p.pal.empty()) {
+        int k = 0;
+        for (size_t i = 0; i < p.pal.size(); i++) { if (p.pal[i] == p.colour) { k = (int)i; } }
+        k = (k + (io.MouseWheel < 0 ? 1 : -1) + (int)p.pal.size()) % (int)p.pal.size();
+        p.colour = p.pal[(size_t)k];
+        if (p.tool == T_PICK || p.tool == T_ERASE) { p.tool = T_BRUSH; }
+    }
+
+    // ---- the controls (right, over the model): how to paint, the buttons, the tools, the colour
+    ImVec2 ca = P(894, 108), cb = P(1336, 372);
+    sDl->AddRectFilled(ImVec2(ca.x, ca.y + S(4)), ImVec2(cb.x, cb.y + S(4)), IM_COL32(0, 0, 0, 80), S(10));
+    sDl->AddRectFilled(ca, cb, IM_COL32(40, 22, 82, 240), S(10));
+    sDl->AddRect(ca, cb, IM_COL32(245, 197, 66, 255), S(10), 0, S(2));
     {
-        ImVec2 a(x0, y), b(x0 + S(56), y + S(56));
-        sDl->AddRectFilled(a, b, col32(p.colour), S(8));
-        sDl->AddRect(a, b, IM_COL32(255, 255, 255, 220), S(8), 0, S(2));
-        sDl->AddText(bold, S(17), ImVec2(b.x + S(12), y + S(2)), kInk, hex_of(p.colour).c_str());
-        ImVec2 wa(b.x + S(12), y + S(26)), wb(x1, y + S(54));
+        const char *t = "CONTROLS - MOUSE";
+        sDl->AddText(bold, S(14), ImVec2((ca.x + cb.x - text_w(bold, S(14), t)) * 0.5f, ca.y + S(8)), kGold1, t);
+    }
+    float cx0 = ca.x + S(14), cmid = (ca.x + cb.x) * 0.5f + S(6), cy = ca.y + S(30), lh = S(19);
+    static const char *const kMouse[4] = {"Left button: paint", "Right button: take colour", "Middle button: fill", "Wheel: colour"};
+    for (int i = 0; i < 4; i++) { sDl->AddText(sFont, S(13.5f), ImVec2(cx0, cy + i * lh), kInk, kMouse[i]); }
+    {
+        struct { int b; const char *t; } pad[3] = {{B_L2R2, "Brush size"}, {B_L1R1, "Undo / redo"}, {B_LSTICK, "Draw with the pad"}};
+        for (int i = 0; i < 3; i++) {
+            float gw = glyph(pad[i].b, ImVec2(cmid, cy + i * lh + S(8)), S(8));
+            sDl->AddText(sFont, S(13.5f), ImVec2(cmid + gw + S(6), cy + i * lh), kInk, pad[i].t);
+        }
+        float gw = glyph(B_TRIANGLE, ImVec2(cmid, cy + 3 * lh + S(8)), S(8));
+        sDl->AddText(sFont, S(13.5f), ImVec2(cmid + gw + S(6), cy + 3 * lh), kInk, "Colour");
+    }
+    cy += 4 * lh + S(10);
+    // Picture / Size N / Undo / Redo / Wipe
+    bool clickPicture = false, clickSize = false, clickUndo = false, clickRedo = false, clickWipe = false;
+    {
+        char sz[16];
+        snprintf(sz, sizeof(sz), "Size %d", p.size);
+        const char *labels[5] = {"Picture", sz, "Undo", "Redo", "Wipe"};
+        bool *hits[5] = {&clickPicture, &clickSize, &clickUndo, &clickRedo, &clickWipe};
+        float bw = (cb.x - ca.x - S(28) - S(4) * 6) / 5, x = cx0;
+        for (int i = 0; i < 5; i++) {
+            ImVec2 a(x, cy), b(x + bw, cy + S(26));
+            bool on = (i == 0 && p.showBase) || (i == 2 && !p.undo.empty()) || (i == 3 && !p.redo.empty()) || i == 1 || i == 4;
+            if (i == 0 ? p.showBase : false) { grad(a, b, kGold1, kGold2, S(13)); }
+            else { grad(a, b, IM_COL32(198, 181, 245, on ? 255 : 120), IM_COL32(125, 100, 200, on ? 255 : 120), S(13)); }
+            sDl->AddText(bold, S(13), ImVec2(a.x + (bw - text_w(bold, S(13), labels[i])) * 0.5f, a.y + S(6)), i == 0 && p.showBase ? IM_COL32(74, 26, 0, 255) : IM_COL32(43, 22, 96, 255), labels[i]);
+            *hits[i] = click_in(a, b);
+            x += bw + S(6);
+        }
+    }
+    cy += S(36);
+    // the tools
+    int clickTool = -1;
+    {
+        float tw = (cb.x - ca.x - S(28) - S(6) * 3) / 4;
+        for (int t = 0; t < T_COUNT; t++) {
+            ImVec2 a(cx0 + t * (tw + S(6)), cy), b(a.x + tw, cy + S(24));
+            if (t == p.tool) { grad(a, b, kGold1, kGold2, S(12)); } else { grad(a, b, IM_COL32(120, 100, 190, 255), IM_COL32(80, 60, 150, 255), S(12)); }
+            sDl->AddText(bold, S(12.5f), ImVec2(a.x + (tw - text_w(bold, S(12.5f), kTools[t])) * 0.5f, a.y + S(5)), t == p.tool ? IM_COL32(74, 26, 0, 255) : kInk, kTools[t]);
+            if (click_in(a, b)) { clickTool = t; }
+        }
+    }
+    cy += S(32);
+    // the colour, the wheel
+    bool clickWheel = false;
+    {
+        ImVec2 a(cx0, cy), b(cx0 + S(40), cy + S(40));
+        sDl->AddRectFilled(a, b, col32(p.colour), S(6));
+        sDl->AddRect(a, b, IM_COL32(255, 255, 255, 220), S(6), 0, S(2));
+        sDl->AddText(bold, S(15), ImVec2(b.x + S(10), cy + S(2)), kInk, hex_of(p.colour).c_str());
+        char info[96];
+        snprintf(info, sizeof(info), "%d x %d, %d colours%s", p.w, p.h, p.bits == 4 ? 16 : 256, p.variants > 0 ? ", its expressions too" : "");
+        sDl->AddText(sFont, S(12.5f), ImVec2(b.x + S(10), cy + S(22)), kDim, info);
+        ImVec2 wa(cb.x - S(150), cy + S(4)), wb(cb.x - S(14), cy + S(32));
         grad(wa, wb, IM_COL32(198, 181, 245, 255), IM_COL32(125, 100, 200, 255), S(14));
         float gx = wa.x + S(6) + glyph(B_TRIANGLE, ImVec2(wa.x + S(6), (wa.y + wb.y) * 0.5f), S(9)) + S(6);
-        sDl->AddText(sFont, S(14), ImVec2(gx, wa.y + S(6)), IM_COL32(43, 22, 96, 255), "Colour wheel");
+        sDl->AddText(sFont, S(13.5f), ImVec2(gx, wa.y + S(6)), IM_COL32(43, 22, 96, 255), "Colour wheel");
         clickWheel = click_in(a, b) || click_in(wa, wb);
-    }
-    y += S(66);
-    auto swatches = [&](const char *label, const std::vector<unsigned> &cols) {
-        if (cols.empty()) { return; }
-        sDl->AddText(sFont, S(13), ImVec2(x0, y), kDim, label);
-        y += S(17);
-        float s0 = S(22), g = S(5);
-        int per = std::max(1, (int)((x1 - x0 + g) / (s0 + g)));
-        for (size_t i = 0; i < cols.size() && i < 32; i++) {
-            ImVec2 a(x0 + (i % per) * (s0 + g), y + (i / per) * (s0 + g)), b(a.x + s0, a.y + s0);
-            sDl->AddRectFilled(a, b, col32(cols[i]), S(4));
-            sDl->AddRect(a, b, cols[i] == p.colour ? IM_COL32(255, 226, 122, 255) : IM_COL32(255, 255, 255, 60), S(4), 0, cols[i] == p.colour ? S(2.5f) : S(1));
-            if (click_in(a, b)) { clickColour = 1; clickRgb = cols[i]; }
-        }
-        y += ((std::min(cols.size(), (size_t)32) + per - 1) / per) * (s0 + g) + S(6);
-    };
-    swatches("RECENT", sRecent);
-    swatches("ITS OWN COLOURS", p.pal);
-    {
-        char line[160];
-        snprintf(line, sizeof(line), "%d x %d, %d colours: new colours share them (close ones are merged).%s", p.w, p.h, p.bits == 4 ? 16 : 256,
-                 p.variants > 0 ? " Its eye frames and mouth shapes get the paint too." : "");
-        sDl->AddText(sFont, S(13), ImVec2(x0, y), kDim, line, NULL, x1 - x0);
-        y += S(56);
-        ImVec2 ua(x0, y), ub(x0 + cw, y + S(26)), ra(x0 + cw + S(8), y), rb(x1, y + S(26));
-        grad(ua, ub, IM_COL32(198, 181, 245, p.undo.empty() ? 110 : 255), IM_COL32(125, 100, 200, p.undo.empty() ? 110 : 255), S(13));
-        grad(ra, rb, IM_COL32(198, 181, 245, p.redo.empty() ? 110 : 255), IM_COL32(125, 100, 200, p.redo.empty() ? 110 : 255), S(13));
-        snprintf(line, sizeof(line), "L1 Undo (%d)", (int)p.undo.size());
-        if (sKeyboardLast) { snprintf(line, sizeof(line), "Ctrl+Z Undo (%d)", (int)p.undo.size()); }
-        sDl->AddText(sFont, S(13), ImVec2(ua.x + S(10), ua.y + S(5)), IM_COL32(43, 22, 96, 255), line);
-        snprintf(line, sizeof(line), sKeyboardLast ? "Ctrl+Y Redo (%d)" : "R1 Redo (%d)", (int)p.redo.size());
-        sDl->AddText(sFont, S(13), ImVec2(ra.x + S(10), ra.y + S(5)), IM_COL32(43, 22, 96, 255), line);
-        clickUndo = click_in(ua, ub);
-        clickRedo = click_in(ra, rb);
-        y += S(34);
-        snprintf(line, sizeof(line), "Zoom %.1fx   crosshair %d, %d", p.zoom, (int)p.cx, (int)p.cy);
-        sDl->AddText(sFont, S(13), ImVec2(x0, y), kDim, line);
     }
 
     // ---- what the buttons do
     ps.push_back({B_CROSS, p.tool == T_FILL ? "Fill" : p.tool == T_PICK ? "Take colour" : p.tool == T_ERASE ? "Rub out" : "Paint (hold)"});
     ps.push_back({B_SQUARE, "Tool"});
-    ps.push_back({B_TRIANGLE, "Colour wheel"});
+    ps.push_back({B_TRIANGLE, "Colour"});
     ps.push_back({B_L1R1, "Undo / redo"});
     ps.push_back({B_L2R2, p.tool == T_FILL ? "Tolerance" : "Size"});
-    ps.push_back({B_RSTICK, "Zoom"});
+    ps.push_back({B_L3, "Next texture"});
     ps.push_back({B_CIRCLE, "Done"});
-    if (sIn.back) { painter_close(); ov_close(); sound(2); return; }
+    if (sIn.back) {
+        painter_close();
+        ov_close();
+        if (!sOv.empty() && sOv.back().kind == OV_TEXPICK && sOv.back().text == "painter") { ov_close(); } // (its list goes with it)
+        sound(2);
+        return;
+    }
+    if (clickList >= 0) { pt_switch(clickList); return; }
+    if (sIn.view && nl > 0) { sIn.view = false; pt_switch((p.at + 1) % nl); return; } // (L3 / V: not the camera here)
     if (clickTool >= 0 || sIn.sq) {
         int t = clickTool >= 0 ? clickTool : (p.tool + 1) % T_COUNT;
         if (t == T_PICK && p.tool != T_PICK) { p.lastTool = p.tool; }
         p.tool = t;
         sound(0);
     }
-    if (sIn.l2 || sIn.r2 || clickMinus || clickPlus) {
-        int d = sIn.r2 || clickPlus ? 1 : -1;
-        if (p.tool == T_FILL) { p.tol = std::max(0, std::min(128, p.tol + d * 4)); }
+    if (sIn.l2 || sIn.r2 || clickSize) {
+        int d = sIn.r2 || clickSize ? 1 : -1;
+        if (p.tool == T_FILL && !clickSize) { p.tol = std::max(0, std::min(128, p.tol + d * 4)); }
+        else if (clickSize && p.size >= 32) { p.size = 1; }
         else { p.size = std::max(1, std::min(32, p.size + d * (p.size >= 8 ? 2 : 1))); }
         sound(0);
     }
+    if (clickPicture) { p.showBase = !p.showBase; p.dirty = true; sound(0); }
+    if (clickWipe) { confirm("WIPE ALL THE PAINT OF THIS TEXTURE?", [] { pt_wipe(); sound(2); }); return; }
     bool undo = sIn.l1 || sIn.undo || clickUndo, redo = sIn.r1 || sIn.redo || clickRedo;
     if (undo && !p.undo.empty() && !p.stroke) {
         p.redo.push_back(p.ov);
@@ -3787,17 +4426,31 @@ static void painter_frame(Overlay &o, std::vector<Prompt> &ps) {
         pt_commit();
         sound(0);
     }
-    if (clickColour >= 0) { p.colour = clickRgb; sound(0); }
+    if (clickPal >= 0) { p.colour = p.pal[(size_t)clickPal]; if (p.tool == T_PICK || p.tool == T_ERASE) { p.tool = T_BRUSH; } sound(0); }
     if (sIn.tri || clickWheel) {
         open_wheel("THE BRUSH'S COLOUR", p.colour, [](unsigned rgb) { sPt.colour = rgb; add_recent(rgb); if (sPt.tool == T_PICK || sPt.tool == T_ERASE) { sPt.tool = T_BRUSH; } });
         return;
     }
-    // the tool on the texture: cross (held) or the left mouse button pressed on it
+    // the tool on the texture: cross (held) or the left mouse button; the right one takes the colour, the middle fills
+    int tx = (int)floorf(p.cx), ty = (int)floorf(p.cy);
+    if (over && sMouse && ImGui::IsMouseClicked(1)) {
+        int a;
+        p.colour = pt_pixel(tx, ty, &a);
+        add_recent(p.colour);
+        if (p.tool == T_PICK || p.tool == T_ERASE) { p.tool = T_BRUSH; }
+        sound(1);
+    }
+    if (over && sMouse && ImGui::IsMouseClicked(2)) {
+        pt_snapshot();
+        pt_fill(tx, ty);
+        pt_commit();
+        add_recent(p.colour);
+        sound(1);
+    }
     if (sMouse && ImGui::IsMouseClicked(0) && over) { p.mouseDown = true; }
     if (!ImGui::IsMouseDown(0)) { p.mouseDown = false; }
     bool press = sIn.ok || (p.mouseDown && ImGui::IsMouseClicked(0));
     bool held = sIn.okHeld || p.mouseDown;
-    int tx = (int)floorf(p.cx), ty = (int)floorf(p.cy);
     if (p.tool == T_BRUSH || p.tool == T_ERASE) {
         if (held && !p.stroke) {
             pt_snapshot();
@@ -3809,7 +4462,7 @@ static void painter_frame(Overlay &o, std::vector<Prompt> &ps) {
             if (p.cx != p.sx || p.cy != p.sy) { pt_line(p.sx, p.sy, p.cx, p.cy); }
             p.sx = p.cx;
             p.sy = p.cy;
-        } else if (p.stroke) {
+        } else if (p.stroke) { // (the stroke done: into the spec, and so the model is built again)
             p.stroke = false;
             pt_commit();
             add_recent(p.colour);
@@ -3828,10 +4481,10 @@ static void painter_frame(Overlay &o, std::vector<Prompt> &ps) {
         sound(1);
     }
 
-    // ---- the texture, as painted, on a checkerboard; the crosshair and the brush's outline over it
+    // ---- the texture, as painted (Picture: without its paint), on a checkerboard; the crosshair and the brush over it
     if (p.dirty || p.gpu == NULL) {
         std::vector<uint8_t> pic;
-        pt_composite(pic);
+        if (p.showBase) { pic = p.base; } else { pt_composite(pic); }
         uint8_t *pix = (uint8_t *)malloc(pic.size());
         if (pix != NULL) {
             memcpy(pix, pic.data(), pic.size());
@@ -3843,10 +4496,10 @@ static void painter_frame(Overlay &o, std::vector<Prompt> &ps) {
     sDl->AddRectFilled(ImVec2(va.x - S(3), va.y - S(3)), ImVec2(vb.x + S(3), vb.y + S(3)), IM_COL32(20, 10, 40, 255), S(6));
     sDl->PushClipRect(va, vb, true);
     float ck = std::max(S(12), sc * 4.0f);
-    for (float cy = va.y; cy < vb.y; cy += ck) {
-        for (float cx = va.x; cx < vb.x; cx += ck) {
-            int k = (int)((cx - va.x) / ck) + (int)((cy - va.y) / ck);
-            sDl->AddRectFilled(ImVec2(cx, cy), ImVec2(cx + ck, cy + ck), k & 1 ? IM_COL32(70, 60, 100, 255) : IM_COL32(110, 100, 140, 255));
+    for (float y = va.y; y < vb.y; y += ck) {
+        for (float x = va.x; x < vb.x; x += ck) {
+            int k = (int)((x - va.x) / ck) + (int)((y - va.y) / ck);
+            sDl->AddRectFilled(ImVec2(x, y), ImVec2(x + ck, y + ck), k & 1 ? IM_COL32(70, 60, 100, 255) : IM_COL32(110, 100, 140, 255));
         }
     }
     ImVec2 i0(va.x - p.ox * sc, va.y - p.oy * sc), i1(i0.x + p.w * sc, i0.y + p.h * sc);
@@ -3862,9 +4515,9 @@ static void painter_frame(Overlay &o, std::vector<Prompt> &ps) {
             ImVec2 a(i0.x + tx * sc, i0.y + ty * sc);
             sDl->AddRect(a, ImVec2(a.x + sc, a.y + sc), IM_COL32(0, 0, 0, 255), 0, 0, S(3));
             sDl->AddRect(a, ImVec2(a.x + sc, a.y + sc), IM_COL32(255, 255, 255, 255), 0, 0, S(1.2f));
-        } else {
-            sDl->AddCircle(c, r, IM_COL32(0, 0, 0, 255), 0, S(3));
-            sDl->AddCircle(c, r, p.tool == T_ERASE ? IM_COL32(255, 255, 255, 255) : col32(p.colour), 0, S(1.5f));
+        } else { // (the brush a square of its size, as the trailer's)
+            sDl->AddRect(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), IM_COL32(0, 0, 0, 255), 0, 0, S(3));
+            sDl->AddRect(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), p.tool == T_ERASE ? IM_COL32(255, 255, 255, 255) : col32(p.colour), 0, 0, S(1.5f));
         }
     }
     float arm = S(16), gapc = S(5);
@@ -3885,6 +4538,7 @@ static void painter_frame(Overlay &o, std::vector<Prompt> &ps) {
     sDl->AddRectFilled(ua0, ImVec2(vb.x - S(4), vb.y - S(4)), IM_COL32(20, 10, 40, 200), S(6));
     sDl->AddRectFilled(ImVec2(ua0.x + S(5), ua0.y + S(5)), ImVec2(ua0.x + S(21), ua0.y + S(21)), col32(under), S(3));
     sDl->AddText(sFont, S(13), ImVec2(ua0.x + S(27), ua0.y + S(5)), ua >= 128 ? kInk : kDim, ua >= 128 ? hex_of(under).c_str() : "(clear)");
+    (void)o;
 }
 
 // =============================================================================================== the colour wheel
@@ -4112,7 +4766,7 @@ static void model_frame(void) {
     // the grid's cursor, once it rested on a character of the disc: that one
     if (!sOv.empty() && sOv.back().kind == OV_GRID && sOv.back().stage == 0 && sOv.back().rest >= 12) {
         std::vector<const J *> items = grid_items(sOv.back());
-        if (sOv.back().cur < (int)items.size()) {
+        if (sOv.back().cur < (int)items.size() && items[(size_t)sOv.back().cur] != NULL) {
             const J &c = *items[(size_t)sOv.back().cur];
             int id = (int)c["id"].number(-1);
             if (id >= 0 && id < 161) { want_model(1 + id * 16, id, 0, ""); return; }
@@ -4148,7 +4802,8 @@ static void model_frame(void) {
     // the warrior as it is: built by the creator once its look has rested a moment
     J key = J::arr();
     key.push(look());
-    static const char *const kLook[] = {"costumes", "parts", "colours", "body", "paint", "moveset", "moves", "melee", "ki_blasts", "voice", "names"};
+    static const char *const kLook[] = {"costumes", "parts", "colours", "body", "paint", "moveset", "moves", "melee", "ki_blasts", "voice", "names",
+                                        "costume_edits", "extra_layers", "shading", "stance_pose"};
     for (const char *k : kLook) { key.push(sSpec[k]); }
     key.push(J::num(sShownCostume));
     std::string text = js_text(key);
@@ -4180,6 +4835,7 @@ static void model_frame(void) {
             sBuiltAs = (int)r["as"].number(0);
             sBuiltFolder = folder;
             const J &notes = r["notes"];
+            sPreviewNodes = r["nodes"];
             if (notes.size()) { toast("To make it fit, the builder: " + notes[0].text()); }
         }, 300000, 1);
     }
@@ -4330,6 +4986,13 @@ bool Creator_Frame(bool input) {
             outlined(sFont, bs, ImVec2(at.x - text_w(sFont, bs, b) * 0.5f, at.y), IM_COL32(255, 220, 90, 160 + (int)(95 * fabsf(sinf(sFrames * 0.08f)))), IM_COL32(30, 10, 50, 255), b, S(1.2f));
         }
         int costumes = sSpec["costumes"].size() ? (int)sSpec["costumes"].size() : 1;
+        if (costumes > 1) { // (which costume the look's screens change: under the saved chip)
+            char ed[48];
+            snprintf(ed, sizeof(ed), "EDITING COSTUME %d", sEditCostume + 1);
+            ImFont *bf = sBold != NULL ? sBold : sFont;
+            float es = S(16), ey = P(0, !sOv.empty() && sOv.back().kind == OV_WORKSHOP ? 90 : 68).y;
+            outlined(bf, es, ImVec2(P(1336, 0).x - text_w(bf, es, ed) - S(10), ey), kGold1, IM_COL32(60, 20, 0, 255), ed, S(1.2f));
+        }
         if (costumes > 1) {
             char line[48];
             snprintf(line, sizeof(line), "COSTUME %d / %d", sShownCostume + 1, costumes);
@@ -4363,7 +5026,7 @@ bool Creator_Frame(bool input) {
                 save();
             } else if (sScreen == SC_EDIT && (sIn.l2 || sIn.r2)) {
                 int costumes = sSpec["costumes"].size() ? (int)sSpec["costumes"].size() : 1;
-                sShownCostume = (sShownCostume + (sIn.r2 ? 1 : costumes - 1)) % costumes;
+                set_edit_costume((sEditCostume + (sIn.r2 ? 1 : costumes - 1)) % costumes);
                 sound(0);
             } else if (sIn.back) {
                 sound(2);
@@ -4435,14 +5098,21 @@ bool Creator_Frame(bool input) {
         else if (kind == OV_PALETTE) { tipLine = "Pick the new colour."; }
         else if (kind == OV_FX) { tipLine = "Pick a colour of the attack, then its new colour. The picture shows its textures and colours."; }
         else if (kind == OV_WORKSHOP) {
+            tipLine = "Every piece of your warrior! The one under the cursor blinks.";
+            std::vector<Row> wr;
+            std::vector<WsItem> wi;
+            if (!o.info.nul()) { ws_outline(o, wr, wi); }
+            if (o.cur < (int)wr.size() && !wr[(size_t)o.cur].tip.empty()) { tipLine = wr[(size_t)o.cur].tip; }
+        }
+        else if (kind == OV_WSEDIT) {
             tipLine = "Move it, turn it, stretch it! Your warrior is built again as you go.";
             std::vector<Row> wr;
-            if (!o.info.nul()) { ws_rows(o, wr); }
+            wsedit_rows(o, wr);
             if (o.cur < (int)wr.size() && !wr[(size_t)o.cur].tip.empty()) { tipLine = wr[(size_t)o.cur].tip; }
         }
         else if (kind == OV_TEXPICK) { tipLine = "Which texture? The most used first. Its paint shows on the model once it is built again."; }
-        else if (kind == OV_PAINT) { tipLine = sKeyboardLast ? "Aim with the arrows or the mouse, paint with Enter / the left button. F: tool, R: colour wheel, Z / C: size."
-                                                             : "Aim with the left stick (the d-pad: a texel at a time), cross paints. Square: tool, triangle: colour wheel."; }
+        else if (kind == OV_PAINT) { tipLine = sKeyboardLast ? "Paint straight onto the face and outfit, every expression too! Arrows or the mouse aim, Enter paints, V: next texture."
+                                                             : "Paint straight onto the face and outfit, every expression too! The left stick aims, cross paints, L3: next texture."; }
         else if (kind == OV_WHEEL) { tipLine = "Turn the ring for the hue, then pick how strong and how bright in the square."; }
         else if (kind == OV_LIST && o.cur < (int)o.rows.size() && !o.rows[o.cur].tip.empty()) { tipLine = o.rows[o.cur].tip; }
         switch (kind) {
@@ -4453,6 +5123,7 @@ bool Creator_Frame(bool input) {
         case OV_PALETTE: palette_frame(o, ops); break;
         case OV_FX: fx_frame(o, ops); break;
         case OV_WORKSHOP: workshop_frame(o, ops); break;
+        case OV_WSEDIT: wsedit_frame(o, ops); break;
         case OV_TEXPICK: texpick_frame(o, ops); break;
         case OV_PAINT: painter_frame(o, ops); break;
         case OV_WHEEL: wheel_frame(o, ops); break;
@@ -4469,7 +5140,7 @@ bool Creator_Frame(bool input) {
     // ---- the model: turned with the right stick, A / D, or dragged with the mouse; the camera (cam_frame)
     {
         int top = sOv.empty() ? -1 : sOv.back().kind;
-        bool beside = top < 0 || top == OV_WORKSHOP || top == OV_PAINT || top == OV_TEXPICK || top == OV_COLOURS || top == OV_WHEEL || top == OV_PALETTE;
+        bool beside = top < 0 || top == OV_WORKSHOP || top == OV_WSEDIT || top == OV_PAINT || top == OV_TEXPICK || top == OV_COLOURS || top == OV_WHEEL || top == OV_PALETTE;
         float turn = sIn.r3 ? 0.0f : sIn.turn * 0.05f;
         if (sMouse && ImGui::IsMouseDragging(0) && beside && io.MouseClickedPos[0].x > std::max(sOvRight, P(740, 0).x)) { turn += io.MouseDelta.x * 0.012f; }
         if (turn != 0.0f) {
@@ -4480,6 +5151,7 @@ bool Creator_Frame(bool input) {
         if ((sScreen == SC_EDIT || sScreen == SC_HOME) && beside) { cam_frame(std::max(sOvRight, P(740, 0).x), top != OV_PAINT); }
     }
     model_frame();
+    ws_blink_update();
 
     // the tip box, the prompts, a line that came
     if (tipLine.empty()) { tipLine = sScreen == SC_HOME ? "Make your own warrior! Mix the looks, moves and voices of the whole roster." : "Change anything: the model shows your warrior as it is."; }
