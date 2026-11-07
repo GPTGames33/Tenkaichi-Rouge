@@ -139,8 +139,12 @@ character called by the folder's name, standing on character 0. Replacing needs 
 
 A package **without** `replaces=` that has a `*_1p.pak` adds a character.
 
-- **It gets an id from 198 (0xC6) up, in the order of the folder names**, forms right after their character. At
-  most **57** added characters, forms included; a 58th is not loaded and F1 > Mods says so.
+- **It gets an id in the order of the load order, then of the folder names**, forms right after their character:
+  with 85 added characters or fewer, 198 (0xC6) up to 254, then 165 (0xA5) up to 192; with more, every one has
+  1024 + its place in the menus (the first 1024, the second 1025, ...), and a fight gives the added characters in
+  it (the fighters, the opponents waiting, and every form and fusion they can turn into) one of the 85 small ids
+  for that fight. At most **1024** added characters, forms included; one fight meets **85** different ones at
+  most (a 86th in one fight plays as its base character). A package past 1024 is not loaded and F1 > Mods says so.
 - **It gets a cell on the roster** after the game's own characters. A character that another added character
   transforms into shares that character's cell, as forms do in the original game.
 - **It has as many costumes as it has model files in a row**, up to **16**: `_1p` alone is one costume, `_1p` and
@@ -181,7 +185,7 @@ character by its id).
   the disc's.** So a replacement can be as small as one file. Replacement files win over `gamedata/mods/`.
 - `name`, `form` and `chip.bin` change the character's name, label and chip on the roster screens of section 8.
 - `health`, `ki`, `blast` change those numbers for the slot (section 7).
-- **It takes no added id and does not count toward the 57.** Up to all 161 characters can be replaced.
+- **It takes no added id and does not count toward the 1024.** Up to all 161 characters can be replaced.
 - **Two packages for one id:** the first by folder name is used, the other is not loaded and F1 > Mods says which
   one won.
 - It needs `replaces=` and at least one thing to put in place (a file, a name, a label, a number, a link). The
@@ -353,9 +357,9 @@ Fighters grid (square on the roster) and the Mod Manager's Library show and chan
 
 | What | Limit |
 |---|---|
-| Added characters, forms included | 57 |
+| Added characters, forms included | 1024; 85 different ones in one fight (its fighters, the opponents waiting, their forms and fusions) |
 | Replaced characters | 161 (all) |
-| Folders read directly in `characters` | 256, by name |
+| Folders read directly in `characters` | 1400, by the load order, then by name |
 | Folders read inside one character's folder | 64 |
 | Folder name | under 64 bytes, not starting with a dot |
 | Path of a file (folder path + file name) | under 400 bytes; a longer one is not seen |
@@ -460,8 +464,8 @@ Environment variables for testing:
 |---|---|
 | `BT3_CHARACTERS=<folder>` | read packages from this folder instead of `characters` |
 | `BT3_CHARA_LOG=1` | print, once for each, every file the game is given from a package (`file pzs3us1/01423.bin is characters/Blue Gi/x_1p.pak`), the names, labels and chips put on a select screen, and the cells made for added characters |
-| `BT3_TEST_CHARA=<id>[,<id>]` | the first fighter of side 1 (and side 2) of every fight the menus set up is this character, whatever is chosen: `198` the first added one, `0`..`160` a disc character |
-| `BT3_TEST_CELL=1` | the character select opens with the cursor on the first added character; `BT3_TEST_CELL=disc:<id>` on that disc character |
+| `BT3_TEST_CHARA=<id>[,<id>]` | the first fighter of side 1 (and side 2) of every fight the menus set up is this character, whatever is chosen: `198` the first added one (85 or fewer installed; with more, `1024` + its place), `added:<n>` the n-th added one (0 the first) whatever its id, `0`..`160` a disc character |
+| `BT3_TEST_CELL=1` | the character select opens with the cursor on the first added character; `BT3_TEST_CELL=disc:<id>` on that disc character; `BT3_TEST_CELL=added:<n>` on the n-th added one (a character with a cell of its own) |
 | `BT3_TEST_FORM=up,down,...` | the first player's fighter takes these inputs one after the other, one every `BT3_TEST_FORM_GAP` frames it is free (default 150), with the blast stocks they cost: `left`, `up`, `right`, `down` (R3 with a direction), `fuse1`..`fuse3`, `switch`; with `BT3_DEMO=1 BT3_TEST_CHARA=<id>` a fight without a window that goes through a package's forms |
 | `BT3_TEST_BLINK=1` | every face keeps its eyes shut: a screenshot shows the eye frame (model entry 0xD) that replaces the face texture when a fighter blinks, to check a recoloured face |
 | `BT3_FORM_LOG=1` | print every change of character of a fighter and the chain it goes back through (`bt3: form: side 0 member 0: 198 Supa Satan -> 199 SUPER SATAN 2; back through: [198 Supa Satan]`); on with `BT3_TEST_FORM` |

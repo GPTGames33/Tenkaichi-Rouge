@@ -704,10 +704,16 @@ void CharSel_Init(s32 section) {
     gCharSel->cells[1] = gCharSel->cells[0];
     gCharSel->masterCount[1] = gCharSel->masterCount[0];
     for (i = 0, cols = MCHR_COLS; i < CHARSEL_SIDES; i++) {
-        ChrGrid_Build(&gCharSel->cellCount[i], gCharSel->grid[i], &gCharSel->masterCount[i], gCharSel->cells[i],
+#ifdef PORT
+        /* (with added characters, a grid of the port's with room for all of them: include/port_chara.h) */
+        MChrCell *grid = (MChrCell *)PORT_GRID(i, gCharSel->grid[i]);
+#else
+        MChrCell *grid = gCharSel->grid[i];
+#endif
+        ChrGrid_Build(&gCharSel->cellCount[i], grid, &gCharSel->masterCount[i], gCharSel->cells[i],
                       &gCharSel->customCount[i], gCharSel->custom[i]);
         gCharSel->masterCount[i] = gCharSel->cellCount[i];
-        gCharSel->cells[i] = gCharSel->grid[i];
+        gCharSel->cells[i] = grid;
         gCharSel->rows[i] = gCharSel->masterCount[i] / cols;
         if (gCharSel->masterCount[i] % cols != 0) {
             gCharSel->rows[i]++;

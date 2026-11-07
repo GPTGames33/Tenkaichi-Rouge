@@ -36,9 +36,9 @@ void Bracket_Init(void) {
     McFlow_Init(1);
     McFlow_SetDoneCb(0, Bracket_OnSaveDone, 0);
     McFlow_SetDoneCb(1, Bracket_OnSaveDone, 0);
-    ChrGrid_Build(&gBracket->gridOutCount, gBracket->gridBuf, &gBracket->gridCount, gBracket->grid, NULL, NULL);
+    ChrGrid_Build(&gBracket->gridOutCount, PORT_GRIDBUF(5, gBracket->gridBuf), &gBracket->gridCount, gBracket->grid, NULL, NULL);
     gBracket->gridCount = gBracket->gridOutCount;
-    gBracket->grid = gBracket->gridBuf;
+    gBracket->grid = PORT_GRIDBUF(5, gBracket->gridBuf);
     gBracket->imageFile[0] = Heap_Alloc(0x16800, 0x40, 0, 2);
     gBracket->imageFile[1] = Heap_Alloc(0x16800, 0x40, 0, 2);
     gBracket->imageRes[0] = Heap_Alloc(0x20800, 0x20, 0, 2);

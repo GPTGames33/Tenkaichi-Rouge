@@ -166,7 +166,7 @@ It also turns a package's pictures (chip.bin, member_1p.bin, portrait.bin) into 
     python3 import_chara.py --to-png portrait.bin portrait.png
     python3 import_chara.py --from-png my_picture.png portrait.bin --like portrait.bin
 
-Up to 57 added characters at once (a transformation counts as one). Packages are not written to your save, and
+Up to 1024 added characters at once (a transformation counts as one; one battle meets 85 at most). Packages are not written to your save, and
 none is used in an online match (Dragon Net Battle): there the game is the original on both sides.
 """
 

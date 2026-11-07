@@ -13,7 +13,7 @@ With --with-forms the character's transformations are imported too, and theirs: 
 names the character, its forms in folders inside it named by their labels ("Super Saiyan"), with link lines in
 each character.txt that name the others (".." is the character from inside a form's folder): the set works as it does on its
 disc. A name the disc does not give is the prefix ("C" unless given) and the id. --with-fusions follows the fusions as well: their results, the
-partners, and the forms of all of those (that can be many folders; the port takes 57).
+partners, and the forms of all of those (that can be many folders; one battle takes 85 added characters).
 
     port/tools/import_chara.py <data folder or .iso> --names
 
@@ -349,8 +349,8 @@ def import_set(data, firsts, root, prefix, fusions, shelf=False, replace=False):
                 if par[0xB4 + i] != 0xFF:
                     todo.append(par[0xB4 + i])
                     todo += [x for x in par[0xBA + i * 4:0xBE + i * 4] if x != 0xFF]
-    if len(tables) > 57 and not shelf:
-        sys.exit(f"{len(tables)} characters hang together here; the port takes 57. Without --with-fusions there are fewer.")
+    if len(tables) > 85 and not shelf:
+        sys.exit(f"{len(tables)} characters hang together here; one battle takes 85 added characters. Without --with-fusions there are fewer.")
 
     # families: the characters that transformations join. The one no other turns into (left, up, right) is the
     # character; the rest are its forms.
@@ -951,7 +951,7 @@ def main():
         return
     if "--all" in flags:
         import_set(data, list(range(161)), pathlib.Path(args[1]), opt.get("--prefix", "C"), False, shelf=True)
-        print("The port takes 57 characters at once (forms count): copy the folders wanted into `characters`.")
+        print("The port takes 1024 added characters (forms count), 85 in one battle: copy the folders wanted into `characters`.")
         return
     c, out = int(args[1], 0), pathlib.Path(args[2])
     if not 0 <= c <= 160:

@@ -62,7 +62,12 @@ const int kDiscCharas = 161;
 const int kVoiceUs = 0xCC32, kVoiceJp = 0x8D4E; // a disc character's spoken lines: base + chara * 100 + line (100 each)
 const int kPt2 = 0xD48;                          // the second archive's first file id
 const int kFaceFile = 0x2F9;                     // the large portraits: + chara (first archive)
-const int kAddedFace = 92000, kAddedLines = 74000; // an added character's, in the second archive (include/port_chara.h)
+// an added character's files are in the second archive by its place n (Port_CharaFileIndex, port/include/plat_charas.h)
+const int kCacheCharas = 161 + PORT_CHARA_MAX; // the caches below: a disc character by its id, an added one at 161 + n
+int cache_key(int chara) {
+    if (PORT_CHARA_ADDED(chara)) { int n = PORT_CHARA_IDX(chara); return n < PORT_CHARA_MAX ? 161 + n : -1; }
+    return chara >= 0 && chara < 161 ? chara : -1;
+}
 
 // =============================================================================================== JSON
 struct J {
@@ -490,23 +495,24 @@ int pose_index(const J &v) {
 // A spoken line of a character: is there one (the disc's empty places are files of 202 bytes)?
 bool line_file(int chara, int line, char *path, int size) {
     if (chara < 0 || line < 0 || line > 99) { return false; }
-    int flid = PORT_CHARA_ADDED(chara) ? kAddedLines + PORT_CHARA_IDX(chara) * 200 + line : kVoiceJp - kPt2 + chara * 100 + line;
+    int flid = PORT_CHARA_ADDED(chara) ? Port_CharaFileIndex(PORT_CHARA_IDX(chara), PORT_CFILE_LINE, line) : kVoiceJp - kPt2 + chara * 100 + line;
     return Port_FilePath(2, flid, NULL, path, size) != 0;
 }
-std::vector<int> sLinesOf[512];
-bool sLinesRead[512];
+std::vector<int> sLinesOf[kCacheCharas];
+bool sLinesRead[kCacheCharas];
 const std::vector<int> &voice_lines(int chara) {
     static std::vector<int> none;
-    if (chara < 0 || chara >= 512) { return none; }
-    if (!sLinesRead[chara]) {
-        sLinesRead[chara] = true;
+    int key = cache_key(chara);
+    if (key < 0) { return none; }
+    if (!sLinesRead[key]) {
+        sLinesRead[key] = true;
         for (int l = 0; l < 100; l++) {
             char path[600];
             struct stat st;
-            if (line_file(chara, l, path, sizeof(path)) && stat(path, &st) == 0 && st.st_size > 1024) { sLinesOf[chara].push_back(l); }
+            if (line_file(chara, l, path, sizeof(path)) && stat(path, &st) == 0 && st.st_size > 1024) { sLinesOf[key].push_back(l); }
         }
     }
-    return sLinesOf[chara];
+    return sLinesOf[key];
 }
 std::string line_kind(int l) { // what the game says the numbers of a character's spoken lines are for
     if (l <= 1) { return "Entrance"; }
@@ -627,16 +633,17 @@ bool portrait_rgba(const char *path, uint8_t *rgba) {
 }
 // A character's face: a square crop of its portrait (the texture is the whole portrait; uv says the square)
 struct Face { int state = 0; SDL_GPUTexture *tex = NULL; ImVec2 uv0, uv1; };
-Face sFaces[512];
+Face sFaces[kCacheCharas];
 int sFacesThisFrame;
 bool face(int chara, ImTextureID *tex, ImVec2 *uv0, ImVec2 *uv1) {
-    if (chara < 0 || chara >= 512) { return false; }
-    Face &f = sFaces[chara];
+    int key = cache_key(chara);
+    if (key < 0) { return false; }
+    Face &f = sFaces[key];
     if (f.state == 0 && sFacesThisFrame < 2) { // (a few a frame: each is a file to unpack)
         sFacesThisFrame++;
         f.state = 2;
         char path[600];
-        bool got = PORT_CHARA_ADDED(chara) ? Port_FilePath(2, kAddedFace + PORT_CHARA_IDX(chara), NULL, path, sizeof(path)) != 0
+        bool got = PORT_CHARA_ADDED(chara) ? Port_FilePath(2, Port_CharaFileIndex(PORT_CHARA_IDX(chara), PORT_CFILE_FACE, 0), NULL, path, sizeof(path)) != 0
                                             : chara < kDiscCharas && Port_FilePath(1, kFaceFile + chara - 1, NULL, path, sizeof(path)) != 0;
         uint8_t *pix = (uint8_t *)malloc((size_t)ART_W * ART_H * 4);
         if (got && pix != NULL && portrait_rgba(path, pix)) {

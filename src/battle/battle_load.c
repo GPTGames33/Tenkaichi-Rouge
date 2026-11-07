@@ -1679,6 +1679,12 @@ void BattleSetup_SetPoolMember(s32 count, s32 idx, s32 chara, s32 costume, s32 v
     BtlMember_Init(&pool->members[idx], chara, costume, variant, cpuLevel, health, items);
 }
 
+#ifdef PORT
+static s32 sPortInBattle; /* between Battle_Main's PortBattle_Bind and PortBattle_Unbind */
+void PortBattle_Bind(void);
+void PortBattle_Canon(BattleSetup *setup);
+#endif
+
 /* BattleSetup_FinishEx(0). */
 void BattleSetup_Finish(void) {
     BattleSetup_FinishEx(0);
@@ -1774,7 +1780,99 @@ void BattleSetup_FinishEx(s32 wide) {
     SETUP()->unk5A0 = 1;
     memset(&gBattleReplay, 0, sizeof(BtlReplay));
     gBattleReplay.setup = *SETUP();
+#ifdef PORT
+    if (sPortInBattle) { /* (Battle_Main is running: Battle_Init clears the work, its `running` with it) */
+        /* a set-up made inside the battle (the battle script's, mode 1): its characters to the battle's ids now; the
+           replay keeps the menus' ids, which a binding of its own turns into ids when it is played */
+        PortBattle_Bind();
+        PortBattle_Canon(&gBattleReplay.setup);
+    }
+#endif
 }
+
+#ifdef PORT
+/* PC build: more added characters than the battle has ids for (include/port_chara.h). The menus know an added
+   character by a wide id (from 0x400); a battle knows the ones it can meet by the 85 ids 0xA5..0xFE. Battle_Main
+   binds the set-up's characters to those when it starts (PortBattle_Bind) and turns them back when it ends
+   (PortBattle_Unbind), so the menus, the save and a replay only ever hold wide ids, and the battle only small ones.
+   With 85 or fewer added characters nothing changes: every id is already the battle's. */
+extern void Port_CharaBindBegin(void);
+extern void Port_CharaBindWant(int chara);
+extern void Port_CharaBindCommit(void);
+extern int Port_CharaBindGet(int chara);
+extern int Port_CharaUnbind(int chara);
+
+/* every character id of a set-up (and of the opponent pool), the ones that matter first; how many */
+static s32 PortBattle_Ids(BattleSetup *setup, BattleMemberPool *pool, s32 **ids) {
+    s32 n = 0;
+    s32 i;
+    s32 j;
+
+    for (i = 0; i < 2; i++) {
+        BattleSide *side = &setup->sides[i];
+        ids[n++] = &side->form.chara;
+        ids[n++] = &side->startForm.chara;
+        for (j = 0; j < BTL_MEMBER_MAX; j++) {
+            ids[n++] = &side->members[j].chara;
+        }
+    }
+    for (j = 0; pool != NULL && j < BTL_POOL_MAX; j++) {
+        ids[n++] = &pool->members[j].chara;
+    }
+    return n;
+}
+
+void PortBattle_Bind(void) {
+    s32 *ids[2 * (2 + BTL_MEMBER_MAX) + BTL_POOL_MAX];
+    BattleSetup *setup = SETUP();
+    BattleMemberPool *pool = Battle_GetWork5A8();
+    s32 n = PortBattle_Ids(setup, pool, ids);
+    s32 i;
+    s32 j;
+
+    sPortInBattle = 1;
+    Port_CharaBindBegin();
+    for (i = 0; i < 2; i++) {
+        BattleSide *side = &setup->sides[i];
+        Port_CharaBindWant(side->form.chara);
+        Port_CharaBindWant(side->startForm.chara);
+        for (j = 0; j < BTL_MEMBER_MAX && j < side->memberCount; j++) {
+            Port_CharaBindWant(side->members[j].chara);
+        }
+    }
+    for (j = 0; j < pool->count && j < BTL_POOL_MAX; j++) {
+        Port_CharaBindWant(pool->members[j].chara);
+    }
+    Port_CharaBindCommit();
+    /* (every id is turned: a member past its side's count, or the pool past its count, has a slot only if it is also
+       one of those wanted; else it stands as its base character) */
+    for (i = 0; i < n; i++) {
+        *ids[i] = Port_CharaBindGet(*ids[i]);
+    }
+}
+
+void PortBattle_Unbind(void) {
+    s32 *ids[2 * (2 + BTL_MEMBER_MAX) + BTL_POOL_MAX];
+    s32 n = PortBattle_Ids(SETUP(), Battle_GetWork5A8(), ids);
+    s32 i;
+
+    sPortInBattle = 0;
+    for (i = 0; i < n; i++) {
+        *ids[i] = Port_CharaUnbind(*ids[i]);
+    }
+}
+
+/* a copy of a set-up (the replay's) with the menus' ids */
+void PortBattle_Canon(BattleSetup *setup) {
+    s32 *ids[2 * (2 + BTL_MEMBER_MAX) + BTL_POOL_MAX];
+    s32 n = PortBattle_Ids(setup, NULL, ids);
+    s32 i;
+
+    for (i = 0; i < n; i++) {
+        *ids[i] = Port_CharaUnbind(*ids[i]);
+    }
+}
+#endif
 
 /* Returns the replay block (and its size) for saving; clears its two trailing words. */
 BtlReplay *BattleReplay_GetBuffer(s32 *size) {

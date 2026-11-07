@@ -10,7 +10,7 @@ costume 5 and on, each with the BT3 character's own moves).
                                                [--only "Jiren,Hit"] [--list]
 
 Needs the BT4 disc image next to the repository (SLUS_219.78.DBZBT4B14REV2ENG.iso) and a build with character
-packages (the Custom Character build: 85 added characters at most). The folders go into <game>/characters/ (or
+packages (the Custom Character build: 1024 added characters at most, 85 in one battle). The folders go into <game>/characters/ (or
 --chars) as "<name> (BT4)"; a list of what was made is .bt4_roster.json there (running it again replaces them).
 """
 import argparse, json, pathlib, re, shutil, struct, sys

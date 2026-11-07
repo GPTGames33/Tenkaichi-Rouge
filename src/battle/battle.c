@@ -362,10 +362,20 @@ void Battle_Loop(void) {
 
 /* Runs one whole battle scene; called by Game_Main after the menu overlay returns. */
 s32 Battle_Main(void) {
+#ifdef PORT
+    /* PC build: the added characters of the set-up to the battle's ids, and back to the menus' at the end
+       (src/battle/battle_load.c; nothing changes with 85 or fewer added characters installed) */
+    extern void PortBattle_Bind(void);
+    extern void PortBattle_Unbind(void);
+    PortBattle_Bind();
+#endif
     Battle_GetWork()->running = 1;
     Battle_Init();
     Battle_Loop();
     Battle_Term();
     Battle_GetWork()->running = 0;
+#ifdef PORT
+    PortBattle_Unbind();
+#endif
     return 1;
 }
