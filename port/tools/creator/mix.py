@@ -1023,8 +1023,15 @@ def ramp_colors(t):
 
 
 # ---- the mix
-def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True, fit=True):
+def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True, fit=True, ids=None):
     """A new pack: the base with pieces from donors.
+
+    The workshop's parts list (a layer's opts and adjust alike): "copies": [{"node": id, "stretch", "size", "move",
+    "turn", "shown"}, ...] a duplicate of that strand / extra (a new record next to it, the edits relative to where
+    the strand is before its own edits); adjust "regions": {"hair" | "head" | "torso" | ...: {the per-node keys}} the
+    base's own nodes of a piece all at once; adjust "patch": false leaves out the strips and caps that close the
+    holes between pieces (fit). ids (a dict, filled in): {(layer k, donor node): node id in the model, ("copy",
+    layer k or 0 for the base, n): node id of the copy}.
 
     selections: [(donor_pack, piece) or (donor_pack, piece, opts), ...] in layer order. piece is one of PIECES; a
     trailing "+" ("hair+", "torso+") adds that donor's extras of the region on top and keeps the model's own (any
@@ -1146,6 +1153,12 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
             fail(f"{len(dropped)} donor extras do not fit (record count {cap} or node ids)")
         notes.append(f"left out {len(dropped)} small extra part(s) (record limit {cap} / free node ids): "
                      + ", ".join(f"layer {L.k} node 0x{x.node:X}" for L, x in dropped[:8]))
+    if ids is not None:
+        ids.update(accepted)
+        for L in layers:
+            for r_ in L.src.model.recs:
+                if r_.node in CORE:
+                    ids.setdefault((L.k, r_.node), r_.node)
 
     # ---- textures used
     uses, ramp_uses = {}, {}
@@ -1736,6 +1749,22 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
             elif not is_identity(o) and n in meshes:
                 M, Ni, t = ui_xform(o)
                 meshes[n].apply(M, Ni, t, origin(n), weighted=True)
+    regions = adjust.get("regions") if isinstance(adjust.get("regions"), dict) else {}
+    for reg, o in regions.items():   # the base's own core nodes of a piece, all at once
+        if not isinstance(o, dict) or reg not in REGIONS:
+            continue
+        mine = [n for n in kind if kind[n] == "base" and n.node in REGIONS[reg] and n.enabled]
+        if o.get("shown", True) is False:
+            for n in mine:
+                hide_clone(n)
+        elif not is_identity(o):
+            M, Ni, t = ui_xform(o)
+            for n in mine:
+                x = n
+                while x.parent is not None and x.parent.node in REGIONS[reg]:
+                    x = x.parent
+                if mesh_of(n) is not None:
+                    mesh_of(n).apply(M, Ni, t, origin(x), weighted=n.parent is None or n.parent.node not in REGIONS[reg])
     for n in [n for n in kind if kind[n] == "base"]:
         if n.node not in CORE:
             continue
@@ -1824,13 +1853,50 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
             move_subtree(n, S, IDENT3, (0, 0, 0), c)
 
     # ---- workshop on extras (the layer around its attach joint, per node around the node; children follow)
+    def add_copies(opts, k, of):
+        """The workshop's duplicates of strands (opts["copies"]): a new leaf record beside the strand, with its
+        mesh as it is now (before the strand's own edits) and the copy's own edits."""
+        for ci, c in enumerate(opts.get("copies") or []):
+            if not isinstance(c, dict) or c.get("shown", True) is False:
+                continue
+            try:
+                node = int(c["node"], 0) if isinstance(c.get("node"), str) else int(c.get("node"))
+            except (KeyError, TypeError, ValueError):
+                continue
+            n = of.get(node)
+            if n is None or n.parent is None or not n.enabled or not n.chain:
+                continue
+            if not pool or len(kind) >= cap:
+                notes.append(f"a copy of node 0x{node:X} left out: no record or node id left")
+                continue
+            nid = pool.pop(0)
+            used_ids.add(nid)
+            m0 = mesh_of(n)
+            x = Rec(n.hdr, m0.bytes() if m0 is not None else n.chain)
+            x.hdr = bytearray(n.hdr)
+            struct.pack_into("<H", x.hdr, 0xA, nid)
+            x.node, x.src, x.enabled = nid, n.src, n.enabled
+            meshes[x] = Mesh(x.chain)
+            kind[x], layer_of[x], donor_rec[x] = "copy", layer_of.get(n), donor_rec.get(n)
+            x.parent = n.parent
+            n.parent.children.insert(n.parent.children.index(n) + 1, x)
+            joints[x] = joints.get(n, origin(n))
+            moved.add(x)
+            o = {a: b for a, b in c.items() if a not in ("node", "shown")}
+            if not is_identity(o):
+                M, Ni, t = ui_xform(o)
+                move_subtree(x, M, Ni, t, joints[x], nodes=[x])
+            if ids is not None:
+                ids[("copy", k, ci)] = nid
+
     for L in layers:
-        lo = {k: v for k, v in L.opts.items() if k != "nodes"}
+        lo = {k: v for k, v in L.opts.items() if k not in ("nodes", "copies")}
         mine = [n for n in kind if kind[n] == "extra" and layer_of.get(n) is L]
         if not is_identity(lo):
             M, Ni, t = ui_xform(lo)
             for n in [n for n in mine if layer_of.get(n.parent) is not L]:
                 move_subtree(n, M, Ni, t, origin(n.parent))
+        add_copies(L.opts, L.k, {donor_rec[n].node: n for n in mine if n in donor_rec})
         for n in mine:
             o = node_key(L.opts.get("nodes") or {}, donor_rec[n].node)
             if o is None:
@@ -1841,6 +1907,21 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
             elif not is_identity(o):
                 M, Ni, t = ui_xform(o)
                 move_subtree(n, M, Ni, t, joints.get(n, origin(n)))
+    for reg, o in regions.items():   # the base's own extras of a piece, all at once ("head": its hair too)
+        if not isinstance(o, dict):
+            continue
+        regs = {"hair"} | ({"head"} if reg == "head" else set()) if reg in ("hair", "head") else {reg}
+        mine = [n for r, n in clone.items() if n.node not in CORE and bm.region(r) in regs and kind.get(n) == "base"]
+        roots = [n for n in mine if n.parent is not None and n.parent not in mine]
+        if o.get("shown", True) is False:
+            for n in mine:
+                if n.enabled:
+                    hide_clone(n)
+        elif not is_identity(o):
+            M, Ni, t = ui_xform(o)
+            for n in roots:
+                move_subtree(n, M, Ni, t, origin(n.parent))
+    add_copies(adjust, 0, {n.node: n for n in kind if kind[n] == "base" and n.node not in CORE})
     for n in [n for n in kind if kind[n] == "base"]:
         if n.node in CORE:
             continue
@@ -1876,8 +1957,9 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
     if stats["pushed"]:
         notes.append(f"declip: {stats['pushed']} hair vertices pushed out of the head")
 
-    bridges = _bridge(by_node, kind, layer_of, meshes, all_of, origin, mesh_of, stats, notes) if fit else {}
-    if fit:
+    patch = adjust.get("patch", True) is not False   # (the workshop's "Patch holes": the strips and caps)
+    bridges = _bridge(by_node, kind, layer_of, meshes, all_of, origin, mesh_of, stats, notes) if fit and patch else {}
+    if fit and patch:
         for n_, bs_ in _cap_exposed(bm, clone, kind, meshes, mesh_of, stats).items():
             bridges.setdefault(n_, []).extend(bs_)
     if stats.get("bridged"):
@@ -2594,9 +2676,10 @@ def _replay(m, face_clone, meshes, build, by_node, origin, adjust, layers, layer
 
 # ---- node lists for the UI
 def _node_entry(m, r, name):
-    t = sum(max(0, len(s["verts"]) - 2) for s in mdlx.parse_chain(r.chain, 0, len(r.chain))) if r.mesh else 0
+    strips = mdlx.parse_chain(r.chain, 0, len(r.chain)) if r.mesh else []
+    t = sum(max(0, len(s["verts"]) - 2) for s in strips)
     return {"node": r.node, "name": name, "parent": r.parent.node if r.parent is not None else None,
-            "region": m.region(r), "triangles": t}
+            "region": m.region(r), "triangles": t, "points": len(Mesh(r.chain).P) if r.mesh else 0}
 
 
 def base_nodes(base_pack):

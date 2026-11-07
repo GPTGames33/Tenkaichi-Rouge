@@ -216,21 +216,33 @@ class App:
         if not name:
             name = re.sub(r"[^A-Za-z0-9 _-]+", "", spec["name"]).strip().replace(" ", "_")[:60] or "fighter"
             name += ".json"
-        cf.Fighter(self.disc, spec, name)  # checks it
+        f = cf.Fighter(self.disc, spec, name)  # checks it (and each costume's own look)
+        for i in range(len(f.costumes)):
+            f.costume_fighter(i)
         self.path_of(name).write_text(json.dumps(spec, indent=2, ensure_ascii=False), encoding="utf-8")
         return name
 
     def describe(self, spec):
         return cf.Fighter(self.disc, spec, "fighter").describe()
 
+    @staticmethod
+    def look_key(spec):
+        """What a costume's model is made of (its costume_spec), as text: the key of the built models."""
+        return json.dumps({k: v for k, v in spec.items() if k not in (
+            "name", "title", "portrait", "portrait_image", "bt4_slot", "slot", "health", "ki", "blast")}, sort_keys=True)
+
     def model(self, spec, costume=0):
         """The 3D model of a costume of the fighter, for the preview (port/tools/creator/model.py)."""
         import model as mdl
         spec = dict(spec, name=spec.get("name") or "preview")
         f = cf.Fighter(self.disc, spec, "preview")
-        look = f.costumes[min(costume, len(f.costumes) - 1)]
-        key = json.dumps([look, spec.get("parts"), spec.get("colours"), spec.get("body"), spec.get("paint")], sort_keys=True)
+        k = min(max(costume, 0), len(f.costumes) - 1)
+        look = f.costumes[k]
+        cs = cf.costume_spec(spec, k)
+        key = json.dumps([look, cs.get("parts"), cs.get("colours"), cs.get("body"), cs.get("paint"),
+                          cs.get("extra_layers")], sort_keys=True)
         if getattr(self, "_model_key", None) != key:
+            f = f.costume_fighter(k)
             pack = f.model(look, False)
             self._model = mdl.extract(pack.bytes(), pose="relaxed", hide_optional=True)
             self._model["notes"] = list(f.notes)  # (layers that could not be put on)
@@ -247,16 +259,25 @@ class App:
         import hashlib, os, shutil
         spec = dict(spec, name=spec.get("name") or "preview")
         f = cf.Fighter(self.disc, spec, "preview")
-        look = f.costumes[min(max(costume, 0), len(f.costumes) - 1)]
-        key = json.dumps([list(look)] + [spec.get(k) for k in (
-            "parts", "colours", "body", "paint", "moveset", "moves", "melee", "ki_blasts", "voice", "names")], sort_keys=True)
+        k = min(max(costume, 0), len(f.costumes) - 1)
+        look = f.costumes[k]
+        if not spec.get("costume_edits") and not spec.get("extra_layers"):  # (as before: the same folders)
+            key = json.dumps([list(look)] + [spec.get(x) for x in (
+                "parts", "colours", "body", "paint", "moveset", "moves", "melee", "ki_blasts", "voice", "names")],
+                sort_keys=True)
+        else:
+            key = json.dumps([list(look), self.look_key(cf.costume_spec(spec, k))], sort_keys=True)
         h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
         root = self.cache / "preview"
         out = root / h
         if not (out / "preview_1p.pak").exists():
             tmp = root / (h + ".part")
             tmp.mkdir(parents=True, exist_ok=True)
-            (tmp / "preview_1p.pak").write_bytes(f.model(look, False).bytes())
+            fk = f.costume_fighter(k)
+            (tmp / "preview_1p.pak").write_bytes(fk.model(look, False).bytes())
+            # (which node each workshop part became in this model: the workshop makes the one it is on blink)
+            (tmp / "nodes.json").write_text(json.dumps(fk.mix_ids), encoding="utf-8")
+            f.notes += [n for n in fk.notes if n not in f.notes]
             (tmp / "preview_anm.pak").write_bytes(f.anims().bytes())
             (tmp / "character.txt").write_text("# the Custom Character screen's preview (not a character)\nformat=1\n"
                                                f"base={f.base[0]}\n", encoding="utf-8")
@@ -269,19 +290,29 @@ class App:
         else:
             os.utime(out)
         shown = look[0] if not cf.is_bt4(look[0]) else f.base[0]
-        return {"folder": str(out), "as": shown, "notes": list(f.notes)}
+        try:
+            nodes = json.loads((out / "nodes.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            nodes = {}
+        return {"folder": str(out), "as": shown, "notes": list(f.notes), "costume": k, "nodes": nodes}
 
-    def layer_nodes(self, spec):
-        """For the Workshop: the strands (nodes) of every piece layer, and the body's own parts."""
+    def layer_nodes(self, spec, costume=0):
+        """For the Workshop: the strands (nodes) of every piece layer, and the body's own parts, of a costume (its
+        own look: costume_edits). A layer's "tag" names it in the spec ("hair.0": parts.hair's first, "x.1": the
+        second extra layer); the preview's "nodes" says which node of the built model each became."""
         import mix
         spec = dict(spec, name=spec.get("name") or "preview")
         f = cf.Fighter(self.disc, spec, "preview")
-        base = self.disc.model(*f.look).bytes()
+        k = min(max(costume, 0), len(f.costumes) - 1)
+        look = f.costumes[k]
+        f = f.costume_fighter(k)
+        base = self.disc.model(*look).bytes()
         donors = [(self.disc.model(*who).bytes(), piece, opts) for piece, who, opts in f.parts]
         layers, body = [], []
         if hasattr(mix, "layer_nodes"):
-            for (piece, who, _), nodes in zip(f.parts, mix.layer_nodes(base, donors)):
-                layers.append({"piece": piece.rstrip("+"), "label": f"{piece.rstrip('+')} from {cf.name(who[0])}", "nodes": nodes})
+            for (piece, who, _), nodes, tag in zip(f.parts, mix.layer_nodes(base, donors), f.part_tags):
+                layers.append({"piece": piece.rstrip("+"), "label": f"{piece.rstrip('+')} from {cf.name(who[0])}",
+                               "who": cf.name(who[0]), "tag": tag, "nodes": nodes})
             body = mix.base_nodes(base) if hasattr(mix, "base_nodes") else []
         else:
             for piece, who, _ in f.parts:
@@ -304,10 +335,10 @@ class App:
             cols, png = fx.aura_colours(eff), fx.aura_preview_png(eff)
         return {"colours": cols, "png": base64.b64encode(png).decode() if png else ""}
 
-    def colours(self, spec):
-        """The textures the warrior's look draws with (costume 1, pieces and colour changes applied): their picture
-        and main colours, for the Colours screen."""
-        m = self.model(spec)
+    def colours(self, spec, costume=0):
+        """The textures the warrior's look draws with (a costume, costume 1 by default; pieces and colour changes
+        applied): their picture and main colours, for the Colours screen."""
+        m = self.model(spec, costume)
         used = {g["texture"] for g in m["groups"]}
         pics = {t["index"]: t["png"] for t in m["textures"]}
         out = []
@@ -323,21 +354,41 @@ class App:
         built (pieces and colour changes, without its paint, which the painter lays over them): [{index, key (the
         spec's "paint" key), w, h, bits (4 or 8: 16 or 256 colours), sig, png (base64), palette (the colours its
         pixels use), share (how much of the model it covers), variants (eye frames, mouth textures, damaged copies:
-        the same picture, painted with it)}], most used first."""
+        the same picture, painted with it), name (the body part that uses it most: "Face", "Hips", "Hair"...)}], most
+        used first; then the face's expressions' own textures ("Face: blink", "Face: mouth 1"...: key
+        "<costume>:<texture>@<entry>", painted on that texture alone)."""
         import base64
         import model as mdl
+        import mix
         spec = {k: v for k, v in spec.items() if k != "paint"}
+        if isinstance(spec.get("costume_edits"), list):
+            spec["costume_edits"] = [{a: b for a, b in e.items() if a != "paint"} if isinstance(e, dict) else e
+                                     for e in spec["costume_edits"]]
         spec["name"] = spec.get("name") or "preview"
         f = cf.Fighter(self.disc, spec, "preview")
         k = min(max(costume, 0), len(f.costumes) - 1)
-        key = json.dumps([k] + [spec.get(x) for x in ("costumes", "look", "base", "parts", "colours", "body")], sort_keys=True)
+        key = json.dumps([k, list(f.costumes[k]), self.look_key(cf.costume_spec(spec, k))], sort_keys=True)
         if getattr(self, "_tex_key", None) == key:
             return self._tex
+        f = f.costume_fighter(k)
         pack = f.model(f.costumes[k], False)
         m = mdl.extract(pack.bytes(), pose="relaxed", hide_optional=True)  # (its groups name their textures)
         share = {}
         for g in m["groups"]:
             share[g["texture"]] = share.get(g["texture"], 0) + g["count"]
+        # the body part each texture is drawn on most (by its triangles' nodes)
+        try:
+            built = mix.Source(pack.bytes(), "built").model
+            region = {r.node: built.region(r) for r in built.recs}
+        except Exception:
+            region = {}
+        used_by = {}
+        for p in m.get("parts", []):
+            nm = self.TEX_PART.get(p["node"]) or {"hair": "Hair", "accessories": "Accessories"}.get(
+                region.get(p["node"]), "Clothes" if region.get(p["node"]) not in (None, "root") else "Body")
+            used_by.setdefault(p["texture"], {}).setdefault(nm, 0)
+            used_by[p["texture"]][nm] += p["count"]
+        face_tex = cf.face_texture(pack)
         tex, before = pack[0xC], f.pre_colours[0xC]  # (the variants are compared as they were before the colours)
         others = []  # (w, h, rgba) of the eye frames and mouth textures
         for e in cf.PAINT_ENTRIES[1:]:
@@ -369,11 +420,46 @@ class App:
                 if (ow, oh) == (w, h):
                     same = sum(1 for p in opaque if orgba[p * 4:p * 4 + 4] == ref[p * 4:p * 4 + 4])
                     variants += same / len(opaque) >= cf.PAINT_SHARE
+            parts = used_by.get(i, {})
+            name = "Face" if i == face_tex else max(parts, key=lambda n: parts[n]) if parts else "Texture %d" % i
             out.append({"index": i, "key": f"{k + 1}:{i}", "w": w, "h": h, "bits": lay["bits"], "sig": lay["sig"],
                         "png": base64.b64encode(png(w, h, rgba)).decode(), "palette": pal, "share": cnt,
-                        "variants": variants})
+                        "variants": variants, "name": name})
+        # the expressions: the eye frames (the blink) and the mouth textures, each its own texture file
+        for e in cf.PAINT_ENTRIES[1:]:
+            t = pack[e]
+            if not t or len(t) < 8:
+                continue
+            n = struct.unpack_from("<I", t, 0)[0]
+            for j in range(min(n, 16)):
+                lay = cf.tex_layout(t, j)
+                pre = cf.tex_layout(f.pre_colours[e], j) if f.pre_colours.get(e) else None
+                if lay is None or pre is None:
+                    continue
+                idx = cf.tex_indices(t, lay)
+                pal = []
+                for u in sorted(set(idx)):
+                    o = lay["pal"][u]
+                    if o is not None and "#%02x%02x%02x" % tuple(t[o:o + 3]) not in pal:
+                        pal.append("#%02x%02x%02x" % tuple(t[o:o + 3]))
+                what = "blink" if e == cf.E_EYES else "mouth %d" % (e - 0xD)
+                if n > 1:
+                    what += " %d" % (j + 1) if e == cf.E_EYES else ".%d" % (j + 1)
+                out.append({"index": j, "entry": e, "key": f"{k + 1}:{j}@{e}", "w": lay["w"], "h": lay["h"],
+                            "bits": lay["bits"], "sig": pre["sig"], "palette": pal, "share": 0, "variants": 0,
+                            "png": base64.b64encode(png(lay["w"], lay["h"], cf.tex_rgba(t, lay, idx))).decode(),
+                            "name": "Face: " + what})
         self._tex_key, self._tex = key, {"costume": k + 1, "textures": out, "notes": list(f.notes)}
         return self._tex
+
+    # the body part a node is (the texture painter's names of the textures)
+    TEX_PART = {0x30: "Face", 0x2E: "Neck", 0x2F: "Head", 0x31: "Head", 0x32: "Head", 0x33: "Head",
+                0x02: "Hips", 0x03: "Hips", 0x08: "Hips", 0x0C: "Hips", 0x10: "Belly", 0x11: "Chest", 0x12: "Chest",
+                0x20: "Chest", 0x13: "Upper arms", 0x21: "Upper arms", 0x14: "Forearms", 0x22: "Forearms",
+                0x09: "Thighs", 0x0D: "Thighs", 0x0A: "Shins", 0x0E: "Shins", 0x0B: "Feet", 0x0F: "Feet",
+                0x04: "Tail", 0x05: "Tail", 0x06: "Tail", 0x07: "Tail",
+                **{n: "Hands" for n in list(range(0x15, 0x20)) + list(range(0x23, 0x2E))},
+                **{n: "Accessories" for n in (0x40, 0x41, 0x42, 0x43, 0x6F, 0x76)}}
 
     def install(self, name):
         spec = json.loads(self.path_of(name).read_text(encoding="utf-8-sig"))
@@ -662,11 +748,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if act == "/api/preview":
                     return self.send(200, a.preview(body["spec"], int(body.get("costume", 0))))
                 if act == "/api/layernodes":
-                    return self.send(200, a.layer_nodes(body["spec"]))
+                    return self.send(200, a.layer_nodes(body["spec"], int(body.get("costume", 0))))
                 if act == "/api/fxcolours":
                     return self.send(200, a.fx_colours(body["spec"], body["what"]))
                 if act == "/api/colours":
-                    return self.send(200, a.colours(body["spec"]))
+                    return self.send(200, a.colours(body["spec"], int(body.get("costume", 0))))
                 if act == "/api/textures":
                     return self.send(200, a.textures(body["spec"], int(body.get("costume", 0))))
                 if act == "/api/quit":

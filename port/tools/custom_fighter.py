@@ -39,7 +39,16 @@ A fighter file (JSON). Every part is optional except "name"; a character is {"ch
       "slot": {"chara": "Goku (End)", "costume": 1}   `replace` only: whose place it takes
       "paint": {"1:5": {"w": 128, "h": 128, "sig": "1a2b3c4d", "png": "<base64>"}}   painted pixels of a texture:
                                                  "<costume>:<texture>" of the built model, an RGBA PNG of its size
-                                                 (alpha 255: painted that colour), after the colour changes
+                                                 (alpha 255: painted that colour), after the colour changes;
+                                                 "<costume>:<texture>@<entry>": texture of an expression's own file
+                                                 (entry 13 the eye frames / blink, 14..17 the mouth textures)
+      "extra_layers": [{"chara": "Broly", "costume": 1, "piece": "torso", "adjust": {...}}]   up to 4 more layers on
+                                                 top: that donor's extras of the piece (hair, capes and armour...)
+      "costume_edits": [null, {"parts": {...}, "body": {...}, "colours": [...], "paint": {...}}]   each costume
+                                                 built on its own: item n is costume n + 1's own look (item 0 is
+                                                 unused: costume 1's look is the top level); a costume's value of a
+                                                 look key is its item's when the item has the key, else the top
+                                                 level's (costume_spec); null / {} / missing: the top level's look
     }
 
 What lives where (decompilation: CUSTOM_CHARACTER_RESEARCH.md; numbers are game entries, BObjFile_GetEntry: entry
@@ -595,13 +604,14 @@ def paint_texture(t, lay, painted, locked=()):
 
 
 def paint_entries(spec):
-    """The spec's "paint" as [(costume index, texture index, w, h, sig, {pixel: (r, g, b)})]."""
+    """The spec's "paint" as [(costume index, texture index, w, h, sig, {pixel: (r, g, b)}, entry)] (entry: 0xC the
+    model's textures, 0xD..0x11 an expression's own texture file)."""
     import base64
     out = []
     for key, v in (spec.get("paint") or {}).items():
-        m = re.fullmatch(r"(\d+):(\d+)", str(key))
-        if not m or not isinstance(v, dict) or not v.get("png"):
-            raise Fail(f"paint: {key!r} should be \"<costume>:<texture>\": {{w, h, png}}")
+        m = re.fullmatch(r"(\d+):(\d+)(?:@(\d+))?", str(key))
+        if not m or not isinstance(v, dict) or not v.get("png") or (m.group(3) and int(m.group(3)) not in PAINT_ENTRIES):
+            raise Fail(f"paint: {key!r} should be \"<costume>:<texture>[@<entry>]\": {{w, h, png}}")
         P = portrait_module()
         try:
             w, h, px = P.png_read(base64.b64decode(v["png"].split(",", 1)[-1]))
@@ -609,7 +619,49 @@ def paint_entries(spec):
             raise Fail(f"paint {key}: not a PNG ({e})")
         painted = {p: (px[p * 4], px[p * 4 + 1], px[p * 4 + 2]) for p in range(w * h) if px[p * 4 + 3] >= 128}
         if painted:
-            out.append((int(m.group(1)) - 1, int(m.group(2)), w, h, v.get("sig"), painted))
+            out.append((int(m.group(1)) - 1, int(m.group(2)), w, h, v.get("sig"), painted,
+                        int(m.group(3)) if m.group(3) else 0xC))
+    return out
+
+
+# --------------------------------------------------------------------------------------------- per costume
+# Each costume built on its own: "costume_edits"[n] holds costume n + 1's own look keys (the top level is costume 1's
+# and every costume's without an item of its own). Any key may be in an item; these are the ones the builder and the
+# creator read per costume (other tools add theirs: a costume's value of key K is its item's K, else the top level's).
+LOOK_KEYS = ("parts", "body", "colours", "paint", "extra_layers", "shading", "stance_pose")
+NOT_PER_COSTUME = ("name", "costumes", "look", "costume_edits")
+
+
+def own_edits(spec, i):
+    """Costume index i's own look (a dict), None when it has none (it wears the top level's)."""
+    edits = spec.get("costume_edits")
+    if not isinstance(edits, list) or not 0 < i < len(edits) or not isinstance(edits[i], dict) or not edits[i]:
+        return None
+    return edits[i]
+
+
+def costume_spec(spec, i):
+    """The spec as costume index i is built: its own look keys over the top level's, without "costume_edits". The
+    paint of a costume with a look of its own is the paint named by its number; the others leave those out. A spec
+    without "costume_edits" is given back as it is."""
+    edits = spec.get("costume_edits")
+    if not edits:
+        return spec
+    out = {k: v for k, v in spec.items() if k != "costume_edits"}
+    own = own_edits(spec, i)
+    if own:
+        out.update({k: v for k, v in own.items() if k not in NOT_PER_COSTUME})
+    mine = {j for j in range(1, len(edits)) if own_edits(spec, j)}
+    paint = {}
+    for key, v in (out.get("paint") or {}).items():
+        m = re.match(r"(\d+):", str(key))
+        n = int(m.group(1)) - 1 if m else -1
+        if (own and n == i) or (not own and n not in mine):
+            paint[key] = v
+    if paint:
+        out["paint"] = paint
+    else:
+        out.pop("paint", None)
     return out
 
 
@@ -1024,6 +1076,8 @@ def slot_motions(slot):
 class Fighter:
     def __init__(self, disc, spec, path):
         self.disc, self.spec, self.path = disc, spec, path
+        self._costume_fighters = {}
+        lk = costume_spec(spec, 0)  # (costume 1's look, and every costume's without one of its own)
         if not spec.get("name"):
             raise Fail(f"{path}: the fighter needs a \"name\"")
         if "costumes" in spec:
@@ -1042,7 +1096,7 @@ class Fighter:
         self.melee = ref(spec.get("melee"))
         self.kiblasts = ref(spec.get("ki_blasts"))
         order = ("head", "hair", "torso", "tail", "arms", "hands", "legs", "feet")  # later ones win where they overlap
-        parts = spec.get("parts") or {}
+        parts = lk.get("parts") or {}
         for k in parts:
             if k not in order:
                 raise Fail(f"unknown piece {k!r}: one of {', '.join(order)}")
@@ -1052,7 +1106,21 @@ class Fighter:
                        (v.get("adjust") if isinstance(v, dict) else None) or {})
                       for k in order if parts.get(k)
                       for v in (parts[k] if isinstance(parts[k], list) else [parts[k]]) if v]
-        self.body = node_keys(spec.get("body") or {})
+        # (what each layer is in the spec, for the workshop: "<piece>.<n>" the n-th of parts[piece], "x.<n>" the
+        # n-th extra layer)
+        self.part_tags = [f"{k}.{n}" for k in order if parts.get(k)
+                          for n, v in enumerate(parts[k] if isinstance(parts[k], list) else [parts[k]]) if v]
+        extra = lk.get("extra_layers") or []
+        if not isinstance(extra, list) or len(extra) > 8:
+            raise Fail("extra_layers: a list of up to 8 layers")
+        for n, v in enumerate(extra):
+            if not v:
+                continue
+            if not isinstance(v, dict) or v.get("piece", "hair") not in order:
+                raise Fail(f"extra layer {n + 1}: {{chara, costume, piece: one of {', '.join(order)}}}")
+            self.parts.append((v.get("piece", "hair") + "+", ref(v), v.get("adjust") or {}))
+            self.part_tags.append(f"x.{n}")
+        self.body = node_keys(lk.get("body") or {})
         # attack colours: {"blast1_1".."ultimate" | "ki_blasts" | "charge": [{"from", "to", "range"}]}
         self.fx = {k: v for k, v in (spec.get("attack_colours") or {}).items() if v}
         for k in self.fx:
@@ -1061,12 +1129,13 @@ class Fighter:
         self.parts = [(p_, w, node_keys(o)) for p_, w, o in self.parts]
         self.notes, self.mix_notes = [], []
         self.colours = []
-        for c in spec.get("colours", []):
+        for c in lk.get("colours", []):
             try:
                 self.colours.append((int(c["texture"]), hex_rgb(c["from"]), hex_rgb(c["to"]), float(c.get("range", 1.0))))
             except (KeyError, ValueError, TypeError):
                 raise Fail(f"a colour change needs texture, from and to (#rrggbb): {c!r}")
-        self.paint = paint_entries(spec)
+        self.paint = paint_entries(lk)
+        self.mix_ids = {}  # the last undamaged mix: "<layer tag>:<donor node>" / "<tag>:c<n>" -> node id in the model
         self._paint_ref = {}  # look -> the texture file the paint was made on (undamaged, before the colours)
         self.moves = {}
         for key, v in spec.get("moves", {}).items():
@@ -1084,6 +1153,25 @@ class Fighter:
             if not v or len(v) > 40 or "\n" in v:
                 raise Fail(f"move name {v!r}: 1 to 40 characters on one line")
             self.names[SLOTS[key]] = v
+
+    def costume_fighter(self, i):
+        """The fighter that builds costume index i: this one, or for a costume with a look of its own
+        ("costume_edits") one made of its costume_spec."""
+        if own_edits(self.spec, i) is None:
+            return self
+        if i not in self._costume_fighters:
+            self._costume_fighters[i] = Fighter(self.disc, costume_spec(self.spec, i), self.path)
+        return self._costume_fighters[i]
+
+    def costume_model(self, i, damaged):
+        """Costume index i's model, from its own look."""
+        f = self.costume_fighter(i)
+        m = f.model(self.costumes[i], damaged)
+        if f is not self:
+            for n in f.notes:
+                self.note(f"costume {i + 1}: {n}")
+            self.mix_notes += [n for n in f.mix_notes if n not in self.mix_notes]
+        return m
 
     def model(self, costume, damaged):
         """One model (a costume, or its damaged version) with the fighter's moves, names and voice."""
@@ -1161,27 +1249,37 @@ class Fighter:
         note in self.notes), so a warrior can always be built."""
         mix = mix_module()
         d = self.disc
-        sel = []
-        for piece, who, opts in self.parts:
+        sel, tags = [], []
+        for (piece, who, opts), tag in zip(self.parts, self.part_tags):
             try:
                 sel.append((d.model(*who, damaged).bytes(), piece, opts))
+                tags.append(tag)
             except Fail as e:
                 self.note(f"{piece} from {name(who[0])} left out: {e}")
         while True:
             kw = {}
             if self.body:
                 kw["adjust"] = self.body
+            ids = {}
             try:
                 try:
-                    out = mix.mix(m.bytes(), sel, report=self.mix_notes, **kw)
+                    out = mix.mix(m.bytes(), sel, report=self.mix_notes, ids=ids, **kw)
                 except (TypeError, ValueError):  # (a mixer without opts / adjust: the plain selections)
                     out = mix.mix(m.bytes(), [(b, p) for b, p, _ in sel], report=self.mix_notes)
+                if not damaged:  # (which node each workshop part became: the creator makes it blink)
+                    self.mix_ids = {}
+                    for key, nid in ids.items():
+                        if key[0] == "copy":
+                            self.mix_ids[f"{tags[key[1] - 1] if key[1] else 'body'}:c{key[2]}"] = nid
+                        elif 0 < key[0] <= len(tags):
+                            self.mix_ids[f"{tags[key[0] - 1]}:{key[1]}"] = nid
                 return Pack(out, 252)
             except mix.MixError as e:
                 if not sel:
                     self.note(f"the body's workshop changes left out: {e}")
                     return m
                 dropped = sel.pop()
+                tags.pop()
                 self.note(f"one {dropped[1].rstrip('+')} layer left out: {e}")
 
     def painted(self, m, costume, damaged, pre):
@@ -1216,7 +1314,29 @@ class Fighter:
             tex0 = struct.unpack_from("<Q", t, ent * 4 + j * 0x40 + 0x30)[0]
             return 1 << ((tex0 >> 26) & 15), 1 << ((tex0 >> 30) & 15)
         sigs = tex_sigs(ref)
-        for ci, ti, w, h, sig, painted in todo:
+
+        def locked_of(e, j, lay):  # (a palette other textures use too: its entries stay)
+            count = struct.unpack_from("<I", pre[e], 0)[0]
+            locked = set()
+            ent = struct.unpack_from("<I", pre[e], 4)[0]
+            for j2 in range(min(count, 256)):
+                if j2 != j and struct.unpack_from("<I", pre[e], ent * 4 + j2 * 0x40 + 4)[0] == lay["clut"]:
+                    l2 = layout(e, j2)
+                    if l2 is not None:
+                        locked |= {l2["pal"][k] for k in set(tex_indices(data[e], l2))}
+            return locked
+        for ci, ti, w, h, sig, painted, entry in sorted(todo, key=lambda pe: pe[6] != 0xC):
+            if entry != 0xC:  # an expression's own texture (the blink, a mouth): that texture alone
+                if entry not in data:
+                    continue
+                es = tex_sigs(pre[entry])
+                target = ti if sig is None or es.get(ti) == sig else next((k for k, s in sorted(es.items()) if s == sig), None)
+                lay = layout(entry, target) if target is not None else None
+                if lay is None or (lay["w"], lay["h"]) != (w, h):
+                    self.note(f"the paint of expression texture {entry}:{ti} left out: the build's textures changed")
+                    continue
+                paint_texture(data[entry], lay, painted, locked_of(entry, target, lay))
+                continue
             target = ti if sig is None or sigs.get(ti) == sig else next((k for k, s in sorted(sigs.items()) if s == sig), None)
             rl = tex_layout(ref, target) if target is not None else None
             if rl is None or (rl["w"], rl["h"]) != (w, h):
@@ -1344,8 +1464,8 @@ def write_package(disc, spec_path, chars_dir, done):
         old.unlink()
     stem = re.sub(r"[^A-Za-z0-9]+", "_", spec["name"]).strip("_")[:24] or "fighter"
     for i, costume in enumerate(f.costumes):
-        (out / f"{stem}_{i + 1}p.pak").write_bytes(f.model(costume, False).bytes())
-        (out / f"{stem}_{i + 1}p_dmg.pak").write_bytes(f.model(costume, True).bytes())
+        (out / f"{stem}_{i + 1}p.pak").write_bytes(f.costume_model(i, False).bytes())
+        (out / f"{stem}_{i + 1}p_dmg.pak").write_bytes(f.costume_model(i, True).bytes())
     (out / f"{stem}_anm.pak").write_bytes(f.anims().bytes())
     (out / f"{stem}_eff.pak").write_bytes(f.effects().bytes())
     bank_us, bank_jp, lines_us, lines_jp = disc.voice_files(f.voice[0])
@@ -1452,8 +1572,8 @@ def write_extra_costumes(disc, chara, looks, chars_dir, folder, first=None, auth
     stem = re.sub(r"[^A-Za-z0-9]+", "_", NAMES[chara]).strip("_")[:24] or "fighter"
     for i, costume in enumerate(f.costumes):
         n = have + i + 1
-        (out / f"{stem}_{n}p.pak").write_bytes(f.model(costume, False).bytes())
-        (out / f"{stem}_{n}p_dmg.pak").write_bytes(f.model(costume, True).bytes())
+        (out / f"{stem}_{n}p.pak").write_bytes(f.costume_model(i, False).bytes())
+        (out / f"{stem}_{n}p_dmg.pak").write_bytes(f.costume_model(i, True).bytes())
     manifest = [f"# made by port/tools/custom_fighter.py: costumes {have + 1}..{have + len(looks)} of {NAMES[chara]}",
                 "format=1", f"replaces={chara}", f"author={author}",
                 "about=" + (f"More costumes for {NAMES[chara]}: " + ", ".join(
