@@ -852,7 +852,8 @@ static const J *entry_of(const J &name) { // by the game's number or by its name
         if (*rest >= '0' && *rest <= '9') { return entry_of(J::num(1000 + (double)strtol(rest, NULL, 0))); }
         for (size_t i = 0; i < sRoster.size(); i++) {
             std::string n = sRoster[i]["name"].text();
-            if (n.size() > 5 && SDL_strcasecmp(n.c_str() + 5, rest) == 0) { return &sRoster[i]; }
+            // (only BT4 entries: "BT4: Vegeta" is not "Baby Vegeta", whose name also has "Vegeta" after 5 letters)
+            if (n.size() > 5 && SDL_strncasecmp(n.c_str(), "bt4:", 4) == 0 && SDL_strcasecmp(n.c_str() + 5, rest) == 0) { return &sRoster[i]; }
         }
     }
     bool digits = !s.empty() && strspn(s.c_str(), "0123456789") == s.size();
@@ -4923,6 +4924,12 @@ static void want_disc(const J &ref) { // a disc character's own model (key 1 + i
     int id = chara_id(ref), costume = (int)ref["costume"].number(1) - 1;
     if (id < 0 || id >= 161) { return; }
     costume = costume < 0 || costume > 15 ? 0 : costume;
+    const J *c = chara_of(ref); // (a costume the character does not have: its first, not a model file that is not there)
+    if (c != NULL && (*c)["costumes"].size()) {
+        bool has = false;
+        for (size_t k = 0; k < (*c)["costumes"].size(); k++) { has |= (int)(*c)["costumes"][k].number(0) == costume + 1; }
+        if (!has) { costume = 0; }
+    }
     want_model(1 + id * 16 + costume, id, costume, "");
 }
 // =============================================================================================== the Z WARRIORS shell

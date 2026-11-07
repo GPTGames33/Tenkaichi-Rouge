@@ -1019,6 +1019,7 @@ void Mm_ViewWant(s32 key, s32 chara, s32 costume, s32 mod, s32 rested) {
    the disc character's own. Its turn stays where the player turned it (Mm_ViewTurn). */
 void Mm_ViewWantPreview(s32 key, s32 chara, s32 costume) {
     extern s32 PortCreator_ApplyPreview(s32 key);
+    extern s32 ChrTbl_WrapCostume(s32 chara, s32 *costume);
 
     if (!ChrView_PortInitDone()) {
         return;
@@ -1032,6 +1033,8 @@ void Mm_ViewWantPreview(s32 key, s32 chara, s32 costume) {
         PortCreator_ApplyPreview(-1);
     } else {
         PortCreator_ApplyPreview(key);
+        ChrTbl_WrapCostume(chara, &costume); /* (a costume the character has not: its first, never a model file
+                                                that is not there: the viewer would bind nothing) */
         ChrView_Show(chara, costume, 0);
         sMvChara = chara;
         if (sMvYaw == 0.0f) {
