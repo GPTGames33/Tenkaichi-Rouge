@@ -3,16 +3,29 @@
 #ifndef PORT_PLAT_CHARAS_H
 #define PORT_PLAT_CHARAS_H
 
-/* the same numbers as include/port_chara.h: 57 ids from 0xC6, then 28 from 0xA5 (the Custom Character build) */
+/* the same numbers as include/port_chara.h: the battle's 85 slots, 57 ids from 0xC6 then 28 from 0xA5; the menus'
+   wide ids from 0x400 when more than 85 are installed (then a battle binds its characters to slots) */
 #define PORT_CHARA_FIRST 0xC6
 #define PORT_CHARA_COUNT1 57
 #define PORT_CHARA_FIRST2 0xA5
 #define PORT_CHARA_COUNT2 28
-#define PORT_CHARA_MAX (PORT_CHARA_COUNT1 + PORT_CHARA_COUNT2)
-#define PORT_CHARA_ID(n) ((int)(n) < PORT_CHARA_COUNT1 ? PORT_CHARA_FIRST + (int)(n) : PORT_CHARA_FIRST2 + ((int)(n) - PORT_CHARA_COUNT1))
-#define PORT_CHARA_IDX(c) ((int)(c) >= PORT_CHARA_FIRST ? (int)(c) - PORT_CHARA_FIRST : (int)(c) - PORT_CHARA_FIRST2 + PORT_CHARA_COUNT1)
-#define PORT_CHARA_ADDED(c) (((int)(c) >= PORT_CHARA_FIRST && (int)(c) < PORT_CHARA_FIRST + PORT_CHARA_COUNT1) || \
-                             ((int)(c) >= PORT_CHARA_FIRST2 && (int)(c) < PORT_CHARA_FIRST2 + PORT_CHARA_COUNT2))
+#define PORT_CHARA_SLOTS (PORT_CHARA_COUNT1 + PORT_CHARA_COUNT2)
+#define PORT_CHARA_SLOT_ID(n) ((int)(n) < PORT_CHARA_COUNT1 ? PORT_CHARA_FIRST + (int)(n) : PORT_CHARA_FIRST2 + ((int)(n) - PORT_CHARA_COUNT1))
+#define PORT_CHARA_SLOT_OF(c) ((int)(c) >= PORT_CHARA_FIRST ? (int)(c) - PORT_CHARA_FIRST : (int)(c) - PORT_CHARA_FIRST2 + PORT_CHARA_COUNT1)
+#define PORT_CHARA_IS_SLOT(c) (((int)(c) >= PORT_CHARA_FIRST && (int)(c) < PORT_CHARA_FIRST + PORT_CHARA_COUNT1) || \
+                               ((int)(c) >= PORT_CHARA_FIRST2 && (int)(c) < PORT_CHARA_FIRST2 + PORT_CHARA_COUNT2))
+#define PORT_CHARA_WIDE0 0x400
+#define PORT_CHARA_MAX 1024
+#define PORT_CHARA_IS_WIDE(c) ((int)(c) >= PORT_CHARA_WIDE0 && (int)(c) < PORT_CHARA_WIDE0 + PORT_CHARA_MAX)
+#define PORT_CHARA_ADDED(c) (PORT_CHARA_IS_SLOT(c) || PORT_CHARA_IS_WIDE(c))
+int Port_CharaIdx(int chara); /* the package behind an added id (a slot: the one bound to it); PORT_CHARA_MAX: none */
+int Port_CharaId(int n);      /* the menus' id of the n-th added character */
+#define PORT_CHARA_IDX(c) Port_CharaIdx(c)
+#define PORT_CHARA_ID(n) Port_CharaId(n)
+/* File numbers (indices of the second archive) of the n-th added character. The first 85 have the ranges below
+   (the numbers of earlier builds); the 86th and on a block of PORT_CHARA_HI_PER each from PORT_CHARA_HI_INDEX:
+   +0..9 the model rule's ten, +10/11 the voice banks, +12 the large picture, +14/15 the member blocks, +16..39
+   costumes 5 and on, +56..255 the spoken lines (+56 + set * 100 + line). */
 #define PORT_CHARA_FILE_INDEX 71000  /* in the second archive: ten files per added character */
 #define PORT_CHARA_VOICE_INDEX 72000 /* two per added character */
 #define PORT_MODEL_MAX 0x180000 /* the largest model file taken (the original's buffer is 0xCE000) */
@@ -20,13 +33,33 @@
 #define PORT_CHARA_MEMBER_INDEX 93000 /* two per added character: the fight's member block, a side each */
 #define PORT_CHARA_FACE_INDEX 92000  /* one per added character: the large picture of the menus */
 #define PORT_CHARA_LINE_INDEX 74000  /* two hundred per added character: its spoken lines, a hundred in each language */
+#define PORT_CHARA_HI_INDEX 200000
+#define PORT_CHARA_HI_PER 256
+enum { PORT_CFILE_VOICE, PORT_CFILE_FACE, PORT_CFILE_MEMBER, PORT_CFILE_LINE };
+int Port_CharaFile(int chara, int kind, int k); /* include/port_chara.h: a file id (0xD48 + index) of an added character */
+int Port_CharaFile10(int chara);
+int Port_CharaFromFile(int id);
+/* the index of a kind of file (PORT_CFILE_*) of the n-th added character, for code that opens files by index */
+int Port_CharaFileIndex(int n, int kind, int k);
 /* Costumes 5 and on (include/port_chara.h): up to PORT_COSTUME_MAX a character, a disc character's from a package
    that replaces it, an added one's from its folder; their model files from the second archive's file 94000, 24 a
-   character (two a costume: the model, the damaged one), the disc's 161 characters first, then the added ones. */
+   character (two a costume: the model, the damaged one), the disc's 161 characters first, then the first 85 added
+   ones (the others' in their own blocks). */
 #define PORT_COSTUME_MAX 16
 #define PORT_CHARA_XCOST_INDEX 94000
 #define PORT_XCOST_PER ((PORT_COSTUME_MAX - 4) * 2)
-#define PORT_XCOST_SLOTS (161 + PORT_CHARA_MAX)
+#define PORT_XCOST_SLOTS (161 + PORT_CHARA_SLOTS)
+/* A battle's characters to slots (more than 85 installed; src/battle/battle_load.c, PortBattle_Bind): Begin, Want
+   every id of the set-up, Commit, then Get the id each is to have in the battle. Unbind: a battle's id back to the
+   menus'. With 85 or fewer each answers the id it is given. */
+void Port_CharaBindBegin(void);
+void Port_CharaBindWant(int chara);
+void Port_CharaBindCommit(void);
+int Port_CharaBindGet(int chara);
+int Port_CharaUnbind(int chara);
+/* the grids of the screens with a roster (include/port_chara.h, PORT_GRID) */
+void *Port_GridBuf(int which);
+int Port_GridCap(const void *cells);
 int Port_CharaCostumeCount(int chara, int disc); /* how many a character has (`disc`: the disc table's number) */
 int Port_CharaModelFile(int chara, int costume, int damaged); /* the file id of a costume's model */
 

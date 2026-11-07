@@ -401,9 +401,9 @@ void UbTeamSel_Init(s32 section) {
 #endif
     gUbTeamSel->grid = (UbCell *)(MPACK_AT(gUbTeamSel->res, 30) + 0x10);
     gUbTeamSel->gridCount = gUbTeamSel->res[gUbTeamSel->res[30] >> 2];
-    ChrGrid_Build(&gUbTeamSel->gridOutCount, gUbTeamSel->gridBuf, &gUbTeamSel->gridCount, gUbTeamSel->grid, NULL, NULL);
+    ChrGrid_Build(&gUbTeamSel->gridOutCount, PORT_GRIDBUF(7, gUbTeamSel->gridBuf), &gUbTeamSel->gridCount, gUbTeamSel->grid, NULL, NULL);
     gUbTeamSel->gridCount = gUbTeamSel->gridOutCount;
-    gUbTeamSel->grid = gUbTeamSel->gridBuf;
+    gUbTeamSel->grid = PORT_GRIDBUF(7, gUbTeamSel->gridBuf);
     {
         s32 cols = UB_COLS;
         s32 cols2 = UB_COLS;

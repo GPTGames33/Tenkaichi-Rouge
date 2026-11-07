@@ -756,11 +756,17 @@ void TeamSel_Init(s32 section) {
     gTeamSel->masterCount[1] = gTeamSel->masterCount[0];
     for (i = 0; i < TEAMSEL_SIDES; i++) {
         s32 cols = TS_COLS;
+#ifdef PORT
+        /* (with added characters, a grid of the port's with room for all of them: include/port_chara.h) */
+        TsCell *grid = (TsCell *)PORT_GRID(2 + i, gTeamSel->grid[i]);
+#else
+        TsCell *grid = gTeamSel->grid[i];
+#endif
 
-        ChrGrid_Build(&gTeamSel->cellCount[i], gTeamSel->grid[i], &gTeamSel->masterCount[i], gTeamSel->cells[i],
+        ChrGrid_Build(&gTeamSel->cellCount[i], grid, &gTeamSel->masterCount[i], gTeamSel->cells[i],
                       &gTeamSel->customCount[i], gTeamSel->custom[i]);
         gTeamSel->masterCount[i] = gTeamSel->cellCount[i];
-        gTeamSel->cells[i] = gTeamSel->grid[i];
+        gTeamSel->cells[i] = grid;
         gTeamSel->rows[i] = gTeamSel->masterCount[i] / cols;
         if (gTeamSel->masterCount[i] % cols) {
             gTeamSel->rows[i]++;

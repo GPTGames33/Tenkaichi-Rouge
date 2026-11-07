@@ -38,6 +38,7 @@
 #include <sys/stat.h>
 
 #include "plat_charas.h"
+#include "port_addr.h"
 
 extern int PortExtras_Dir(const char *kind, const char *env, char *out, unsigned size); /* plat_extras.c */
 
@@ -83,7 +84,7 @@ typedef struct {
     int burst[4];              /* `<slot>_burst=rrggbb`: the colour of the transformation's burst; -1 the game's */
 } Chara;
 
-enum { CHIP_SIZE = 5504, NAME_ENTRY = 128, NAME_LINES_MAX = 256, PKG_MAX = 320, TEXT_MAX = 16384 };
+enum { CHIP_SIZE = 5504, NAME_ENTRY = 128, NAME_LINES_MAX = 256, PKG_MAX = 1600, TEXT_MAX = 16384, TOP_MAX = 1400 };
 /* (static: the program lies below 4 GB, where the game's 32-bit pointers reach) */
 static unsigned char sChip[PORT_CHARA_MAX][CHIP_SIZE] __attribute__((aligned(64)));
 static unsigned char sChipHave[PORT_CHARA_MAX];
@@ -111,7 +112,7 @@ static int pkg_dir(const char *folder, char *out, size_t size);
    and in which order. Each line is `on <folder>` or `off <folder>`; the folders it lists come first, in its order,
    then the others, on, by name. The order decides the ids of added characters and which of two packages for one
    disc character wins (the first). */
-enum { ORDER_MAX = 256 };
+enum { ORDER_MAX = TOP_MAX };
 static char sOrder[ORDER_MAX][128];
 static unsigned char sOrderOn[ORDER_MAX];
 static int sOrderCount;
@@ -135,6 +136,70 @@ static const Chara *repl_of(int id) {
     return id >= 0 && id < DISC_CHARAS && rlive() > 0 && sReplOf[id] != 0 ? &sRepl[sReplOf[id] - 1] : NULL;
 }
 
+/* ---- ids: the battle's 85 slots and the menus' wide ids --------------------------------------------------------
+ * A battle has 85 ids for added characters (include/port_chara.h: 0xC6..0xFE, 0xA5..0xC0), its SLOTS: the battle
+ * takes a character from one byte in places (the form and fusion tables, 0xFF "none") and ids from 0x100 for its
+ * props. With 85 or fewer added characters the n-th simply is slot n, in the menus and in the battle, as in every
+ * earlier build. With more, the menus know the n-th as PORT_CHARA_WIDE0 + n, and when a battle starts the characters
+ * it can see (its fighters, the opponent pool, and every form and fusion they can turn into) are bound to slots
+ * (Port_CharaBind*, called by src/battle/battle_load.c); sSlotPkg says which package a slot is in the battle. The
+ * first 85 keep their own slot when they are in a battle; the others take one that no character of the battle has.
+ * A binding stays until the next battle; the set-up is turned back to wide ids when the battle ends, so the menus
+ * never hold a slot id. In a session nothing is installed and every slot is itself. */
+static short sSlotPkg[PORT_CHARA_SLOTS]; /* the package bound to each slot (needs_bind() only) */
+static short sPkgSlot[PORT_CHARA_MAX];   /* the slot of each package in the last binding, -1 none */
+
+static int needs_bind(void) {
+    return live() > PORT_CHARA_SLOTS;
+}
+
+static void bind_reset(void) {
+    int i;
+    for (i = 0; i < PORT_CHARA_SLOTS; i++) {
+        sSlotPkg[i] = (short)i;
+    }
+    for (i = 0; i < PORT_CHARA_MAX; i++) {
+        sPkgSlot[i] = (short)(i < PORT_CHARA_SLOTS ? i : -1);
+    }
+}
+
+int Port_CharaIdx(int chara) {
+    if (PORT_CHARA_IS_WIDE(chara)) {
+        return chara - PORT_CHARA_WIDE0;
+    }
+    if (PORT_CHARA_IS_SLOT(chara)) {
+        int s = PORT_CHARA_SLOT_OF(chara);
+        if (needs_bind()) {
+            return sSlotPkg[s] >= 0 ? sSlotPkg[s] : PORT_CHARA_MAX;
+        }
+        return s;
+    }
+    return PORT_CHARA_MAX;
+}
+
+int Port_CharaId(int n) {
+    return !needs_bind() && n >= 0 && n < PORT_CHARA_SLOTS ? PORT_CHARA_SLOT_ID(n) : PORT_CHARA_WIDE0 + n;
+}
+
+/* the id package n has in a battle: its slot (the menus' id where it is not bound) */
+static int game_id(int n) {
+    if (!needs_bind()) {
+        return Port_CharaId(n);
+    }
+    return n >= 0 && n < PORT_CHARA_MAX && sPkgSlot[n] >= 0 ? PORT_CHARA_SLOT_ID(sPkgSlot[n]) : PORT_CHARA_WIDE0 + n;
+}
+
+/* a link (`target`: a disc id, 0xFF, or PORT_CHARA_WIDE0 + n for an added character) as the battle's byte tables
+   take it: 0xFF where the character has no slot in this battle */
+static int battle_target(int t) {
+    int id;
+    if (!PORT_CHARA_IS_WIDE(t)) {
+        return t;
+    }
+    id = game_id(t - PORT_CHARA_WIDE0);
+    return PORT_CHARA_IS_SLOT(id) ? id : 0xFF;
+}
+
 /* the package behind a character id: an added character, or the replacement of a disc character; NULL if none */
 static const Chara *chara_of(int chara) {
     if (PORT_CHARA_ADDED(chara) && PORT_CHARA_IDX(chara) < live()) {
@@ -143,8 +208,72 @@ static const Chara *chara_of(int chara) {
     return repl_of(chara);
 }
 
+/* the id a link names a package by: the disc character it replaces, or PORT_CHARA_WIDE0 + n for the n-th added one
+   (whatever ids it has in the menus and in a battle) */
 static int id_of(const Chara *c) {
-    return c->replaces >= 0 ? c->replaces : PORT_CHARA_ID((int)(c - sChara));
+    return c->replaces >= 0 ? c->replaces : PORT_CHARA_WIDE0 + (int)(c - sChara);
+}
+static void forms_prepare(void);
+
+/* ---- file numbers ---------------------------------------------------------------------------------------------
+ * An added character's files have numbers of the second archive past its end, by the package's place n (not by its
+ * id, which in a battle is a slot that another battle gives another package). The first 85 keep the ranges of
+ * earlier builds (port/include/plat_charas.h); the 86th and on have a block of PORT_CHARA_HI_PER from
+ * PORT_CHARA_HI_INDEX each. An id nothing is behind gets the numbers of the last place, which alias() answers with
+ * the disc's first character as before. */
+static int hi_block(int n) {
+    return PORT_CHARA_HI_INDEX + (n - PORT_CHARA_SLOTS) * PORT_CHARA_HI_PER;
+}
+
+static int model_index(int n) { /* the first of the ten of the model rule */
+    if (n < 0 || n >= PORT_CHARA_MAX) {
+        n = PORT_CHARA_MAX - 1;
+    }
+    return n < PORT_CHARA_SLOTS ? PORT_CHARA_FILE_INDEX + n * 10 : hi_block(n);
+}
+
+int Port_CharaFileIndex(int n, int kind, int k) {
+    if (n < 0 || n >= PORT_CHARA_MAX) {
+        n = PORT_CHARA_MAX - 1;
+    }
+    switch (kind) {
+    case PORT_CFILE_VOICE:
+        return n < PORT_CHARA_SLOTS ? PORT_CHARA_VOICE_INDEX + n * 2 + (k & 1) : hi_block(n) + 10 + (k & 1);
+    case PORT_CFILE_FACE:
+        return n < PORT_CHARA_SLOTS ? PORT_CHARA_FACE_INDEX + n : hi_block(n) + 12;
+    case PORT_CFILE_MEMBER:
+        return n < PORT_CHARA_SLOTS ? PORT_CHARA_MEMBER_INDEX + n * 2 + (k & 1) : hi_block(n) + 14 + (k & 1);
+    default: /* PORT_CFILE_LINE: k = set * 100 + line */
+        if (k < 0 || k >= 200) {
+            k = 0;
+        }
+        return n < PORT_CHARA_SLOTS ? PORT_CHARA_LINE_INDEX + n * 200 + k : hi_block(n) + 56 + k;
+    }
+}
+
+int Port_CharaFile(int chara, int kind, int k) {
+    return 0xD48 + Port_CharaFileIndex(Port_CharaIdx(chara), kind, k);
+}
+
+int Port_CharaFile10(int chara) {
+    return 0xD48 + model_index(Port_CharaIdx(chara)) - 0x590;
+}
+
+/* the character a model file is of (src/battle/btl_obj.c takes a fighter's character from its model): for an added
+   character's, the id it has in the battle */
+int Port_CharaFromFile(int id) {
+    int index = id - 0xD48;
+    if (index >= PORT_CHARA_FILE_INDEX && index < PORT_CHARA_FILE_INDEX + PORT_CHARA_SLOTS * 10) {
+        return game_id((index - PORT_CHARA_FILE_INDEX) / 10);
+    }
+    if (index >= PORT_CHARA_XCOST_INDEX && index < PORT_CHARA_XCOST_INDEX + PORT_XCOST_SLOTS * PORT_XCOST_PER) {
+        int slot = (index - PORT_CHARA_XCOST_INDEX) / PORT_XCOST_PER;
+        return slot < DISC_CHARAS ? slot : game_id(slot - DISC_CHARAS);
+    }
+    if (index >= PORT_CHARA_HI_INDEX && index < hi_block(PORT_CHARA_MAX)) {
+        return game_id(PORT_CHARA_SLOTS + (index - PORT_CHARA_HI_INDEX) / PORT_CHARA_HI_PER);
+    }
+    return (id - 0x590) / 10;
 }
 
 /* Changes whenever what the game's file numbers answer may have changed: with a session's start and end, and with
@@ -936,7 +1065,7 @@ static void resolve(Chara *c) {
 
 /* load_order.txt of `root` into sOrder (nothing if there is none) */
 static void order_read(const char *root) {
-    static char text[65536]; /* (256 folders of 63 bytes with their words take about 17 KB) */
+    static char text[TOP_MAX * 72]; /* (a folder name of 63 bytes and its word) */
     char path[400], *line, *next;
     size_t len;
     FILE *f;
@@ -1010,14 +1139,14 @@ static void listed_off(const char *name) {
 
 /* Reads the folder: the packages the load order has on, in its order, then the others by name. */
 static void load(void) {
-    static char names[256][128], use[256][128], inner[64][128];
+    static char names[TOP_MAX][128], use[TOP_MAX][128], inner[64][128];
     char root[300];
     int n = 0, used = 0, i, j;
 
     if (!PortExtras_Dir("characters", "BT3_CHARACTERS", root, sizeof(root))) {
         return;
     }
-    n = folders(root, names, 256, 0);
+    n = folders(root, names, TOP_MAX, 0);
     order_read(root);
     for (j = 0; j < sOrderCount; j++) { /* the listed ones that are there, in the list's order */
         for (i = 0; i < n; i++) {
@@ -1059,8 +1188,16 @@ static void load(void) {
     for (i = 0; i < sReplCount; i++) {
         resolve(&sRepl[i]);
     }
+    bind_reset();
+    for (i = 0; i < sCount; i++) { /* (the id each has in the menus, now that their number is known) */
+        if (sChara[i].pkg >= 0 && sChara[i].pkg < sPkgCount && sPkg[sChara[i].pkg].kind == PORT_PKG_ADDS) {
+            sPkg[sChara[i].pkg].id = Port_CharaId(i);
+        }
+    }
+    forms_prepare();
     if (sCount > 0) {
-        fprintf(stderr, "bt3: characters: %d added from %s\n", sCount, root);
+        fprintf(stderr, "bt3: characters: %d added from %s%s\n", sCount, root,
+                sCount > PORT_CHARA_SLOTS ? " (more than 85: a battle binds its characters to the battle's 85 ids)" : "");
         for (i = 0; i < sCount; i++) {
             fprintf(stderr, "bt3: characters:   %s%s%s: id %d, %d costume%s, base character %d\n", sChara[i].owner, sChara[i].owner[0] != '\0' ? "/" : "",
                     sChara[i].name, PORT_CHARA_ID(i), sChara[i].costumes, sChara[i].costumes == 1 ? "" : "s", sChara[i].base);
@@ -1089,6 +1226,7 @@ void PortCharas_Init(void) {
         return;
     }
     sInit = 1;
+    bind_reset();
     if (getenv("BT3_NET_SESSION") != NULL && (getenv("BT3_NET_HOST") != NULL || getenv("BT3_NET_JOIN") != NULL)) {
         return; /* the program was started for an online session: the folder is not read */
     }
@@ -1105,6 +1243,7 @@ int PortCharas_Reload(void) {
     }
     PortChips_Free();
     sCount = sReplCount = sPkgCount = 0;
+    bind_reset();
     memset(sReplOf, 0, sizeof(sReplOf));
     memset(sChipHave, 0, sizeof(sChipHave));
     sNameFirst = sFormFirst = -1;
@@ -1119,14 +1258,14 @@ int PortCharas_Reload(void) {
 /* The folders of `characters` in the order they are used, each with whether it is on: the load order's first, in
    its order, then the others by name (as load() takes them). `max` at most; how many. */
 int PortCharas_OrderGet(char (*folder)[128], unsigned char *on, int max) {
-    static char names[256][128];
+    static char names[TOP_MAX][128];
     char root[300];
     int n, i, j, count = 0;
 
     if (!PortCharas_Root(root, sizeof(root))) {
         return 0;
     }
-    n = folders(root, names, 256, 0);
+    n = folders(root, names, TOP_MAX, 0);
     order_read(root);
     for (j = 0; j < sOrderCount && count < max; j++) {
         for (i = 0; i < n && strcmp(names[i], sOrder[j]) != 0; i++) {
@@ -1607,13 +1746,17 @@ int Port_CharaCostumeCount(int chara, int disc) {
    character's ids past the archive's end, include/port_chara.h), PORT_CHARA_XCOST0 + ... for the fifth and on. A
    costume out of range is the first. */
 int Port_CharaModelFile(int chara, int costume, int damaged) {
-    int ten = PORT_CHARA_ADDED(chara) ? 0xD48 + PORT_CHARA_FILE_INDEX - 0x590 + PORT_CHARA_IDX(chara) * 10 : chara * 10;
-    int slot = PORT_CHARA_ADDED(chara) ? DISC_CHARAS + PORT_CHARA_IDX(chara) : chara;
-    if (costume < 0 || costume >= PORT_COSTUME_MAX || (costume >= 4 && (slot < 0 || slot >= PORT_XCOST_SLOTS || (!PORT_CHARA_ADDED(chara) && chara >= DISC_CHARAS)))) {
+    int added = PORT_CHARA_ADDED(chara), n = added ? Port_CharaIdx(chara) : -1;
+    int ten = added ? Port_CharaFile10(chara) : chara * 10;
+    int slot = added ? DISC_CHARAS + n : chara;
+    if (costume < 0 || costume >= PORT_COSTUME_MAX || (costume >= 4 && !added && (chara < 0 || chara >= DISC_CHARAS))) {
         costume = 0;
     }
     if (costume < 4) {
         return ten + 0x590 + costume + (damaged ? 4 : 0);
+    }
+    if (added && n >= PORT_CHARA_SLOTS) { /* (the 86th and on: in its own block; nobody: the last block) */
+        return 0xD48 + hi_block(n < PORT_CHARA_MAX ? n : PORT_CHARA_MAX - 1) + 16 + (costume - 4) * 2 + (damaged ? 1 : 0);
     }
     return 0xD48 + PORT_CHARA_XCOST_INDEX + slot * PORT_XCOST_PER + (costume - 4) * 2 + (damaged ? 1 : 0);
 }
@@ -1813,51 +1956,74 @@ static int alias(const char *rel, char *out, unsigned n) {
         return rlive() > 0 || (sPreviewAs >= 0 && !Port_NetSession()) ? alias_replaced(arc, index, out, n) : 0;
     }
     PortCharas_Init();
-    if (index >= PORT_CHARA_LINE_INDEX && index < PORT_CHARA_LINE_INDEX + PORT_CHARA_MAX * 200) {
-        /* a spoken line: the folder's voice_jp/NNN.adx or voice_us/NNN.adx (the other language's where only one is
-           there), or the base character's line of the disc (0x8D4E + id * 100 + line, and 0xCC32 + ...) */
-        int alt = (index - PORT_CHARA_LINE_INDEX) % 200 / 100, line = (index - PORT_CHARA_LINE_INDEX) % 100, t;
-        who = (index - PORT_CHARA_LINE_INDEX) / 200;
-        for (t = 0; who < live() && t < 2; t++) {
-            const char *dir = sChara[who].lines[alt ^ t];
-            int w = dir[0] != '\0' ? snprintf(out, n, "%s/%03d.adx", dir, line) : 0;
-            if (w > 0 && (unsigned)w < n && have(out)) {
-                return 1;
+    /* which of an added character's files: `who` its place, `cat` the kind (the model rule's ten, the voice banks as
+       F_VOICE + language, or one of the others), `sub` within the kind */
+    {
+        enum { CAT_MAIN, CAT_LINE, CAT_MEMBER, CAT_FACE };
+        int cat, sub;
+        if (index >= PORT_CHARA_HI_INDEX && index < hi_block(PORT_CHARA_MAX)) { /* the 86th and on: a block each */
+            who = PORT_CHARA_SLOTS + (index - PORT_CHARA_HI_INDEX) / PORT_CHARA_HI_PER;
+            sub = (index - PORT_CHARA_HI_INDEX) % PORT_CHARA_HI_PER;
+            if (sub < 12) {
+                cat = CAT_MAIN; /* (0..9 the model rule's, 10 / 11 the voice banks: F_VOICE + language) */
+            } else if (sub == 12) {
+                cat = CAT_FACE;
+            } else if (sub == 14 || sub == 15) {
+                cat = CAT_MEMBER, sub -= 14;
+            } else if (sub >= 16 && sub < 16 + XCOST * 2) {
+                return alias_more(DISC_CHARAS + who, (sub - 16) / 2, (sub - 16) % 2, out, n);
+            } else if (sub >= 56) {
+                cat = CAT_LINE, sub -= 56;
+            } else {
+                return 0;
             }
-        }
-        snprintf(out, n, "pzs3us2/%05d.bin", (alt ? 0xCC32 : 0x8D4E) - 0xD48 + (who < live() ? sChara[who].base : 0) * 100 + line);
-        return 1;
-    }
-    if (index >= PORT_CHARA_MEMBER_INDEX && index < PORT_CHARA_MEMBER_INDEX + PORT_CHARA_MAX * 2) {
-        /* the fight's member block (the team mate's small picture): the folder's member_1p.bin / member_2p.bin, or
-           the base character's (the disc's 8 + id * 2 + side) */
-        int side = (index - PORT_CHARA_MEMBER_INDEX) % 2;
-        who = (index - PORT_CHARA_MEMBER_INDEX) / 2;
-        if (who < live() && sChara[who].member[side][0] != '\0') {
-            snprintf(out, n, "%s", sChara[who].member[side]);
+        } else if (index >= PORT_CHARA_LINE_INDEX && index < PORT_CHARA_LINE_INDEX + PORT_CHARA_SLOTS * 200) {
+            cat = CAT_LINE, who = (index - PORT_CHARA_LINE_INDEX) / 200, sub = (index - PORT_CHARA_LINE_INDEX) % 200;
+        } else if (index >= PORT_CHARA_MEMBER_INDEX && index < PORT_CHARA_MEMBER_INDEX + PORT_CHARA_SLOTS * 2) {
+            cat = CAT_MEMBER, who = (index - PORT_CHARA_MEMBER_INDEX) / 2, sub = (index - PORT_CHARA_MEMBER_INDEX) % 2;
+        } else if (index >= PORT_CHARA_FACE_INDEX && index < PORT_CHARA_FACE_INDEX + PORT_CHARA_SLOTS) {
+            cat = CAT_FACE, who = index - PORT_CHARA_FACE_INDEX, sub = 0;
+        } else if (index < PORT_CHARA_FILE_INDEX + PORT_CHARA_SLOTS * 10) {
+            cat = CAT_MAIN, who = (index - PORT_CHARA_FILE_INDEX) / 10, sub = (index - PORT_CHARA_FILE_INDEX) % 10;
+        } else if (index >= PORT_CHARA_VOICE_INDEX && index < PORT_CHARA_VOICE_INDEX + PORT_CHARA_SLOTS * 2) {
+            cat = CAT_MAIN, who = (index - PORT_CHARA_VOICE_INDEX) / 2, sub = F_VOICE + (index - PORT_CHARA_VOICE_INDEX) % 2;
         } else {
-            snprintf(out, n, "pzs3us1/%05d.bin", 7 + (who < live() ? sChara[who].base : 0) * 2 + side);
+            return 0;
         }
-        return 1;
-    }
-    if (index >= PORT_CHARA_FACE_INDEX && index < PORT_CHARA_FACE_INDEX + PORT_CHARA_MAX) {
-        /* the large picture: the folder's, or the base character's (the disc's 0x2F9 + id) */
-        who = index - PORT_CHARA_FACE_INDEX;
-        if (who < live() && sChara[who].portrait[0] != '\0') {
-            snprintf(out, n, "%s", sChara[who].portrait);
-        } else {
-            snprintf(out, n, "pzs3us1/%05d.bin", 0x2F8 + (who < live() ? sChara[who].base : 0));
+        if (cat == CAT_LINE) {
+            /* a spoken line: the folder's voice_jp/NNN.adx or voice_us/NNN.adx (the other language's where only one is
+               there), or the base character's line of the disc (0x8D4E + id * 100 + line, and 0xCC32 + ...) */
+            int alt = sub / 100, line = sub % 100, t;
+            for (t = 0; who < live() && t < 2; t++) {
+                const char *dir = sChara[who].lines[alt ^ t];
+                int w = dir[0] != '\0' ? snprintf(out, n, "%s/%03d.adx", dir, line) : 0;
+                if (w > 0 && (unsigned)w < n && have(out)) {
+                    return 1;
+                }
+            }
+            snprintf(out, n, "pzs3us2/%05d.bin", (alt ? 0xCC32 : 0x8D4E) - 0xD48 + (who < live() ? sChara[who].base : 0) * 100 + line);
+            return 1;
         }
-        return 1;
-    }
-    if (index < PORT_CHARA_FILE_INDEX + PORT_CHARA_MAX * 10) {
-        who = (index - PORT_CHARA_FILE_INDEX) / 10;
-        k = (index - PORT_CHARA_FILE_INDEX) % 10;
-    } else if (index >= PORT_CHARA_VOICE_INDEX && index < PORT_CHARA_VOICE_INDEX + PORT_CHARA_MAX * 2) {
-        who = (index - PORT_CHARA_VOICE_INDEX) / 2;
-        k = F_VOICE + (index - PORT_CHARA_VOICE_INDEX) % 2;
-    } else {
-        return 0;
+        if (cat == CAT_MEMBER) {
+            /* the fight's member block (the team mate's small picture): the folder's member_1p.bin / member_2p.bin, or
+               the base character's (the disc's 8 + id * 2 + side) */
+            if (who < live() && sChara[who].member[sub][0] != '\0') {
+                snprintf(out, n, "%s", sChara[who].member[sub]);
+            } else {
+                snprintf(out, n, "pzs3us1/%05d.bin", 7 + (who < live() ? sChara[who].base : 0) * 2 + sub);
+            }
+            return 1;
+        }
+        if (cat == CAT_FACE) {
+            /* the large picture: the folder's, or the base character's (the disc's 0x2F9 + id) */
+            if (who < live() && sChara[who].portrait[0] != '\0') {
+                snprintf(out, n, "%s", sChara[who].portrait);
+            } else {
+                snprintf(out, n, "pzs3us1/%05d.bin", 0x2F8 + (who < live() ? sChara[who].base : 0));
+            }
+            return 1;
+        }
+        k = sub;
     }
     c = &sChara[who < live() ? who : 0];
     if (who >= live()) { /* an id nothing is behind (a save or a replay of another set-up): the first character of the disc */
@@ -1897,17 +2063,17 @@ void Port_CharaParamApply(int chara, void *param) {
     }
     for (k = 0; k < 4; k++) {
         if (c->target[k] >= 0) {
-            p[0x98 + k] = (unsigned char)c->target[k];
+            p[0x98 + k] = (unsigned char)battle_target(c->target[k]);
         }
     }
     for (k = 0; k < 3; k++) {
         int m;
         if (c->target[4 + k] >= 0) {
-            p[0xB4 + k] = (unsigned char)c->target[4 + k];
+            p[0xB4 + k] = (unsigned char)battle_target(c->target[4 + k]);
         }
         for (m = 0; m < 4; m++) {
             if (c->target[7 + k * 4 + m] >= 0) {
-                p[0xBA + k * 4 + m] = (unsigned char)c->target[7 + k * 4 + m];
+                p[0xBA + k * 4 + m] = (unsigned char)battle_target(c->target[7 + k * 4 + m]);
             }
         }
     }
@@ -2052,7 +2218,7 @@ int Port_CharaFormTarget(int chara, int slot) {
     const Chara *c;
     PortCharas_Init();
     c = chara_of(chara);
-    return c != NULL && slot >= 0 && slot < SLOTS ? c->target[slot] : -1;
+    return c != NULL && slot >= 0 && slot < SLOTS ? (c->target[slot] < 0 ? -1 : battle_target(c->target[slot])) : -1;
 }
 
 /* Whether a package is behind character `chara` (an added character, or a disc character a folder replaces): the
@@ -2097,18 +2263,12 @@ void Port_CharaFormLog(int side, int member, int from, int to, const short *chai
     fprintf(stderr, "%s\n", line);
 }
 
-/* whether added character j is reached by a transformation (left, up, right) of another added one */
-static int reached(int j) {
-    int i, k;
-    for (i = 0; i < live(); i++) {
-        for (k = 0; k < 3; k++) {
-            if (i != j && sChara[i].target[k] == PORT_CHARA_ID(j)) {
-                return 1;
-            }
-        }
-    }
-    return 0;
-}
+/* The select's groups of forms, worked out once each time the folder is read (forms_prepare): sReached[j], whether
+   added character j is reached by a transformation (left, up, right) of another added one; sCell[j], whether it has a
+   cell of its own (else it is under its character's). (Asked for every character of the grid, it was the whole roster
+   once more for each: too slow for hundreds.) */
+static unsigned char sReached[PORT_CHARA_MAX], sCell[PORT_CHARA_MAX];
+enum { CHRGRID_FORMS_MAX = 64 };
 
 /* the added characters reached from `head` through transformations (any slot), `head` first */
 static int closure(int head, int *out, int max) {
@@ -2117,7 +2277,7 @@ static int closure(int head, int *out, int max) {
     for (at = 0; at < n; at++) {
         for (k = 0; k < 4; k++) {
             int t = PORT_CHARA_ADDED(sChara[out[at]].target[k]) ? PORT_CHARA_IDX(sChara[out[at]].target[k]) : -1;
-            if (t < 0 || t >= live()) {
+            if (t < 0 || t >= sCount) {
                 continue;
             }
             for (i = 0; i < n && out[i] != t; i++) {
@@ -2130,42 +2290,60 @@ static int closure(int head, int *out, int max) {
     return n;
 }
 
+static void forms_prepare(void) {
+    static int group[PORT_CHARA_MAX];
+    static unsigned char owned[PORT_CHARA_MAX];
+    int i, k, n;
+    memset(sReached, 0, sizeof(sReached));
+    memset(owned, 0, sizeof(owned));
+    for (i = 0; i < sCount; i++) {
+        for (k = 0; k < 3; k++) {
+            int t = sChara[i].target[k];
+            if (PORT_CHARA_IS_WIDE(t) && t - PORT_CHARA_WIDE0 < sCount && t - PORT_CHARA_WIDE0 != i) {
+                sReached[t - PORT_CHARA_WIDE0] = 1;
+            }
+        }
+    }
+    /* a form (reached by another) is under the cell of a character no other turns into whose forms lead to it */
+    for (i = 0; i < sCount; i++) {
+        if (!sReached[i]) {
+            n = closure(i, group, PORT_CHARA_MAX);
+            for (k = 1; k < n; k++) {
+                owned[group[k]] = 1;
+            }
+        }
+    }
+    for (i = 0; i < sCount; i++) {
+        sCell[i] = 1;
+        if (sReached[i] && owned[i]) {
+            sCell[i] = 0;
+        } else if (sReached[i]) {
+            /* forms that only lead to each other (no head): the first of them in the folder order has the cell */
+            int head = -1, lowest = PORT_CHARA_MAX;
+            n = closure(i, group, PORT_CHARA_MAX);
+            for (k = 0; k < n; k++) {
+                if (!sReached[group[k]]) {
+                    head = group[k];
+                }
+                if (group[k] < lowest) {
+                    lowest = group[k];
+                }
+            }
+            sCell[i] = head < 0 && lowest == i;
+        }
+    }
+}
+
 int Port_CharaForms(int chara, int *out, int max) {
-    int index = PORT_CHARA_ADDED(chara) ? PORT_CHARA_IDX(chara) : -1, group[PORT_CHARA_MAX], n, i, head = -1, lowest = PORT_CHARA_MAX;
+    int index = PORT_CHARA_ADDED(chara) ? PORT_CHARA_IDX(chara) : -1, group[CHRGRID_FORMS_MAX], n, i;
     PortCharas_Init();
     if (index < 0 || index >= live() || max < 1) {
         return 0;
     }
-    if (reached(index)) {
-        /* a form: it has no cell, unless its whole group has no head (forms that only lead to each other), in
-           which case the first of them in the folder order is taken as the head */
-        /* (asked from every character no other turns into: a last form that has no way back leads to nobody,
-           and its own group is itself alone) */
-        for (i = 0; i < live(); i++) {
-            if (!reached(i)) {
-                int k;
-                n = closure(i, group, PORT_CHARA_MAX);
-                for (k = 1; k < n; k++) {
-                    if (group[k] == index) {
-                        return -1;
-                    }
-                }
-            }
-        }
-        n = closure(index, group, PORT_CHARA_MAX);
-        for (i = 0; i < n; i++) {
-            if (!reached(group[i])) {
-                head = group[i];
-            }
-            if (group[i] < lowest) {
-                lowest = group[i];
-            }
-        }
-        if (head >= 0 || lowest != index) {
-            return -1;
-        }
+    if (!sCell[index]) {
+        return -1;
     }
-    n = closure(index, group, max < PORT_CHARA_MAX ? max : PORT_CHARA_MAX);
+    n = closure(index, group, max < CHRGRID_FORMS_MAX ? max : CHRGRID_FORMS_MAX);
     for (i = 0; i < n; i++) {
         out[i] = PORT_CHARA_ID(group[i]);
     }
@@ -2263,14 +2441,31 @@ void PortChips_Load(void *pack) {
     if (live() == 0) {
         return;
     }
-    sChipMem = Heap_Alloc(live() * CHIP_SIZE, 0x40, 0, 2);
-    for (i = 0; sChipMem != NULL && i < live(); i++) {
-        void *chip = Port_CharaChipLoad(i);
-        if (chip != NULL) {
-            void *res = sChipMem + i * CHIP_SIZE;
-            memcpy(res, chip, CHIP_SIZE);
-            sChipRes[i] = res;
-            Res_RelocateOffsets(&res, res, res);
+    /* Only the characters that have a chip take room (the others show their base character's). Up to 85 chips' worth
+       (468 KB) from the game's heap, as before; more from the port's memory below 4 GB (Port_GameBigAlloc, as a stage
+       larger than the disc's), so that hundreds of chips leave the menus' heap as it is. Heap_Free gives back either. */
+    {
+        int have = 0, at = 0;
+        for (i = 0; i < live(); i++) {
+            have += Port_CharaChipLoad(i) != NULL;
+        }
+        if (have == 0) {
+            return;
+        }
+        if (have > PORT_CHARA_SLOTS) {
+            extern unsigned Port_GameBigAlloc(int size); /* plat_mem.c */
+            sChipMem = Port_Ptr(Port_GameBigAlloc(have * CHIP_SIZE));
+        }
+        if (sChipMem == NULL) {
+            sChipMem = Heap_Alloc(have * CHIP_SIZE, 0x40, 0, 2);
+        }
+        for (i = 0; sChipMem != NULL && i < live() && at < have; i++) {
+            if (sChipHave[i]) {
+                void *res = sChipMem + at++ * CHIP_SIZE;
+                memcpy(res, sChip[i], CHIP_SIZE);
+                sChipRes[i] = res;
+                Res_RelocateOffsets(&res, res, res);
+            }
         }
     }
 }
@@ -2387,6 +2582,16 @@ int Port_CharaNameLine(int chara) {
     return sNameFirst >= 0 && index >= 0 && index < live() ? sNameFirst + index : Port_CharaBase(chara);
 }
 
+/* A test value naming a character: a number (any id; the menus' wide ids are 1024 + n), or `added:<n>` for the n-th
+   added character (0 the first) by the id the menus give it, whatever number that is. */
+static int test_id(const char *e) {
+    if (strncmp(e, "added:", 6) == 0) {
+        PortCharas_Init();
+        return Port_CharaId((int)strtol(e + 6, NULL, 0));
+    }
+    return (int)strtol(e, NULL, 0);
+}
+
 /* BT3_TEST_CHARA=<id>[,<id>]: the first fighter of side 0 (and of side 1) of every battle the menus set up is
    that character, whatever was chosen (testing: a recorded session then plays on an added character). */
 int Port_TestChara(int side) {
@@ -2396,13 +2601,13 @@ int Port_TestChara(int side) {
     }
     comma = strchr(e, ',');
     if (side == 0) {
-        return (int)strtol(e, NULL, 0);
+        return test_id(e);
     }
-    return comma != NULL ? (int)strtol(comma + 1, NULL, 0) : -1;
+    return comma != NULL ? test_id(comma + 1) : -1;
 }
 
 /* BT3_TEST_CELL: the character select starts with side 0's cursor on the first added character (testing);
-   BT3_TEST_CELL=disc:<id>: on that character of the disc. */
+   BT3_TEST_CELL=disc:<id>: on that character of the disc; BT3_TEST_CELL=added:<n>: on the n-th added one's cell. */
 int Port_TestCell(void) {
     const char *e = getenv("BT3_TEST_CELL");
     return e != NULL && e[0] != '\0' && !Port_NetSession();
@@ -2414,5 +2619,181 @@ int Port_TestCellIs(int id) {
     if (e != NULL && strncmp(e, "disc:", 5) == 0) {
         return number(e + 5, 0, DISC_CHARAS - 1, &want) && id == want;
     }
+    if (e != NULL && strncmp(e, "added:", 6) == 0) {
+        return PORT_CHARA_ADDED(id) && id == test_id(e);
+    }
     return PORT_CHARA_ADDED(id);
 }
+
+/* ---- a battle's characters to slots (more than 85 installed) -------------------------------------------------
+ * src/battle/battle_load.c (PortBattle_Bind) hands every character id of the set-up to Want, the sides' fighters
+ * first, then the opponent pool, and Commit gives each package wanted, and every package its transformations and
+ * fusions lead to, a slot: one a slot id of the set-up already names keeps it (a set-up bound before, BT3_TEST_CHARA),
+ * one of the first 85 its own, the others a free one. A package that finds no slot left (more than 85 different
+ * characters in one battle: a long opponent pool of added characters) fights as its base character, and a link to
+ * it is "none". Nothing of this is game state: it is worked out from the set-up whenever a battle starts, the same on
+ * every machine for the same set-up and packages. */
+static short sWant[PORT_CHARA_MAX];
+static int sWantCount;
+static unsigned char sWanted[PORT_CHARA_MAX];
+static short sPinSlot[PORT_CHARA_MAX]; /* the slot a slot id of the set-up names for the package, -1 */
+static int sBindLog = -1;
+
+static void want_pkg(int n) {
+    int at, k;
+    if (n < 0 || n >= live() || sWanted[n]) {
+        return;
+    }
+    at = sWantCount;
+    sWanted[n] = 1;
+    sWant[sWantCount++] = (short)n;
+    for (; at < sWantCount; at++) { /* (its links: the transformations, the fusions' results; and theirs) */
+        const Chara *c = &sChara[sWant[at]];
+        for (k = 0; k < 7; k++) {
+            int t = c->target[k];
+            if (PORT_CHARA_IS_WIDE(t) && t - PORT_CHARA_WIDE0 < live() && !sWanted[t - PORT_CHARA_WIDE0]) {
+                sWanted[t - PORT_CHARA_WIDE0] = 1;
+                sWant[sWantCount++] = (short)(t - PORT_CHARA_WIDE0);
+            }
+        }
+    }
+}
+
+void Port_CharaBindBegin(void) {
+    PortCharas_Init();
+    sWantCount = 0;
+    memset(sWanted, 0, sizeof(sWanted));
+    memset(sPinSlot, 0xFF, sizeof(sPinSlot));
+}
+
+void Port_CharaBindWant(int chara) {
+    const Chara *c;
+    int k;
+    if (!needs_bind()) {
+        return;
+    }
+    if (PORT_CHARA_IS_WIDE(chara)) {
+        want_pkg(chara - PORT_CHARA_WIDE0);
+    } else if (PORT_CHARA_IS_SLOT(chara)) {
+        int s = PORT_CHARA_SLOT_OF(chara), n = sSlotPkg[s];
+        if (n >= 0 && n < live()) {
+            if (sPinSlot[n] < 0) {
+                sPinSlot[n] = (short)s;
+            }
+            want_pkg(n);
+        }
+    } else if ((c = repl_of(chara)) != NULL) { /* a disc character a package replaces may lead to added ones */
+        for (k = 0; k < 7; k++) {
+            if (PORT_CHARA_IS_WIDE(c->target[k])) {
+                want_pkg(c->target[k] - PORT_CHARA_WIDE0);
+            }
+        }
+    }
+}
+
+void Port_CharaBindCommit(void) {
+    short slotPkg[PORT_CHARA_SLOTS];
+    int i, s, pass;
+    if (!needs_bind()) {
+        return;
+    }
+    if (sBindLog < 0) {
+        sBindLog = getenv("BT3_CHARA_LOG") != NULL || getenv("BT3_BIND_LOG") != NULL;
+    }
+    for (s = 0; s < PORT_CHARA_SLOTS; s++) {
+        slotPkg[s] = -1;
+    }
+    for (i = 0; i < PORT_CHARA_MAX; i++) {
+        sPkgSlot[i] = -1;
+    }
+    for (i = 0; i < sWantCount; i++) { /* the slots the set-up names keep their packages */
+        int n = sWant[i];
+        if (sPinSlot[n] >= 0 && slotPkg[sPinSlot[n]] < 0) {
+            slotPkg[sPinSlot[n]] = (short)n;
+            sPkgSlot[n] = sPinSlot[n];
+        }
+    }
+    for (pass = 0; pass < 2; pass++) { /* the first 85 their own slots, then the others the free ones */
+        for (i = 0; i < sWantCount; i++) {
+            int n = sWant[i];
+            if (sPkgSlot[n] >= 0) {
+                continue;
+            }
+            if (pass == 0) {
+                if (n < PORT_CHARA_SLOTS && slotPkg[n] < 0) {
+                    slotPkg[n] = (short)n;
+                    sPkgSlot[n] = (short)n;
+                }
+                continue;
+            }
+            for (s = PORT_CHARA_SLOTS - 1; s >= 0 && slotPkg[s] >= 0; s--) { /* (from the last: the 0xA5.. range first) */
+            }
+            if (s < 0) {
+                fprintf(stderr, "bt3: characters: no battle id left for %s (more than %d added characters in one battle): it "
+                                "fights as its base character\n", sChara[n].name, PORT_CHARA_SLOTS);
+                continue;
+            }
+            slotPkg[s] = (short)n;
+            sPkgSlot[n] = (short)s;
+        }
+    }
+    for (s = 0; s < PORT_CHARA_SLOTS; s++) {
+        if (slotPkg[s] >= 0) {
+            sSlotPkg[s] = slotPkg[s];
+        } else if (sSlotPkg[s] >= 0 && sPkgSlot[sSlotPkg[s]] >= 0) {
+            sSlotPkg[s] = -1; /* (its old package has another slot now: the slot is nobody's) */
+        }
+    }
+    for (i = 0; sBindLog && i < sWantCount; i++) {
+        int n = sWant[i];
+        fprintf(stderr, "bt3: characters: battle: %s%s%s (added character %d, id %d in the menus) is id %d\n", sChara[n].owner,
+                sChara[n].owner[0] != '\0' ? "/" : "", sChara[n].name, n, Port_CharaId(n), sPkgSlot[n] >= 0 ? PORT_CHARA_SLOT_ID(sPkgSlot[n]) : -1);
+    }
+}
+
+int Port_CharaBindGet(int chara) {
+    int n;
+    if (!PORT_CHARA_IS_WIDE(chara)) {
+        return chara;
+    }
+    n = chara - PORT_CHARA_WIDE0;
+    if (n >= live()) {
+        return 0; /* (an id nothing is behind: a replay of another set-up; the disc's first character) */
+    }
+    if (!needs_bind()) {
+        return n < PORT_CHARA_SLOTS ? PORT_CHARA_SLOT_ID(n) : sChara[n].base;
+    }
+    return sPkgSlot[n] >= 0 ? PORT_CHARA_SLOT_ID(sPkgSlot[n]) : sChara[n].base;
+}
+
+int Port_CharaUnbind(int chara) {
+    int n;
+    if (!needs_bind() || !PORT_CHARA_IS_SLOT(chara)) {
+        return chara;
+    }
+    n = sSlotPkg[PORT_CHARA_SLOT_OF(chara)];
+    return n >= 0 && n < live() ? PORT_CHARA_WIDE0 + n : chara;
+}
+
+/* ---- the roster screens' grids ----------------------------------------------------------------------------------
+ * include/port_chara.h (PORT_GRID): with added characters installed a screen builds its grid here, room for the disc's
+ * 165 cells and one for every added character. The port's memory (below 4 GB, where the game's pointers reach), not
+ * the game's: a grid is made when its screen starts and only read after, and no online session uses these (nothing
+ * is installed there, and a screen keeps its own buffer). */
+enum { GRID_CELLS = ((165 + PORT_CHARA_MAX) + 6) / 7 * 7, GRID_BUFS = 8, GRID_CELL_WORDS = 9 };
+static int sGrid[GRID_BUFS][GRID_CELLS * GRID_CELL_WORDS] __attribute__((aligned(64)));
+
+void *Port_GridBuf(int which) {
+    return which >= 0 && which < GRID_BUFS ? sGrid[which] : NULL;
+}
+
+int Port_GridCap(const void *cells) {
+    int w;
+    for (w = 0; w < GRID_BUFS; w++) {
+        if (cells == (const void *)sGrid[w]) {
+            return GRID_CELLS;
+        }
+    }
+    return 165;
+}
+

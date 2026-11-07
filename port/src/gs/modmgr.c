@@ -43,7 +43,7 @@ extern void PortTbo_TextMode(int on);            /* gs_input.c */
 extern int PortTbo_TextRead(void);
 extern int PortInput_DropTake(char *out, unsigned size);
 
-#define LIB_MAX 256
+#define LIB_MAX 1600 /* (the packages and their forms: as many as the game reads, plat_charas.c) */
 #define DISC 161
 
 typedef struct {
@@ -958,9 +958,9 @@ void Port_ModCharaName(s32 chara, char *out, s32 size) {
     }
     if (chara >= 0 && chara < DISC) {
         name = PortTbo_FighterName(chara);
-    } else if ((chara >= 0xC6 && chara <= 0xFE) || (chara >= 0xA5 && chara <= 0xC0)) {
-        /* (an added character: 0xC6.. for the first 57, 0xA5..0xC0 for the next 28, include/port_chara.h) */
-        name = Port_CharaName(chara >= 0xC6 ? chara - 0xC6 : chara - 0xA5 + 57);
+    } else if (PORT_CHARA_ADDED(chara)) {
+        /* (an added character: 0xC6.. and 0xA5.. while there are 85 at most, 0x400 + n with more, include/port_chara.h) */
+        name = Port_CharaName(Port_CharaIdx(chara));
     }
     snprintf(out, (size_t)size, "%s", name != NULL && name[0] != '\0' ? name : "?");
 }
@@ -1082,7 +1082,7 @@ void Port_RosterMove(s32 skin, s32 dir) {
     changed();
 }
 
-/* An added character's id: the game's own number for it (0xC6 on), -1 if it is not one that is on. */
+/* An added character's id: the number the menus know it by (0xC6 on; 0x400 + n with more than 85), -1 if it is not one that is on. */
 s32 Port_ModFighterId(s32 i) {
     int k;
     ensure();

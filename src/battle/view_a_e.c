@@ -878,10 +878,11 @@ void ChrGrid_Build(s32 *outCount, ChrGridCell *out, s32 *inCount, ChrGridCell *i
        the cell's place. */
     if (!Port_NetSession() && Port_CharaCount() > 0 && !(mode >= 0x30 && mode < 0x33)) {
         s32 n = *outCount, k, first = n;
+        s32 cap = Port_GridCap(out); /* (165, or a screen's grid of the port's with room for every added character) */
         while (n > 0 && out[n - 1].id == CHRGRID_ID_EMPTY) {
             n--;
         }
-        for (k = 0; k < Port_CharaCount() && n < 165 - CHRGRID_COLS; k++) {
+        for (k = 0; k < Port_CharaCount() && n < cap - CHRGRID_COLS; k++) {
             int forms[CHRGRID_FORM_MAX], count = Port_CharaForms(PORT_CHARA_ID(k), forms, CHRGRID_FORM_MAX), f;
             if (count < 0 && !(flags & CHRGRID_NO_FORMS)) {
                 continue; /* a form: under its character's cell */

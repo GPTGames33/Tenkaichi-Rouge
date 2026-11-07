@@ -293,9 +293,9 @@ void EntrySel_Init(s32 section) {
 #endif
     gEntrySel->grid = ((ESelGridList *)MPACK_AT(gEntrySel->res, 29))->cell;
     gEntrySel->gridCount = gEntrySel->res[gEntrySel->res[29] >> 2];
-    ChrGrid_Build(&gEntrySel->gridOutCount, gEntrySel->gridBuf, &gEntrySel->gridCount, gEntrySel->grid, NULL, NULL);
+    ChrGrid_Build(&gEntrySel->gridOutCount, PORT_GRIDBUF(4, gEntrySel->gridBuf), &gEntrySel->gridCount, gEntrySel->grid, NULL, NULL);
     gEntrySel->gridCount = gEntrySel->gridOutCount;
-    gEntrySel->grid = gEntrySel->gridBuf;
+    gEntrySel->grid = PORT_GRIDBUF(4, gEntrySel->gridBuf);
     {
         s32 cols = ESEL_COLS;
         s32 cols2 = ESEL_COLS;

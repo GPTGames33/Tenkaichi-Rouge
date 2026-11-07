@@ -307,6 +307,8 @@ more cells fit (forms share a cell).
   section for added characters, and the few chosen for a battle (at most ten, and their forms) bound to the
   numbers 0xA5..0xFE when the battle is set up; a replay then has to carry which folders they were.
 
+Done on 2026-11-06 that way: see "Hundreds of added characters" at the end.
+
 ## Not done
 
 The character reference; fusion between added characters (wired, never tried); a form added to a character of the
@@ -450,3 +452,83 @@ user). To do:
   (to come from the player's disc, not the source).
 - The credit of the manager's pictures (port/tbo/ui/CREDITS.md): the author's name, if they want it there.
 - Then: docs, and the merge into main.
+
+## Hundreds of added characters (2026-11-06, branch `roster-expand`)
+
+The Custom Character build stopped at 85 added characters (ids 0xC6..0xFE, then 0xA5..0xC0): an 86th package was
+not read ("there are already 85 added characters"), so a warrior added with the creator's "Add to roster" past that
+never got a cell. Now up to **1024** added characters are read, every one gets a cell, and one battle meets up to 85
+different ones. The design is the one "More than that" proposed:
+
+- **Two kinds of id.** The 85 ids are the battle's *slots* (`PORT_CHARA_SLOTS`; below 0x100, not 0xFF, not the
+  props' 0xC1..0xC5, not the markers). With 85 or fewer installed nothing changes: the n-th added character is slot
+  n everywhere (`PORT_CHARA_SLOT_ID(n)`, the ids of earlier builds: saves, replays, `BT3_TEST_CHARA=198`). With more,
+  the menus know the n-th by a *wide* id, `PORT_CHARA_WIDE0 + n` = 0x400 + n, and only battles use slots.
+  `PORT_CHARA_ADDED` is true for both kinds, `PORT_CHARA_IDX` (now `Port_CharaIdx`) answers the package for both, and
+  `PORT_CHARA_ID(n)` (`Port_CharaId`) is the menus' id.
+- **Binding** (`Port_CharaBind*` in plat_charas.c, called by `PortBattle_Bind` in battle_load.c). `Battle_Main`
+  binds before `Battle_Init` and unbinds after `Battle_Term`; `BattleSetup_FinishEx` binds again when it runs inside
+  a battle (the battle script's set-up: story mode, the Story Creator's sagas; `Battle_Init` clears the work's
+  `running`, so battle_load.c keeps a flag of its own). Wanted, in this order: each side's current and starting form
+  and its members up to its count, then the opponent pool up to its count; with each package every package its links
+  0..6 lead to (transformations, fusion results), and theirs. A slot id already in the set-up keeps its package
+  (`BT3_TEST_CHARA` with a small number); one of the first 85 takes its own slot; the others take free slots from
+  the top (0xC0 down). A package that finds no slot (more than 85 different added characters in one battle: only a
+  long opponent pool can do that) fights as its base character and a link to it is "none" (said in the log). Every
+  id of the set-up is then rewritten (a wide id to its slot, one without a slot to its base character), and back to
+  wide ids when the battle ends, so with more than 85 installed the menus, the save and a replay never hold a slot
+  id. The binding (`sSlotPkg`, `sPkgSlot`) is not game state: it is worked out from the set-up and the packages,
+  the same on every machine. `BT3_BIND_LOG=1` (or `BT3_CHARA_LOG`) prints it.
+- **Links** (a package's `target[]`) are kept as `PORT_CHARA_WIDE0 + n` for an added character whatever ids it has;
+  `Port_CharaFormTarget` and `Port_CharaParamApply` (the bytes of the fighter's form table) give the slot it has in
+  this battle (`battle_target`), 0xFF where it has none. `Port_CharaForms` (the select's form groups) gives the
+  menus' ids. The groups are worked out once per reading of the folder (`forms_prepare`): asked per cell they were
+  the whole roster again for every character, too slow for hundreds.
+- **File numbers belong to the package, not to the id.** The first 85 keep the old ranges (71000, 72000, 74000,
+  92000, 93000, 94000 + (161 + n) * 24); the 86th and on have a block of 256 numbers each from index 200000
+  (`PORT_CHARA_HI_INDEX`: +0..9 the model rule's ten, +10/11 the voice banks, +12 the portrait, +14/15 the member
+  blocks, +16..39 costumes 5..16, +56..255 the spoken lines). `CHARA_FILE10`, `CHARA_FROM_FILE`, `CHARA_VOICE_FILE`,
+  `CHARA_FACE_FILE`, `CHARA_MEMBER_FILE`, `CHARA_LINE_FILE` call functions now (`Port_CharaFile10`,
+  `Port_CharaFromFile`, `Port_CharaFile`); `CHARA_FROM_FILE` gives the battle's id of the model's package.
+  story_ui.cpp asks `Port_CharaFileIndex` instead of keeping its own copy of the numbers.
+- **The grids.** Every roster screen's grid buffer holds 165 cells (about 60 added cells). With added characters
+  installed the six screens that add them (duel and team select, the tournament's entry select and bracket, the
+  one-fighter select, the Ultimate Battle team select) build into a buffer of the port's (`PORT_GRID` /
+  `PORT_GRIDBUF`, `Port_GridBuf(0..7)`: 1190 cells, room for all 1024), and `ChrGrid_Build` asks `Port_GridCap` how
+  many cells the buffer it fills has. Port memory below 4 GB (not the game's heap, not game state: a grid is made
+  when its screen opens and only read after). Without added characters, and so in every online session, a screen
+  uses its own buffer as on the disc. The select scrolls row by row as before (the reel shows the cursor's row):
+  133 added characters are about 14 more rows than the disc's.
+- **Memory of the menus.** The chips (5,504 bytes each, in memory the renderer reads) are taken only for the
+  packages that have a `chip.bin`; up to 85 of them from the game's heap as before (468 KB), more from the port's
+  memory below 4 GB (`Port_GameBigAlloc`, as a large stage is), so hundreds of chips leave the menus' 28 MB heap
+  alone (`Heap_Free` gives either back). Each roster screen still reads every chip file when it opens (133 small
+  files: not noticeable). The name and label packs (`sNames`, `sForms`) are the port's static memory, 160 KB each
+  for 1024 lines. The large portraits are loaded one at a time per side, as before.
+- **Other limits raised with it**: the folder scan and the load order 1400 folders, the package list (F1 > Mods, the
+  Mod Manager's library `LIB_MAX`) 1600 entries; story_ui.cpp's caches go by package (they were by id, 512).
+- **Test aids**: `BT3_TEST_CHARA=added:<n>` and `BT3_TEST_CELL=added:<n>` name the n-th added character whatever id
+  it has; plain numbers still work (1024 + n for a wide id).
+- **Online**: unchanged. A session knows no package (`live()` is 0), so nothing is bound and every screen keeps its
+  own grid.
+
+Saves: an added character still goes into the save as its base character (`PORT_SAVE_CHARA`); nothing else of the
+save holds an added id (the audit of 2026-10-10). A replay recorded with more than 85 installed holds wide ids (the
+copy is made in the menus, or turned back with `PortBattle_Canon` when the battle made the set-up) and is bound
+again when it is played (`BattleReplay_Load` puts it in the set-up, `Battle_Main` binds it); like every replay with
+added characters it needs the same packages in the same order.
+
+Checked (Windows build, `BT3_CHARACTERS` a copy of the user's folder with 45 of its BT4 packages copied again under
+"ZZ" names: 133 added, 91 replaced): the folder is read whole (`133 added ... more than 85`); the duel select builds
+96 added cells (cells 99..194) and shows a character past the 85th with its own chip, portrait and name
+(`BT3_TEST_CELL=added:120`); a menu-driven fight of two characters past the 85th (ZZ Caulifla, n = 99, menu id 1123,
+against ZZ Broly (DBS), n = 93) binds them and their forms to 192..187, fights, transforms into the added form and
+back (`bt3: form: side 0 member 0: 192 ZZ Caulifla -> 191 ZZ Caulifla Super Saiyan`, then back to 192); a Story
+Creator saga naming two characters past the 85th by folder plays its battle with them (the set-up made inside the
+battle is bound: found with it, `Battle_Init` clearing `running`); "View Replay Data" after that fight plays the
+replay with the same binding and goes back to the select. With 85 added (the same folder, a load order switching
+48 off) the ids are 198.. and the file numbers 71000.. as before, and nothing is bound. (The user's own folder holds
+88 packages that add a character: three of them were not read before.) Pictures: research/zw_roster/shots. NOT
+checked: the team select, tournament, Ultimate Battle and Sim Dragon screens with that many; a fusion between
+characters past the 85th; a replay saved to the card and loaded with more than 85; the creator's "Add to roster"
+(not pressed: it writes a characters folder); the Linux test of the reader (port/tests/chara_packages, POSIX only).

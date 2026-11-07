@@ -241,9 +241,9 @@ void SoloSel_Init(s32 section) {
 #endif
     gSoloSel->grid = ((LChrGridList *)MPACK_AT(gSoloSel->res, 30))->cell;
     gSoloSel->gridCount = gSoloSel->res[gSoloSel->res[30] >> 2];
-    ChrGrid_Build(&gSoloSel->gridOutCount, gSoloSel->gridBuf, &gSoloSel->gridCount, gSoloSel->grid, NULL, NULL);
+    ChrGrid_Build(&gSoloSel->gridOutCount, PORT_GRIDBUF(6, gSoloSel->gridBuf), &gSoloSel->gridCount, gSoloSel->grid, NULL, NULL);
     gSoloSel->gridCount = gSoloSel->gridOutCount;
-    gSoloSel->grid = gSoloSel->gridBuf;
+    gSoloSel->grid = PORT_GRIDBUF(6, gSoloSel->gridBuf);
     {
         s32 cols = SOLOSEL_COLS;
         s32 cols2 = SOLOSEL_COLS;
