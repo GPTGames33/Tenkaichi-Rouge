@@ -675,6 +675,20 @@ class Mesh:
             self.P[i] = [p[0] + u[0] * d, p[1] + u[1] * d, p[2] + u[2] * d]
         self.dirty = True
 
+    def remap_axis(self, j, u, segs):
+        """Along the unit axis u through j: piecewise-linear moves of the distance a, segs = [(a0, a1, b0, b1), ...]
+        (a in [a0, a1] goes to b0 + (a - a0) * (b1 - b0) / (a1 - a0)); outside every segment, unchanged."""
+        self.log.append(("remap_axis", (j, u, segs)))
+        for i, p in enumerate(self.P):
+            a = v_dot(v_sub(p, j), u)
+            for a0, a1, b0, b1 in segs:
+                lo, hi = min(a0, a1), max(a0, a1)
+                if lo - 1e-6 <= a <= hi + 1e-6 and abs(a1 - a0) > 1e-6:
+                    d = b0 + (a - a0) * (b1 - b0) / (a1 - a0) - a
+                    self.P[i] = [p[0] + u[0] * d, p[1] + u[1] * d, p[2] + u[2] * d]
+                    break
+        self.dirty = True
+
     def welded(self, edges_too=False):
         """Groups of vertices at the same place (the strips repeat them) and the groups on open edges."""
         key, groups = {}, []
@@ -1699,6 +1713,9 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
         _fit(bm, plan, clone, by_node, kind, layer_of, donor_rec, meshes, all_of, origin, layers, move_subtree,
              mesh_of, stats, extra_layer, scale_cache)
 
+    if fit:
+        _hems(bm, by_node, kind, layer_of, meshes, all_of, origin, mesh_of, stats)
+
     # ---- (b) swapped core pieces: cross-section matched to the base's at the seams
     if declip:
         for r, L in plan:
@@ -1954,8 +1971,9 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
                     ("head", "the donor head scaled by {:.2f} to the base's head size"),
                     ("feet", "{} foot / feet fitted to the base's ankle and ground level"),
                     ("extras", "{} hanging part(s) (capes, belts, tails) scaled with the body size"),
+                    ("hems", "{} open end(s) of swapped parts moved to where the base's own parts ended"),
                     ("snapped", "{} seam point(s) snapped shut where pieces meet")):
-        if stats[k]:
+        if stats.get(k):
             notes.append("fit: " + text.format(stats[k]))
     if stats["fit_nodes"]:
         notes.append(f"declip: {stats['fit_nodes']} swapped part(s) scaled to the base's thickness at the joints")
@@ -2289,6 +2307,94 @@ def _fit(bm, plan, clone, by_node, kind, layer_of, donor_rec, meshes, all_of, or
         stats["extras"] += len(roots)
 
 
+def _span(points, j, u, lo=0.01, hi=0.99):
+    """Where the points start and end along the axis (u through j), near-extremes (a stray vertex does not count)."""
+    a = sorted(v_dot(v_sub(p, j), u) for p in points)
+    if len(a) < 8:
+        return None
+    return a[int(lo * (len(a) - 1))], a[int(hi * (len(a) - 1))]
+
+
+def _hems(bm, by_node, kind, layer_of, meshes, all_of, origin, mesh_of, stats):
+    """A swapped piece's open ends to where the base's own piece ended: where a piece meets a part of another
+    character (trousers on shoes, a sleeve on a glove, a waistband under a belt), its mesh is stretched or shortened
+    along the bone so that it covers what the base's piece covered (a tall boot's short trouser leg reaches a short
+    shoe, a child's high waistband goes back under the base's belt). The bone's middle stays put."""
+    src_of = lambda n: layer_of.get(n) if kind.get(n) not in (None, "base") else None
+
+    def other(x, lay):   # x's meshes come from another source than lay
+        ms = [y for y in all_of(x.node) if y.enabled and mesh_of(y) is not None]
+        return bool(ms) and src_of(ms[0]) is not lay
+
+    for node, b in list(by_node.items()):
+        if node not in CORE or node in FIXED or node in (0x2F, 0x30, 0x31, 0x32, 0x33):
+            continue
+        mine = [n for n in all_of(node) if kind.get(n) == "core" and n.enabled and n in meshes]
+        if not mine:
+            continue
+        lay = layer_of.get(mine[0])
+        bp = bm.node_points(node)
+        ax = axis_of(by_node, node, lambda k: origin(by_node[k]))
+        if not bp or ax is None:
+            continue
+        j = ax[0]
+        L = v_len(v_sub(ax[1], j))
+        if L < 0.05:
+            continue
+        u = tuple(x / L for x in v_sub(ax[1], j))
+        # the neighbours at each end: parent and siblings at the joint, core children at the far end
+        par = b.parent
+        near = []
+        if par is not None:
+            near = [par] + [c for c in par.children if c is not b and c.node in CORE and c.node not in FIXED]
+        far = [c for c in b.children if c.node in CORE and c.node not in FIXED]
+        at_start = any(other(x, lay) for x in near)
+        at_end = any(other(x, lay) for x in far)
+        if not (at_start or at_end):
+            continue
+        bs = _span(bp, j, u)
+        ds = _span([p for n in mine for p in meshes[n].P], j, u)
+        if bs is None or ds is None:
+            continue
+        tol = 0.03 * L + 0.02
+        do0 = at_start and abs(ds[0] - bs[0]) > tol
+        do1 = at_end and abs(ds[1] - bs[1]) > tol
+        if not (do0 or do1) or ds[1] - ds[0] < 0.1:
+            continue
+        # one linear map of the whole mesh along the bone: both ends to the base's, or one end with the other kept
+        t0 = bs[0] if do0 else ds[0]
+        t1 = bs[1] if do1 else ds[1]
+        k = (t1 - t0) / (ds[1] - ds[0])
+        if not 0.5 <= k <= 2.0:
+            continue
+        far_ = 10 * (ds[1] - ds[0]) + 10
+        segs = [(ds[0] - far_, ds[1] + far_, t0 - far_ * k, t1 + far_ * k)]
+        if segs:
+            for n in mine:
+                meshes[n].remap_axis(j, u, segs)
+            stats["hems"] = stats.get("hems", 0) + len(segs)
+    # the collar: a torso of another character than the neck reaches no higher than the base's own torso did (a
+    # child's collar round the chin of an adult, a high coat collar over the face), what lies above the chest
+    # joint squeezed down; game Y points down
+    TOP = (0x11, 0x12, 0x20)
+    tm = [n for nd in TOP for n in all_of(nd) if kind.get(n) == "core" and n.enabled and n in meshes]
+    neck = by_node.get(0x2E)
+    if tm and neck is not None and 0x12 in by_node and other(neck, layer_of.get(tm[0])):
+        bp = [p for nd in TOP for p in bm.node_points(nd)]
+        dp = [p for n in tm for p in meshes[n].P]
+        if len(bp) >= 8 and len(dp) >= 8:
+            anchor = origin(by_node[0x12])[1]
+            b_top = sorted(p[1] for p in bp)[len(bp) // 100]
+            d_top = sorted(p[1] for p in dp)[len(dp) // 100]
+            lift_b, lift_d = anchor - b_top, anchor - d_top      # how far above the chest joint each reaches
+            if lift_d > lift_b + 0.05 and lift_b > 0.05:
+                k = max(0.4, lift_b / lift_d)
+                far_ = 100.0
+                for n in tm:
+                    meshes[n].remap_axis((0.0, anchor, 0.0), (0.0, -1.0, 0.0), [(0.0, far_, 0.0, far_ * k)])
+                stats["hems"] = stats.get("hems", 0) + 1
+
+
 def _snap(bm, by_node, kind, layer_of, meshes, all_of, origin, mesh_of, stats):
     """Closes gaps where a swapped piece meets a piece of another source: the swapped mesh's open-edge points move
     onto the nearest open-edge point of the neighbouring mesh (parent or child node) when it is close. Skin weights
@@ -2444,6 +2550,11 @@ def _bridge(by_node, kind, layer_of, meshes, all_of, origin, mesh_of, stats, not
             if r and (rp is None or v_len(v_sub(r[2], rc[2])) < v_len(v_sub(rp[2], rc[2]))):
                 rp, mp = r, mesh_of(x)
         mc = mesh_of(x_c)
+        if rp is not None and v_dot(v_sub(rp[2], rc[2]), up) > 0.05 * lp:
+            continue                                    # the parent's opening lies past the node's: they overlap
+        if rp is not None and min(v_dot(v_sub(q, rp[2]), up) for x in cm for q in mesh_of(x).P) < 0.05 * lp:
+            continue                                    # the node's mesh reaches up to the parent's opening (a boot
+            #                                             top under a trouser leg): nothing open between them
         gap = v_len(v_sub(rp[2], rc[2])) + abs(rp[1] - rc[1]) if rp is not None else 1e9
         if rp is None or gap > max(1.5 * max(rc[1], rp[1]) + 0.5, 0.7 * lp):
             # no ring of the neighbour to meet: close the node's own opening with a cap (hidden inside the
