@@ -2786,15 +2786,20 @@ CHAIN_B = [(0x2F0, 1), (0x2F8, 1), (0x300, 4), (0x320, 4), (0x340, 1), (0x348, 1
 def merge_chains(base, order, renum, hidden, notes):
     """Entry 0x17 for the mix: the base's slots minus the nodes the mix hid, plus the donors' slots of the added
     nodes (in free slots; a slot is free when its id is 0 or names no record). BObjChainA_Build takes the FIRST
-    slot with a node's id, so no other slot may keep an added node's id."""
+    slot with a node's id, so no other slot may keep an added node's id.
+    A slot of the base that names none of the base's own records is cleared first, in both tables: the disc's
+    models list ids they do not have (Vegeta's type B slots 0x47..0x4E, say), and an added node renumbered onto
+    such an id would also be stepped by that slot. Type B steps after type A and overwrites the rotation, so the
+    donor's hair took the base's type B direction and gravity (pointing up and back) instead of its own."""
     present = {n.node for n in order}
     if base.chain is None and not renum:
         return entry(base.parts, E_CHAIN)
     blk = bytearray(base.chain) if base.chain is not None else bytearray(0x380)
+    own = {r.node for r in base.model.recs}
     for layout, count in ((CHAIN_A, 16), (CHAIN_B, 8)):
         nofs = layout[0][0]
         for i in range(count):
-            if blk[nofs + i] in hidden:
+            if blk[nofs + i] in hidden or blk[nofs + i] not in own:
                 blk[nofs + i] = 0
     renum = list(renum.items()) if isinstance(renum, dict) else renum
     renum = [(k[0], k[1], v) for k, v in renum] if renum and len(renum[0]) == 2 else renum
@@ -2991,6 +2996,9 @@ def check(pack_bytes, base=None, donors=()):
                 bad.append("a node id in two chain slots")
             if links > count:
                 bad.append("too many chain links")
+        recs = {r.node for r in m.recs if r.node >= 0x47}   # (no disc model has a node in both tables)
+        if recs & set(s.chain[0:16]) & set(s.chain[0x2F0:0x2F8]):
+            bad.append("a node in a type A and a type B chain slot (stepped twice)")
     # seam vertices hang on existing nodes
     if m.seamOfs:
         vc, tc, vo, to = struct.unpack_from("<4i", e, m.seamOfs)
