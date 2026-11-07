@@ -1152,8 +1152,8 @@ static void Mm_ViewHostUpdate(f32 dist, f32 mainFeet, f32 mainH) {
         }
         return;
     }
-    if (sMvHostWant != sMvHostShown) {
-        if (sMvHostWant < 0 || sMvHostWant >= MM_CHARA_COUNT) {
+    if (sMvHostWant >= 0 && sMvHostWant != sMvHostShown) { /* (none wanted for a while, a photo: hidden, kept) */
+        if (sMvHostWant >= MM_CHARA_COUNT) {
             Mm_ViewHostDrop();
             sMvHostShown = sMvHostWant;
         } else if (!ChrView_IsLoading()) {

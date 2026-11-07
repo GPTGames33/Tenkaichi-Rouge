@@ -4899,7 +4899,7 @@ bool Creator_Frame(bool input) {
         if (!rows.empty() && tipLine.empty() && cur < (int)rows.size()) { tipLine = rows[cur].tip; }
         if (sOv.empty()) {
             const Row *r = cur < (int)rows.size() ? &rows[cur] : NULL;
-            ps.push_back({B_CROSS, sScreen == SC_HOME ? "Choose" : r != NULL && r->sec ? (r->folded ? "Open" : "Fold") : "Change"});
+            if (r == NULL || (r->ok && !r->locked)) { ps.push_back({B_CROSS, sScreen == SC_HOME ? "Choose" : r != NULL && r->sec ? (r->folded ? "Open" : "Fold") : "Change"}); }
             if (r != NULL && r->lr) { ps.push_back({B_LR, r->lrLabel != NULL ? r->lrLabel : "Change"}); }
             if (r != NULL && r->sq) { ps.push_back({B_SQUARE, r->sqLabel != NULL ? r->sqLabel : ""}); }
             if (r != NULL && r->tri) { ps.push_back({B_TRIANGLE, r->triLabel != NULL ? r->triLabel : ""}); }
