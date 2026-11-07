@@ -127,7 +127,8 @@ Mixed moves (decompilation: src/battle/btl_act_f.c, btl_tech_b.c, eft_h.c .. eft
   ("camera", "camera_loop": also its camera shake bits, 0x18 +0 0x1C000000), cut 3 the Ultimate's intro (motion
   0x16B; "camera_in": from an Ultimate). The middle of a beam is the battle's camera, with no data of its own. A
   rush that connects plays a keyframed camera of its own: effects entry 6 (the general pack), its entry 8, entry
-  slot - 1, with the times of 0x18 +0x22C / +0x238 ("camera_finish"); only a rush has one (effect types 2 and 9:
+  slot - 1, with the times of 0x18 +0x22C / +0x238 ("camera_finish"; without it a taken move brings its own, as
+  the slot's entry belongs to the moveset's character and films its own move); only a rush has one (types 2 and 9:
   EftShotTech / EftRushShot), so a beam keeps the battle's camera whatever is chosen.
 Standard library only.
 """
@@ -1856,7 +1857,13 @@ class Fighter:
     def effects(self):
         e = self.disc.effects(self.moveset[0])
         for dst, (who, s) in self.moves.items():
-            e[dst + 1] = self.disc.effects(who[0])[s + 1]
+            src = self.disc.effects(who[0])
+            e[dst + 1] = src[s + 1]
+            # A rush's keyframed camera (entry 6 / 8, per slot) goes with its motions: else the slot plays the
+            # moveset's own camera of that slot (another rush filmed from the wrong place) or none (a beam's).
+            if dst >= 2 and (who[0], s) != (self.moveset[0], dst) and not self.finish_of(dst):
+                if not set_finish_camera(e, dst, finish_camera(src, s)) and finish_camera(src, s):
+                    self.note(f"{self.move_label(*self.moves[dst])}: no place for its finish camera")
         like = []  # (slot, effects pack, its slot): the slot keeps its own effects in the colours of that one
         for dst, mix in sorted(self.move_mix.items()):
             if "effects" in mix:
