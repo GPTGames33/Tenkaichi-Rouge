@@ -1572,7 +1572,14 @@ static void vk_frame_end(void) {
             params[1] = 1.0f / (float)GS_H;
             params[2] = 100.0f / 255.0f; /* the dark rectangle's 0x64 */
             params[3] = getenv("BT3_FX_DEBUG") != NULL ? 1.0f : 0.0f;
-            SDL_PushGPUFragmentUniformData(cmd, 0, params, sizeof(params));
+            if (d->native == 1) { /* and the ids drawn without an outline (gsOutlineOff) */
+                uint32_t block[12];
+                memcpy(block, params, sizeof(params));
+                memcpy(block + 4, gsOutlineOff, sizeof(gsOutlineOff));
+                SDL_PushGPUFragmentUniformData(cmd, 0, block, sizeof(block));
+            } else {
+                SDL_PushGPUFragmentUniformData(cmd, 0, params, sizeof(params));
+            }
             sc = (SDL_Rect){ d->scissor[0], d->scissor[1], d->scissor[2], d->scissor[3] };
             SDL_SetGPUScissor(pass, &sc);
             SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);

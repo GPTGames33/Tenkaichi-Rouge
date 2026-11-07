@@ -49,6 +49,15 @@ A fighter file (JSON). Every part is optional except "name"; a character is {"ch
                                                  unused: costume 1's look is the top level); a costume's value of a
                                                  look key is its item's when the item has the key, else the top
                                                  level's (costume_spec); null / {} / missing: the top level's look
+      "shading": {"hair": {"shadow": "#5020a0", "like": null, "glow": true, "outline": "body"}}   per part of the
+                                                 model (face, hair, chest, waist, upper_arms, forearms, hands, hips,
+                                                 shins, feet, tail, accessories), each key optional / null = the
+                                                 game's: shadow = the colour its shadows are drawn in; like = shaded
+                                                 just as that part (its shading ramp); glow = the Super Saiyan glow on
+                                                 (true, or 1..127) or off (false); outline = "none" (no line round it)
+                                                 or "body" (as the game draws it). After the colours and the paint.
+                                                 port/tools/creator/shade.py; the shadow colour and "none" need the
+                                                 port's renderer (a ramp of odd alphas, TexEntry +0x2E)
     }
 
 What lives where (decompilation: CUSTOM_CHARACTER_RESEARCH.md; numbers are game entries, BObjFile_GetEntry: entry
@@ -690,6 +699,14 @@ def mix_module():
     return mix
 
 
+def shade_module():
+    here = pathlib.Path(__file__).resolve().parent / "creator"
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
+    import shade
+    return shade
+
+
 def is_bt4(c):
     return c >= BT4_BASE
 
@@ -1137,6 +1154,12 @@ class Fighter:
         self.paint = paint_entries(lk)
         self.mix_ids = {}  # the last undamaged mix: "<layer tag>:<donor node>" / "<tag>:c<n>" -> node id in the model
         self._paint_ref = {}  # look -> the texture file the paint was made on (undamaged, before the colours)
+        for c in range(len(self.costumes)):
+            if self.shading_of(c):
+                try:
+                    shade_module().normalise(self.shading_of(c))
+                except shade_module().ShadeError as e:
+                    raise Fail(str(e))
         self.moves = {}
         for key, v in spec.get("moves", {}).items():
             if key not in SLOTS:
@@ -1201,6 +1224,13 @@ class Fighter:
             m = recolour_model(m, changes)
         if self.paint:
             self.painted(m, costume, damaged, pre)
+        shading = self.shading_of(self.costumes.index(costume) if costume in self.costumes else 0)
+        if shading:  # (after the colours and the paint: it may copy a texture for one part)
+            sh = shade_module()
+            try:
+                m = Pack(sh.apply(m.bytes(), shading, self.notes), 252)
+            except (sh.ShadeError, sh.mix.MixError) as e:
+                self.note(f"the shading left out: {e}")
         ms = d.model(*self.moveset, damaged)
         for e in MOVESET_ENTRIES + tuple(TEXT_ENTRIES):
             m[e] = ms[e]
@@ -1243,6 +1273,11 @@ class Fighter:
             for e in LIP_ENTRIES:
                 m[e] = v[e]
         return m
+
+    def shading_of(self, costume):
+        """The "shading" of costume `costume` (0-based) of the fighter: the one lookup of it, so a per-costume
+        overlay of the spec can give each costume its own."""
+        return costume_spec(self.spec, costume).get("shading") or None
 
     def mixed(self, m, damaged):
         """The look with its pieces and workshop changes. A layer that cannot be put on is left out (with a

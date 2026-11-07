@@ -75,3 +75,79 @@ The whole-moveset swap was checked in the game (2026-11-04).
 3. Transformations: forms pointing at other custom/base packs.
 4. Main menu entry + creator screen (mode 80, Ps_* kit, ChrView preview).
 5. Colours (palettes), then whole-model swaps, then part mixing (mesh format work).
+
+## Shading: cel shading, glow, outline (read 2026-11-06 for the creator's SHADING screen)
+From the code (src/sys/gfxm_d_c.c, gfxm_e_b.c, gfxm_a.c, src/battle/btl_obj.c) and checked on the disc's models
+(Goku (End), Goku (End) SSJ3, Vegeta, Vegeta SSJ and others).
+
+**Cel shading is a second layer, subtracted per batch.**
+- VU1 program 0 draws every batch (one triangle strip of a mesh record) twice. The batch header holds two TEX0:
+  - TEX0_1, the material texture: layer 0, GS context 1. It writes the object id into the frame's alpha.
+  - TEX0_2, the shading ramp: layer 1, GS context 2. It reads the light's ramp picture at 0x3D40 (an 8-bit index
+    gradient) through a 256-colour CLUT at 0x3D00 + the ramp's offset, with u = 0.5 + 0.5 * (N.L + light.w)
+    (port/src/gs/shaders/vu0.vert).
+- ObjDraw_SetLight sets ALPHA_2 = 0x62 with FIX 0x80, which is **Cd - Cs**, and FRAME_2 masks alpha. So a ramp's
+  colours are what is *taken away* in shadow.
+  - Goku's skin ramp is 0x3b4a52 on the dark side, then 0x2b373d, 0x1e262b, then 0 on the lit side. It subtracts more
+    blue than red, so the shadows come out warm.
+  - A ramp of zeros (the eyes) leaves the part unshaded.
+- Ramps are stored as 16x16 PSMCT32 entries [clutFirst, clutFirst + clutCount) of the texture file (entry 0xC),
+  4 blocks each, uploaded at 0x3D00 + tbpOfs.
+  - ObjDraw_UploadTextures uploads them with TexFile_UploadRange in the usual light modes. Mode 0x80000 swaps in the
+    light's own ramps (BtlObjLight_FindRes1).
+  - There are at most 16 (0x3D40 is the light ramp).
+  - Their alpha is always 0x80 and is never seen, because the blend uses FIX.
+- The ramp is chosen per batch, so per mesh part. A model has 6 to 9 of them (skin, gi, belt, hair, boots...).
+- There is no shade texture per material, no vertex colour and no second CLUT of the texture.
+
+**The Super Saiyan glow is the object glow pass, per material slot.**
+- TexEntry +0x2C is the material's alpha slot (0..14) and +0x2D its glow (0..0x7F).
+- BtlObjMdl_InitAlphaSlots (at bind):
+  - writes slot + row * 15 into the alpha of the first 16 CLUT entries. That is the id the frame's alpha carries
+    (row = the object's BtlObjVis bit).
+  - sets model->alpha[slot] = glow. The last texture with that slot wins.
+  - header +0x54 texNoAlpha keeps its own alphas and glows 0.
+- BtlObj_UpdateAlpha and BtlObj_UploadAlphaTable turn this into a 256-entry table by id. Colour modes override it:
+  black gives 0xFF, the powered-up look gives 65 on every slot.
+- ObjGlow_Draw writes table[id] into the frame's alpha. GfxPost_DrawGlow then shrinks the picture weighted by it,
+  blurs it 10 times and adds it back. The glow is the pixel's own colour, bloomed.
+- On the disc:
+  - Non-SSJ models have 0 on almost every material (Goku (End): one 32x32 texture at 0x64).
+  - SSJ models have 0x14..0x64 on nearly all (SSJ3 Goku's hair 0x50 / 0x46, Vegeta SSJ's hair locks 0x50).
+- Model header flag 0x01000000 (on every SSJ model) only lights the model from the camera in the powered-up look. The
+  colour preset (param byte 3) tints the whole palette in that look.
+- So **a non-SSJ part glows when +0x2D of its textures is set**. This works per texture slot, not per node, so a
+  texture shared with another part needs a copy with a slot of its own.
+
+**The outline is a pass over the picture, not geometry.**
+- There is no inverted hull and no outline layer of program 0.
+- After the models, BtlObj_BeginDraw runs GfxPost_CopyAlphaToDepth, GfxAlphaKey_Draw, ObjOutline_Draw, then
+  ObjGlow_Draw.
+- ObjOutline_Draw:
+  1. turns the id in the frame's alpha into a value: (id << 3) & 0xFF, with 0 -> 0x80 and 0xFF ("nothing") -> 0;
+  2. subtracts the image shifted half a pixel down and a pixel right;
+  3. subtracts 0x64 grey through the result.
+- That gives a line wherever the id changes, on the side with the larger value: round the silhouette and between
+  materials of different slots.
+- It has one width and one darkness, with nothing per model or part. The port draws it natively
+  (shaders/outline.frag).
+- The head (node 0x33) is drawn last with alpha protected and takes the id under it.
+
+**What the creator does with this** (port/tools/creator/shade.py, spec "shading"):
+- **Shadow colour:** the part gets a ramp of its own. Every entry is the chosen colour, and its alpha is the original
+  ramp's strength there. The alphas are odd and below 0x80, values the game never has. The port's renderer draws such
+  a ramp as Cs * As + Cd * (1 - As) instead of Cd - Cs (gs_draw.c tint_ramp / GsGpu_DrawVu0). Subtraction alone can
+  never make yellow hair's shadows blue.
+- **Same shading as:** the part's batches take the other part's main ramp (TEX0_2's CBP). This is pure data.
+- **Glow:** +0x2D of the part's textures (true = 0x50, as SSJ hair). This is pure data and works in any build.
+- **Outline none:** +0x2E of the part's textures = 1, a byte the game never reads. BtlObjMdl_InitAlphaSlots tells the
+  port (Port_OutlineSlot), and outline.frag draws no line on those ids nor toward them.
+- **Parts** are groups of mesh records by node:
+  - face, chest, waist, upper arms, forearms, hands, hips, shins, feet, tail, accessories;
+  - hair: the head's extras, plus the head batches drawn with a texture that is mostly theirs.
+
+Limits:
+- 16 ramps. A shadow colour costs one per ramp the part uses; when they are full, the colour's first ramp is shared.
+- The copies that glow and outline need are limited by 15 slots, 0x780 texture blocks and 0x40 palette blocks.
+- The face texture is never copied, because its eye frames replace it.
+- Everything is rendering only and carried by the package, so both players of an online fight see the same.

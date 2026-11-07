@@ -954,7 +954,14 @@ static void frame_end(void) {
             params[1] = 1.0f / (float)GS_H;
             params[2] = 100.0f / 255.0f;
             params[3] = getenv("BT3_FX_DEBUG") != NULL ? 1.0f : 0.0f;
-            set_params(params, 16);
+            if (d->native == 1) { /* and the ids drawn without an outline (gsOutlineOff) */
+                uint32_t block[12];
+                memcpy(block, params, sizeof(params));
+                memcpy(block + 4, gsOutlineOff, sizeof(gsOutlineOff));
+                set_params(block, sizeof(block));
+            } else {
+                set_params(params, 16);
+            }
             haveFu = 0;
             set_scissor(d->scissor);
             glDrawArrays(GL_TRIANGLES, 0, 3);

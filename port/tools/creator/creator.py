@@ -234,7 +234,11 @@ class App:
     def model(self, spec, costume=0):
         """The 3D model of a costume of the fighter, for the preview (port/tools/creator/model.py)."""
         import model as mdl
-        spec = dict(spec, name=spec.get("name") or "preview")
+        spec = {k: v for k, v in spec.items() if k != "shading"}  # (its textures as coloured, before the shading)
+        if isinstance(spec.get("costume_edits"), list):
+            spec["costume_edits"] = [{a: b for a, b in e.items() if a != "shading"} if isinstance(e, dict) else e
+                                     for e in spec["costume_edits"]]
+        spec["name"] = spec.get("name") or "preview"
         f = cf.Fighter(self.disc, spec, "preview")
         k = min(max(costume, 0), len(f.costumes) - 1)
         look = f.costumes[k]
@@ -263,8 +267,8 @@ class App:
         look = f.costumes[k]
         if not spec.get("costume_edits") and not spec.get("extra_layers"):  # (as before: the same folders)
             key = json.dumps([list(look)] + [spec.get(x) for x in (
-                "parts", "colours", "body", "paint", "moveset", "moves", "melee", "ki_blasts", "voice", "names")],
-                sort_keys=True)
+                "parts", "colours", "body", "paint", "moveset", "moves", "melee", "ki_blasts", "voice", "names")]
+                + ([f.shading_of(k)] if f.shading_of(k) else []), sort_keys=True)
         else:
             key = json.dumps([list(look), self.look_key(cf.costume_spec(spec, k))], sort_keys=True)
         h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
@@ -360,9 +364,9 @@ class App:
         import base64
         import model as mdl
         import mix
-        spec = {k: v for k, v in spec.items() if k != "paint"}
+        spec = {k: v for k, v in spec.items() if k not in ("paint", "shading")}
         if isinstance(spec.get("costume_edits"), list):
-            spec["costume_edits"] = [{a: b for a, b in e.items() if a != "paint"} if isinstance(e, dict) else e
+            spec["costume_edits"] = [{a: b for a, b in e.items() if a not in ("paint", "shading")} if isinstance(e, dict) else e
                                      for e in spec["costume_edits"]]
         spec["name"] = spec.get("name") or "preview"
         f = cf.Fighter(self.disc, spec, "preview")
@@ -460,6 +464,29 @@ class App:
                 0x04: "Tail", 0x05: "Tail", 0x06: "Tail", 0x07: "Tail",
                 **{n: "Hands" for n in list(range(0x15, 0x20)) + list(range(0x23, 0x2E))},
                 **{n: "Accessories" for n in (0x40, 0x41, 0x42, 0x43, 0x6F, 0x76)}}
+
+    def shading(self, spec, costume=0):
+        """For the SHADING screen (port/src/gs/creator_shading.cpp): the parts of a costume of the warrior as built
+        without its shading - {"costume", "parts": [{key, label, triangles, own_shadow ("#rrggbb": about the colour
+        the game draws its shadows in), glow (its textures' own, 0..127), outline}], "layer": the hair is a piece
+        layer}."""
+        import shade
+        spec = {k: v for k, v in spec.items() if k != "shading"}
+        if isinstance(spec.get("costume_edits"), list):
+            spec["costume_edits"] = [{a: b for a, b in e.items() if a != "shading"} if isinstance(e, dict) else e
+                                     for e in spec["costume_edits"]]
+        spec["name"] = spec.get("name") or "preview"
+        f = cf.Fighter(self.disc, spec, "preview")
+        k = min(max(costume, 0), len(f.costumes) - 1)
+        cs = cf.costume_spec(spec, k)
+        key = json.dumps([k] + [cs.get(x) for x in ("costumes", "look", "base", "parts", "colours", "body", "paint",
+                                                    "extra_layers")], sort_keys=True)
+        if getattr(self, "_shade_key", None) != key:
+            pack = f.costume_model(k, False)
+            self._shade = {"costume": k + 1, "parts": shade.parts(pack.bytes()),
+                           "layer": bool((cs.get("parts") or {}).get("hair")), "notes": list(f.notes)}
+            self._shade_key = key
+        return self._shade
 
     def install(self, name):
         spec = json.loads(self.path_of(name).read_text(encoding="utf-8-sig"))
@@ -755,6 +782,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.send(200, a.colours(body["spec"], int(body.get("costume", 0))))
                 if act == "/api/textures":
                     return self.send(200, a.textures(body["spec"], int(body.get("costume", 0))))
+                if act == "/api/shading":
+                    return self.send(200, a.shading(body["spec"], int(body.get("costume", 0))))
                 if act == "/api/quit":
                     threading.Thread(target=self.server.shutdown, daemon=True).start()
                     return self.send(200, {"text": "bye"})
