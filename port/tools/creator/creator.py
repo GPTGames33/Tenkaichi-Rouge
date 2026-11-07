@@ -611,7 +611,7 @@ class App:
         keep = ("left out", "mapped", "halved", "merged", "hang still", "dropped")  # (what changes how it looks)
         notes = "".join(f"\n  - {n}" for n in dict.fromkeys(cf.BUILD_NOTES) if any(k in n for k in keep))
         return (f"{spec.get('name')} is on the roster with a cell of its own. Start Tenkaichi3Decomp-Custom.exe "
-                f"(restart it if it is open) and look at the end of the character select."
+                f"(restart it if it is open) and find it on the character select (in name order)."
                 + (f"\nTo make it fit, the builder:{notes}" if notes else ""))
 
     def unpackage(self, name):

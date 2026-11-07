@@ -1454,6 +1454,11 @@ static void save(std::function<void()> then = nullptr) {
     });
 }
 
+// After Add to roster: the folder the game should now find (checked when the folder has been read again; a read that
+// caught the package half written is done again a moment later), and how many reads are left
+static std::string sExpectFolder;
+static int sExpectTries, sExpectWait;
+
 static void reload_game(void) { // the characters folder read again, by the game's thread
     SDL_LockMutex(sShare);
     sSh.reload = 1;
@@ -1467,13 +1472,17 @@ static void act(const char *what) { // add to / take off the roster
         J body = J::obj();
         body.set("file", J::str(sFile));
         toast(path == "/api/package" ? "Building your warrior for the roster..." : "Working...");
-        api(path.c_str(), &body, [path](int st, const J &r) {
+        std::string folder = folder_name(sSpec["name"].text());
+        api(path.c_str(), &body, [path, folder](int st, const J &r) {
             if (st != 200) { toast(error_of(st, r), true); return; }
             std::string t = r["text"].text();
             if (path == "/api/package") {
                 size_t cut = t.find("Start Tenkaichi3Decomp-Custom.exe");
                 std::string notes = t.find("\nTo make it fit") != std::string::npos ? t.substr(t.find("\nTo make it fit")) : "";
-                t = (cut != std::string::npos ? t.substr(0, cut) : t + " ") + "Its cell is at the end of the character select now." + notes;
+                t = (cut != std::string::npos ? t.substr(0, cut) : t + " ") + "Its cell is on the character select now (in name order)." + notes;
+                sExpectFolder = folder;
+                sExpectTries = 3;
+                sExpectWait = 0;
             } else {
                 t = "Taken off the roster.";
             }
@@ -1575,7 +1584,7 @@ static void add_bt4(void) {
             refresh_fighters();
             refresh_roster_info();
             reload_game();
-            toast((who.size() > 5 ? who.substr(5) : who) + " is on the roster! Its cell is at the end of the character select.");
+            toast((who.size() > 5 ? who.substr(5) : who) + " is on the roster! Its cell is on the character select (in name order).");
         }, 600000);
     }, false, NULL, false, 2);
 }
@@ -2356,7 +2365,7 @@ static void rows_finish(std::vector<Row> &rows) {
     r = Row();
     r.label = "Add to roster";
     r.value = on ? "On the roster: update it" : "Give my warrior a cell of its own";
-    r.tip = "Your warrior gets its own cell at the end of the character select, with its forms. No restart needed!";
+    r.tip = "Your warrior gets its own cell on the character select (in name order), with its forms. No restart needed!";
     r.ok = [] { act("package"); };
     rows.push_back(r);
     r = Row();
@@ -5384,6 +5393,25 @@ bool Creator_Frame(bool input) {
         sSh.reloaded = 0;
         SDL_UnlockMutex(sShare);
         if (reloaded) { fprintf(stderr, "bt3: creator: the characters folder was read again\n"); }
+        if (reloaded && !sExpectFolder.empty()) {
+            const PortCharaPkg *found = NULL;
+            for (int i = 0; i < Port_CharaPkgCount(); i++) {
+                const PortCharaPkg *p = Port_CharaPkg(i);
+                if (p != NULL && strcmp(p->folder, sExpectFolder.c_str()) == 0) { found = p; }
+            }
+            if (found != NULL && found->kind == PORT_PKG_ADDS && found->id >= 0) {
+                sExpectFolder.clear();
+            } else if (--sExpectTries > 0) {
+                fprintf(stderr, "bt3: creator: characters/%s not on the roster yet: reading the folder again\n", sExpectFolder.c_str());
+                sExpectWait = 60; // (about a second: let the files settle)
+            } else {
+                toast("The game could not put " + sExpectFolder + " on the roster" +
+                      (found != NULL && found->problem[0] ? std::string(": ") + found->problem : std::string(".")) +
+                      " Press Add to roster again.", true);
+                sExpectFolder.clear();
+            }
+        }
+        if (sExpectWait > 0 && --sExpectWait == 0) { reload_game(); }
     }
     sTyping = !sOv.empty() && (sOv.back().kind == OV_KEYS || (sOv.back().kind == OV_GRID && sOv.back().stage == 0));
     read_input(input);
