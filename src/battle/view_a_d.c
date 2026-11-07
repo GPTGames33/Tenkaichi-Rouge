@@ -225,13 +225,32 @@ s32 ChrView_StepLoad(ChrViewJob *job) {
     return 0;
 }
 
+#ifdef PORT
+/* PC build: the backdrop a screen opening the viewer asks for instead of the viewer's own: a stage model file (the
+   Custom Character screen stands its warrior on a battle stage: menu/port_creator.c); -1 the viewer's own. */
+s32 gPortChrViewStage = -1;
+#endif
+
 /* Job run once by ChrView_Init: reads the backdrop file. */
 s32 ChrView_StepLoadStage(ChrViewJob *job) {
     ChrViewCommon *res = (ChrViewCommon *)gCommonRes->unk20;
 
     switch (job->state) {
     case 0:
+#ifdef PORT
+        if (gPortChrViewStage >= 0) {
+            /* (a battle stage is several times the viewer's room: its buffer comes from the port's memory, as the
+               fight's own does when it is large (battle_load.c); Heap_Free knows such a block) */
+            extern int Port_StageBufSize(void);
+            extern unsigned Port_GameBigAlloc(int size);
+
+            res->stage = File_Request3(gPortChrViewStage, (void *)Port_GameBigAlloc(Port_StageBufSize()), 0);
+        } else {
+            res->stage = File_Request3(CHRVIEW_FILE_STAGE, NULL, 0);
+        }
+#else
         res->stage = File_Request3(CHRVIEW_FILE_STAGE, NULL, 0);
+#endif
         job->state++;
         break;
     case 1:

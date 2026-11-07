@@ -40,6 +40,17 @@ extern u8 *Mm_ViewObj(void);
 extern void BtlObj_PortStanceView(u8 *obj);
 extern void BtlObj_PortStanceCapture(u8 *obj, void *world2screen, f32 cx, f32 cy);
 extern u8 *gBtlCamView; /* (View, battle/btl_cam.h: world2screen at 0x140, the screen's centre at 0x240) */
+#define PC_PHOTO 14       /* 1: a picture of the model alone is being taken (a plain key colour behind it, nothing else) */
+#define PC_HOST 15        /* the host standing beside the warrior (a disc character), -1 none */
+#define PC_STAGE 16       /* 1: the battle stage around the model (its backdrop), 0 the Mod Manager's sky */
+
+/* The backdrop: a battle stage of the disc (setting creator_stage, the stage's number; default the grassy plain of stage 0),
+   and where the host stands (mockup pixels: its feet and its height), turned towards the warrior. */
+#define PC_STAGE_DEFAULT 0
+#define PC_HOST_X 1206.0f
+#define PC_HOST_FEET 420.0f
+#define PC_HOST_H 200.0f
+#define PC_HOST_YAW 3.85f
 
 extern void PortCreator_Open(void);
 extern void PortCreator_Close(void);
@@ -57,6 +68,7 @@ extern void BattleSetup_SetSide(s32 sideNo, s32 control, s32 pad, s32 memberCoun
 extern void BattleSetup_SetMember(s32 sideNo, s32 idx, s32 chara, s32 costume, s32 variant, s32 cpuLevel, f32 health, void *items);
 extern void BattleSetup_Finish(void);
 extern s32 gMmTestFoe;
+extern int Port_Setting(const char *name, int def);
 
 /* The screen, from the main menu until it is left. Returns 1 when it was left for a test fight: the battle is set up
    (the warrior against the Mod Manager's test opponent, in training) and the caller starts it. */
@@ -73,6 +85,13 @@ s32 PortCreator_Run(void) {
     }
     PortCreator_Open();
     Port_EscQuit(0); /* Esc is "back" in here (the screen takes it), not the end of the game */
+    {
+        s32 stage = Port_Setting("creator_stage", PC_STAGE_DEFAULT);
+
+        if (stage >= 0 && stage < 0x23) { /* (a stage of the disc: 0x171 + stage is its model, battle_load.c) */
+            Mm_ViewUseStage(0x171 + stage);
+        }
+    }
     Mm_ViewOpen();
     ColorFade_StartIn(0, 0, 0, 0x14);
     while (1) {
@@ -99,9 +118,20 @@ s32 PortCreator_Run(void) {
             Snd_PlaySe(1, se);
         }
         Mx_Begin();
-        Mx_Background(0);
-        if (PortCreator_Get(PC_PLATFORM)) {
-            Mx_Platform(x, feet + Mx_LenY(4.0f), h * 0.82f);
+        {
+            s32 photo = PortCreator_Get(PC_PHOTO) > 0;
+            s32 stage = !photo && PortCreator_Get(PC_STAGE) > 0;
+
+            if (photo) { /* (the model alone on a plain colour: the screen keys it out, gs/creator_ui.cpp) */
+                Mx_Rect(-400.0f, -100.0f, 1776.0f, 868.0f, Mx_Rgba(0xFF, 0x00, 0xFF, 0x80), Mx_Rgba(0xFF, 0x00, 0xFF, 0x80));
+            } else {
+                Mx_Background(0);
+            }
+            if (!photo && !stage && PortCreator_Get(PC_PLATFORM)) {
+                Mx_Platform(x, feet + Mx_LenY(4.0f), h * 0.82f);
+            }
+            Mm_ViewSetStage(stage);
+            Mm_ViewSetHost(photo ? -1 : PortCreator_Get(PC_HOST), PC_HOST_X, PC_HOST_FEET, PC_HOST_H, PC_HOST_YAW);
         }
         if (Mm_ViewObj() != NULL) {
             BtlObj_PortStanceView(Mm_ViewObj()); /* (the fighting stance while the Stance Maker is open) */

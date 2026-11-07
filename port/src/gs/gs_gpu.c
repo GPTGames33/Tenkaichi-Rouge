@@ -1801,6 +1801,67 @@ static void vk_frame_end(void) {
         gUiPresentW = (int)bl.destination.w;
         gUiPresentH = (int)bl.destination.h;
         Ui_Draw(cmd, swap);
+        {   /* the Custom Character screen's "photo of the model" (gs/creator_ui.cpp): the game's picture alone (no
+               screen drawn over it), at the shape it is shown, while the screen waits for one */
+            extern int Creator_WantGrab(void);
+            extern void Creator_Grabbed(const unsigned char *px, int w, int h, int bgr);
+            if (Creator_WantGrab()) {
+                SDL_GPUTextureCreateInfo ci;
+                SDL_GPUTransferBufferCreateInfo ti;
+                SDL_GPUTransferBuffer *tb;
+                SDL_GPUTextureRegion src;
+                SDL_GPUTextureTransferInfo dst;
+                SDL_GPUBlitInfo b2 = bl;
+                SDL_GPUCommandBuffer *c2;
+                SDL_GPUCopyPass *cp;
+                SDL_GPUFence *fence;
+                SDL_GPUTexture *tex;
+                SDL_GPUTextureFormat fmt = SDL_GetGPUSwapchainTextureFormat(sDev, sWindow);
+                Uint32 gw = bl.destination.w, gh = bl.destination.h;
+                const unsigned char *px;
+
+                SDL_zero(ci);
+                ci.type = SDL_GPU_TEXTURETYPE_2D;
+                ci.format = fmt;
+                ci.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+                ci.width = gw;
+                ci.height = gh;
+                ci.layer_count_or_depth = 1;
+                ci.num_levels = 1;
+                tex = gw > 0 && gh > 0 ? SDL_CreateGPUTexture(sDev, &ci) : NULL;
+                if (tex != NULL) {
+                    c2 = SDL_AcquireGPUCommandBuffer(sDev);
+                    b2.destination.texture = tex;
+                    b2.destination.x = 0;
+                    b2.destination.y = 0;
+                    SDL_BlitGPUTexture(c2, &b2);
+                    SDL_zero(ti);
+                    ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
+                    ti.size = gw * gh * 4;
+                    tb = SDL_CreateGPUTransferBuffer(sDev, &ti);
+                    SDL_zero(src);
+                    src.texture = tex;
+                    src.w = gw;
+                    src.h = gh;
+                    src.d = 1;
+                    SDL_zero(dst);
+                    dst.transfer_buffer = tb;
+                    cp = SDL_BeginGPUCopyPass(c2);
+                    SDL_DownloadFromGPUTexture(cp, &src, &dst);
+                    SDL_EndGPUCopyPass(cp);
+                    fence = SDL_SubmitGPUCommandBufferAndAcquireFence(c2);
+                    SDL_WaitForGPUFences(sDev, true, &fence, 1);
+                    SDL_ReleaseGPUFence(sDev, fence);
+                    px = SDL_MapGPUTransferBuffer(sDev, tb, false);
+                    if (px != NULL) {
+                        Creator_Grabbed(px, (int)gw, (int)gh, fmt == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM || fmt == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB);
+                    }
+                    SDL_UnmapGPUTransferBuffer(sDev, tb);
+                    SDL_ReleaseGPUTransferBuffer(sDev, tb);
+                    SDL_ReleaseGPUTexture(sDev, tex);
+                }
+            }
+        }
         {   /* BT3_UI_SHOT=<frame>:<file.ppm>: the window's picture with the settings window on it, for checking
                 the settings window without a person or a screen capture (drawn a second time into a texture) */
             static int frame = -1;

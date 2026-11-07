@@ -349,8 +349,8 @@ static bool stance_mouse_busy(void) { return sStMouseBusy; }
 static J stance_model_key(void) { if (sStanceOpen) { J k; js_read(sStPoseKey, k); return k; } return stance_pose_json(); }
 
 // ---- the WARRIOR tab's rows
-static void stance_rows(std::vector<Row> &rows) {
-    rows.push_back(sec("STANCE"));
+static void stance_rows(std::vector<Row> &rows, bool section) {
+    if (section) { rows.push_back(sec("STANCE")); }
     Row r;
     r.label = "Stance";
     r.value = nm(sSpec["stance"], "the moveset's");

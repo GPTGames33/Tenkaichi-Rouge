@@ -980,7 +980,9 @@ void Mm_ViewOpen(void) {
     ChrView_PortInitAsync();
 }
 
+static void Mm_ViewHostTerm(void);
 void Mm_ViewClose(void) {
+    Mm_ViewHostTerm();
     if (ChrView_PortInitDone()) {
         ChrView_Hide();
     }
@@ -1022,7 +1024,7 @@ void Mm_ViewWantPreview(s32 key, s32 chara, s32 costume) {
         return;
     }
     Job_Run(); /* (the viewer's reads) */
-    if (key == sMvShown || ChrView_IsLoading()) {
+    if (key == sMvShown || ChrView_IsLoading() || Mm_ViewHostReading()) {
         return;
     }
     if (key < 0) {
@@ -1067,6 +1069,197 @@ s32 Mm_ViewKey(void) {
     return Mm_ViewReady() ? sMvShown : -1;
 }
 
+/* ---- the Custom Character screen's stage and host (menu/port_creator.c) ----
+ * The viewer's backdrop is then a battle stage (ChrView_StepLoadStage reads the one gPortChrViewStage names), drawn
+ * around the model as the Character Reference draws its own room (ChrView_Update); and beside the warrior stands the
+ * screen's host, one more battle object of the same kind as the Mod Manager's models beside its viewer's
+ * (Mm_ExtrasUpdate): read into a buffer of its own (never while the viewer reads, and the viewer waits for it),
+ * placed from where the viewer's model stands to where the screen wants it, with its own turn. */
+extern s32 gPortChrViewStage;
+extern void StgModel_Cull(void *view);
+extern void StgModel_Draw(void *view);
+extern void StgFx_DrawPreNoCheck(void);
+static s32 sMvStage;            /* the stage is drawn (Mm_ViewSetStage) */
+static s32 sMvHostWant = -1;    /* the host the screen wants (a disc character), -1 none */
+static s32 sMvHostShown = -1;
+static s32 sMvHostReading;
+static s32 sMvHostObj = -1;
+static f32 sMvHostPlace[3];
+static f32 sMvHostYaw;
+static f32 sMvHostBase;
+static MmFile sMvHostFile[3];
+static f32 sMvHostZSign = -1.0f; /* (the camera is on the +z side of the warrior: further away is -z) */
+
+/* 1 while the host's file is being read (the viewer waits: Mm_ViewWantPreview). */
+s32 Mm_ViewHostReading(void) {
+    return sMvHostReading;
+}
+
+/* The viewer's backdrop: a stage model file, read when the viewer opens (Mm_ViewOpen); -1 its own room. */
+void Mm_ViewUseStage(s32 file) {
+    gPortChrViewStage = file;
+}
+
+/* Each frame: 1 the stage is drawn around the model, 0 not (the screen's own backdrop instead). */
+void Mm_ViewSetStage(s32 on) {
+    sMvStage = on;
+}
+
+/* Each frame: the host `chara` (a disc character, -1 none) with its feet at (cx, feet) and `height` tall (mockup
+   pixels), turned by `yaw` (pi: facing the camera). */
+void Mm_ViewSetHost(s32 chara, f32 cx, f32 feet, f32 height, f32 yaw) {
+    sMvHostWant = chara;
+    sMvHostPlace[0] = cx;
+    sMvHostPlace[1] = feet;
+    sMvHostPlace[2] = height;
+    sMvHostYaw = yaw;
+}
+
+static void Mm_ViewHostDrop(void) {
+    if (sMvHostReading) {
+        File_CancelRequests();
+        sMvHostReading = 0;
+    }
+    if (sMvHostObj >= 0) {
+        BtlObj_Destroy(sMvHostObj);
+        sMvHostObj = -1;
+    }
+    sMvHostShown = -1;
+}
+
+static void Mm_ViewHostTerm(void) {
+    Mm_ViewHostDrop();
+    if (sMvHostFile[0].buf != NULL) {
+        Heap_Free(sMvHostFile[0].buf);
+        sMvHostFile[0].buf = NULL;
+    }
+    sMvHostWant = -1;
+    sMvStage = 0;
+    gPortChrViewStage = -1;
+}
+
+/* Reads the host when it is wanted and the viewer is not reading; places it over the camera the viewer's model set. */
+static void Mm_ViewHostUpdate(f32 dist, f32 mainFeet, f32 mainH) {
+    u8 *o;
+
+    if (sMvHostReading) {
+        if (File_UpdateRequests() != 0) {
+            sMvHostReading = 0;
+            sMvHostObj = BtlObj_Create(3, sMvHostFile, 1);
+            o = sMvHostObj >= 0 ? BtlObj_Get(sMvHostObj) : NULL;
+            if (o != NULL) {
+                f32 *m = (f32 *)(o + 0x9A0);
+
+                BtlObjAnim_PlayModel(o, 7, 2);
+                *(u32 *)(o + 0xA40) &= ~0x02000000;
+                sMvHostBase = sqrtf(m[4] * m[4] + m[5] * m[5] + m[6] * m[6]);
+            }
+        }
+        return;
+    }
+    if (sMvHostWant >= 0 && sMvHostWant != sMvHostShown) { /* (none wanted for a while, a photo: hidden, kept) */
+        if (sMvHostWant >= MM_CHARA_COUNT) {
+            Mm_ViewHostDrop();
+            sMvHostShown = sMvHostWant;
+        } else if (!ChrView_IsLoading()) {
+            Mm_ViewHostDrop();
+            if (sMvHostFile[0].buf == NULL) {
+                sMvHostFile[0].buf = Heap_Alloc(0x900000, 0x40, 0, 2);
+            }
+            sMvHostShown = sMvHostWant;
+            if (sMvHostFile[0].buf != NULL) {
+                sMvHostFile[0].size = 0;
+                sMvHostFile[0].id = -1;
+                *(s32 *)sMvHostFile[0].buf = 0;
+                BtlRes_LoadSingle(0, sMvHostFile, ChrView_GetModelFile(sMvHostWant, 0, 0));
+                sMvHostReading = 1;
+            }
+            return;
+        }
+    }
+    o = sMvHostObj >= 0 ? BtlObj_Get(sMvHostObj) : NULL;
+    if (o != NULL) {
+        /* It stands on the ground, further from the camera than the warrior (k times its distance) so that it is
+           `height` tall on the screen at its own size; across, where the screen wants it at that distance (a step
+           of one distance moves a model 0.76 of the picture, from 0.492: Mm_PlaceModel). Its feet are where the
+           ground is there. */
+        f32 *m = (f32 *)(o + 0x9A0);
+        MmCharaInfo *mine = ChrView_GetCharaInfo((u32)sMvChara);
+        MmCharaInfo *its = ChrView_GetCharaInfo((u32)sMvHostShown);
+        f32 natural = mine != NULL && its != NULL && mine->targetY > 0.01f ? its->targetY / mine->targetY : 1.0f;
+        f32 want = Mx_SizeFracY(sMvHostPlace[2]);
+        f32 k = mainH / (want > 0.01f ? want : 0.01f) * natural;
+        f32 s = sMvHostBase;
+        f32 ox;
+        f32 oz;
+        f32 narrow = 1333.0f / (f32)Port_PageAspectMilli();
+        f32 c = cosf(sMvHostYaw);
+        f32 sn = sinf(sMvHostYaw);
+        f32 oy = 0.0f;
+
+        if (k < 1.0f) {
+            k = 1.0f;
+        }
+        ox = -(Mx_ScreenFracX(sMvHostPlace[0]) - 0.492f) / 0.76f * dist * k;
+        oz = (k - 1.0f) * dist * sMvHostZSign;
+        (void)mainFeet;
+        if (sMvHostWant < 0) {
+            oy = -100000.0f; /* (not wanted this frame: out of sight) */
+        }
+        *(f32 *)(o + 0x964) = sMvHostYaw;
+        *(f32 *)(o + 0x950) = ox;
+        *(f32 *)(o + 0x954) = oy;
+        *(f32 *)(o + 0x958) = oz;
+        m[0] = c * s * narrow;
+        m[1] = 0.0f;
+        m[2] = -sn * s;
+        m[4] = 0.0f;
+        m[5] = s;
+        m[6] = 0.0f;
+        m[8] = sn * s * narrow;
+        m[9] = 0.0f;
+        m[10] = c * s;
+        m[12] = ox;
+        m[13] = oy;
+        m[14] = oz;
+    }
+}
+
+/* One frame of the 3D scene with the stage: what the viewer's own frame function draws (ChrView_Update), without
+   the pad and the stage's sounds. */
+static void Mm_SceneStage(void) {
+    extern void *gBtlCamView;
+
+    OrbitCam_Update(0);
+    gChrView->stageOn = 1;
+    gBtlStage->flags &= ~1;
+    BtlObj_UpdateAll();
+    if (ChrView_IsVisible()) {
+        BtlObj_UpdateVisibility(0);
+        BtlObj_FinishVisibility(0);
+        StgAmb_SetBgmScale(0.0f);
+        StgAmb_SetSeScale(0.0f);
+        BtlStage_Update();
+        if (!MapBgm_IsStopped()) {
+            MapBgm_Stop();
+        }
+        BtlScene_Update();
+        Gfx_MarkPass(1);
+        StgModel_Cull(gBtlCamView);
+        StgModel_Draw(gBtlCamView);
+        Gfx_MarkPass(3);
+        StgFx_DrawPreNoCheck();
+        Gfx_MarkPass(2);
+        BtlObjDraw_Draw();
+        Gfx_MarkPass(0);
+        Gfx_MarkPass(4);
+        Gfx_AddDefaultEnv();
+        BtlScene_Draw(1);
+        Ot_Draw();
+        Gfx_MarkPass(0);
+    }
+}
+
 /* The model, with its feet at (cx, feet) and `height` tall (mockup pixels; the feet may be below the screen: a close
    shot), turned one way and still. */
 void Mm_ViewDraw(f32 cx, f32 feet, f32 height) {
@@ -1076,13 +1269,22 @@ void Mm_ViewDraw(f32 cx, f32 feet, f32 height) {
     f32 hf;
 
     if (!Mm_ViewReady()) {
-        return;
+        /* (with the stage: while the next model is read the one there stays, with its stage, rather than the
+           backdrop flashing up) */
+        if (!sMvStage || !ChrView_PortInitDone() || sMvShown < 0 || !ChrView_IsVisible() || gChrView->cur == NULL) {
+            return;
+        }
     }
     place[0] = cx;
     place[1] = feet;
     place[2] = height;
     Mm_PlaceModel(ChrView_GetCharaInfo((u32)sMvChara), BtlObj_Get(gChrView->cur->obj), place, &sMvYaw, 0, &dist, &fy, &hf);
-    Mm_Scene();
+    Mm_ViewHostUpdate(dist, fy, hf);
+    if (sMvStage) {
+        Mm_SceneStage();
+    } else {
+        Mm_Scene();
+    }
     Mm_TexReset();
 }
 
