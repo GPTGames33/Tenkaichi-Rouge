@@ -273,6 +273,7 @@ FORMS screen writes them all for the part it changed):
 | `left_effect`, ... | `0`..`11` | the scene's effect; 3 needs the moon (+0xA4) |
 | `left_assist`, ... | a disc character id, or `none` | the other fighter its scene shows (+0xA8) |
 | `left_fresh`, ... | `0` or `1` | the new form starts with its clothes whole (bit 4..7 of +0xAD) |
+| `left_burst`, ... | `rrggbb` or `none` | the transformation's burst (its rays, sparks and flash) in that colour; not a byte of the table: the port tints the burst's emitter set while it plays (port/src/plat_burst.c) |
 | `default` | `left`, `up`, `right`, `down` or `none` | the form plain R3 (no direction) takes (+0xAC) |
 | `fusion1_cost`, `fusion2_cost`, `fusion3_cost` | `0`..`9` | blast stocks the fusion costs (+0xAE) |
 | `fusion1_type`, ... | `dance` or `potara` | which kind of fusion (+0xB1) |

@@ -28,7 +28,22 @@ A fighter file (JSON). Every part is optional except "name"; a character is {"ch
         "blast2_2": {"chara": "Gohan"},          ("slot" defaults to the same slot)
         "ultimate": {"chara": "Super Perfect Cell"}
       },
+                                                 a move may also take the look and the camera of other moves:
+        "blast2_2": {"chara": "Vegeta", "slot": "blast2_1",
+                     "effects": {"chara": "Frieza Final Form", "slot": "ultimate"},   its effects: beam, ball, size
+                     "camera": {"chara": "Vegeta", "slot": "blast2_2"}},             how it is filmed
+        "ultimate": {"chara": "Vegeta", "effects": ..., "camera": ...,              (camera: all three below)
+                     "camera_in": {"chara": "Cell"},                                the opening (an Ultimate's)
+                     "camera_loop": {"chara": "Gohan", "slot": "blast2_1"},         from the start to the firing
+                     "camera_finish": {"chara": "Goku (End)", "slot": "ultimate"}}  a rush's cinematic finish
+                                                 (an entry without "chara": the moveset's own move; see "Mixed
+                                                 moves" below for what each takes and when it cannot)
       "names": {"blast2_1": "Galick Kamehameha", "ultimate": "Rose Spirit Bomb"},
+      "attack_tint": {"ultimate": {"hue": 280, "strength": 75, "light": 90}},   one colour for a whole move: its
+                                                 main colour becomes hue (0..360) / strength (saturation, 0..100) /
+                                                 light (brightness, 0..100), its other colours follow; then
+      "attack_colours": {"ultimate": [{"from": "#3050ff", "to": "#ff3020", "range": 1.5}]},   colour by colour
+                                                 ("blast1_1".."ultimate", "ki_blasts", "charge")
       "voice": {"chara": "Goku (End)"},          spoken lines, bank, lip sync, pre-fight lines (default: base)
       "portrait": {"chara": "Goku (End)"},       the menus' picture and the team picture (default: base)
       "health": 50000, "ki": 20000, "blast": 5,  10000 a bar; 100000 a full ki gauge; stocks 0..7
@@ -36,6 +51,10 @@ A fighter file (JSON). Every part is optional except "name"; a character is {"ch
                                                  (another fighter file, "disc:<chara>", or none: a direction not
                                                  named leads nowhere; a form not naming down goes back to its owner)
       "form_costs": {"up": 2},                   blast stocks a transformation costs
+      "form_kinds": {"up": "power_up"},          power_up (the burst), quick (the burst, no waiting), big (a long
+                                                 powering up), instant (no burst); not said: the moveset's table
+      "form_bursts": {"up": "#a040ff"},          the transformation's burst in that colour (not said: the game's)
+      "form_default": "up",                      the transformation of R3 alone (not said: the moveset's table)
       "slot": {"chara": "Goku (End)", "costume": 1}   `replace` only: whose place it takes
       "paint": {"1:5": {"w": 128, "h": 128, "sig": "1a2b3c4d", "png": "<base64>"}}   painted pixels of a texture:
                                                  "<costume>:<texture>" of the built model, an RGBA PNG of its size
@@ -54,6 +73,25 @@ n of a pack is part n - 1):
 - a move slot: its elements of 0x18 / 0x19, its motions in +8 (Blast 1: 0x103 + slot; Blast 2 / Ultimate: 0x22 from
   0x105 + (slot - 2) * 0x22, the Ultimate also 0x16B), its effect pack (+9 entry slot + 1), its camera cut, and its
   block of the move list text (the n-th '*' line and the lines after it).
+
+Mixed moves (decompilation: src/battle/btl_act_f.c, btl_tech_b.c, eft_h.c .. eft_l_b.c, btl_char_cam_*.c, eft_a.c):
+- The motions reach the effects only through event bits (0x200 start, 0x400 fire, 0x800 end, ...) and body nodes,
+  never by an index into the effect pack: another move's effect pack plays where the motions raise those events.
+  But the effect module is more than a look: for a projectile it carries the hitbox and ends the fighter's charge
+  and firing loops. So "effects" takes, as one unit, move B's effect pack (+9 entry slot + 1; for a Blast 2 /
+  Ultimate keeping A's entry 3, the rush scene's placement of the fighters, which belongs to A's motions) and B's
+  fields of 0x18 / 0x19 that pick and shape the effect (EFFECT_SUPER / EFFECT_SKILL: the effect type 0x138, its
+  flags but the camera shake bits, size, speed of a shot, pieces, impacts, streaks, tint); A keeps its motions,
+  action type 0x13E, damage, timing, reactions, ki, camera. It is done only where the game itself pairs A's action
+  type with B's effect type (FIT_SUPER, from every disc character) and both are rushes or both are not (0x13B 5);
+  for a Blast 1, the same effect type and kind. Where they do not fit, A keeps its own effects in B's colours (a
+  note says so): a projectile's effect cannot drive a rush and the other way round.
+- Cameras: 0x1C holds 10 orbit cuts of 0x24; cut slot - 2 is a technique's opening, which runs until it fires
+  ("camera", "camera_loop": also its camera shake bits, 0x18 +0 0x1C000000), cut 3 the Ultimate's intro (motion
+  0x16B; "camera_in": from an Ultimate). The middle of a beam is the battle's camera, with no data of its own. A
+  rush that connects plays a keyframed camera of its own: effects entry 6 (the general pack), its entry 8, entry
+  slot - 1, with the times of 0x18 +0x22C / +0x238 ("camera_finish"); only a rush has one (effect types 2 and 9:
+  EftShotTech / EftRushShot), so a beam keeps the battle's camera whatever is chosen.
 Standard library only.
 """
 import argparse, json, pathlib, re, struct, sys
@@ -99,6 +137,115 @@ SKILL_LAYOUT = (
     + [(o, 4, 1) for o in range(0x74, 0x94, 8)]
     + [(o, 1, 1) for o in range(0x94, 0xA0, 2)]
     + [(o, 4, 1) for o in range(0xA0, 0xC8, 8)])
+
+# ---- mixed moves (see "Mixed moves" in the notes above)
+# The fields of 0x18 that pick and shape a technique's effect (EftShot_BuildParam, eft_h.c): taken with its effect
+# pack. (The flags +0 too, but for the camera shake bits; the technique id +0x18 only where an effect module or the
+# other move's one reads it.)
+EFFECT_SUPER = ([(0x030, 4, 1), (0x03C, 4, 1), (0x048, 4, 1), (0x06C, 4, 1), (0x078, 4, 1), (0x084, 4, 1)]
+                + [(o, 1, 1) for o in range(0x090, 0x0A8, 3)]
+                + [(0x0A8, 1, 6), (0x0BA, 1, 8), (0x0D4, 4, 8), (0x134, 1, 1), (0x138, 1, 1),
+                   (0x15C, 1, 1), (0x15F, 1, 1), (0x162, 1, 1), (0x214, 4, 1)])
+EFFECT_SKILL = ([(0x00, 4, 1), (0x30, 4, 1)] + [(o, 1, 1) for o in range(0x38, 0x48, 2)]
+                + [(0x48, 1, 6), (0x60, 1, 1), (0x6E, 1, 1), (0x70, 1, 1)])
+SHAKE_BITS = 0x1C000000  # 0x18 +0: shake at the fire event / every frame of the firing / every camera near
+# The effect types (0x138) the disc gives each action type (0x13E): 0 / 7 beam, 1 two-stage, 2 charge, 3 repeat,
+# 4 / 5 homing rush, 6 straight rush, 7 throw, 8 flying, 9 warp beam, 10 strike (BtlAct_GetTechniqueAction).
+FIT_SUPER = {0: {0, 1, 3, 5, 6}, 1: {4}, 2: {0}, 3: {1}, 4: {2}, 5: {2}, 6: {2}, 7: {8, 9}, 8: {7}, 9: {0}, 10: {2}}
+ACTION_KIND = {0: "blast", 1: "two-stage blast", 2: "charged blast", 3: "rapid fire", 4: "rush", 5: "rush",
+               6: "rush", 7: "throw", 8: "flying attack", 9: "warp blast", 10: "strike"}
+EFFECT_IDS = {0x158, 0x202, 0x19A, 0x26E, 0x26F, 0x1C6, 0x165, 0x166, 0x157, 0x193, 0x194, 0x188, 0x1A3, 0x14B,
+              0x2B4, 0x27C, 0x162, 0x167, 0x168, 0x1F3, 0x282, 0x2A8, 0x19D, 0x290}  # read by effect modules
+BEHAVIOUR_IDS = {0x268, 0x2CD, 0x2D5, 0x27F, 0x290}  # special damage, charge time, throw: the move's own
+FINISH_ENTRY = 8  # effects entry 6 (the general pack): entry 8 holds the rush cameras, entry slot - 1 each
+
+
+def super_info(data, i):
+    """(flags, technique id, effect type, rush kind 0x13B, action type 0x13E) of element i of an entry 0x18."""
+    return (struct.unpack_from("<I", data, i * 4)[0], struct.unpack_from("<h", data, 0x18 + i * 2)[0],
+            struct.unpack_from("b", data, 0x138 + i)[0], data[0x13B + i], struct.unpack_from("b", data, 0x13E + i)[0])
+
+
+def skill_info(data, i):
+    """(effect type, kind 0x62) of element i of an entry 0x19."""
+    return struct.unpack_from("b", data, 0x60 + i)[0], data[0x62 + i]
+
+
+def try_split(data):
+    """The parts of a pack as the game reads them (its offsets, whatever their alignment: a BT4 pack's are 16-byte
+    aligned), None where it is not a pack."""
+    if not data or len(data) < 8:
+        return None
+    n = struct.unpack_from("<I", data)[0]
+    if n == 0 or n > 4096 or 4 + (n + 1) * 4 > len(data):
+        return None
+    offs = struct.unpack_from(f"<{n + 1}I", data, 4)
+    if offs[0] < 4 + (n + 1) * 4 or list(offs) != sorted(offs) or offs[-1] > len(data):
+        return None
+    return [data[offs[i]:offs[i + 1]] for i in range(n)]
+
+
+def has_effect_set(slot_pack):
+    """Whether a technique's effect pack holds an emitter set with parts (entry 4: the header)."""
+    parts = try_split(slot_pack)
+    if not parts or len(parts) < 4 or len(parts[3]) < 0x40:
+        return False
+    h = parts[3]
+    groups = [h[0x40 + g * 0x20:0x43 + g * 0x20] for g in range(h[4]) if 0x43 + g * 0x20 <= len(h)]
+    return any(k and n for k, n, _ in groups)
+
+
+def effects_fit(a_data, a_slot, b_data, b_slot, b_pack, a_name="it", b_name="that one"):
+    """Whether move b's effects can play move a's (entries 0x18 / 0x19 of the two, the slots, b's effect pack):
+    (True, "") or (False, why)."""
+    if a_slot < 2:
+        ta, ka = skill_info(a_data, a_slot)
+        tb, kb = skill_info(b_data, b_slot)
+        if ta < 0 or tb < 0:
+            return False, f"{a_name if ta < 0 else b_name} has no effect to trade"
+        if (ta, ka) != (tb, kb):
+            return False, f"{b_name}'s effect is of another kind than {a_name}'s"
+        return True, ""
+    _, ida, _, suba, act = super_info(a_data, a_slot - 2)
+    _, idb, tb, subb, actb = super_info(b_data, b_slot - 2)
+    if tb not in FIT_SUPER.get(act, ()):
+        return False, (f"{a_name} is a {ACTION_KIND.get(act, 'technique')} and {b_name} a "
+                       f"{ACTION_KIND.get(actb, 'technique')}: its effects cannot drive it")
+    if (suba == 5) != (subb == 5):
+        return False, f"{a_name} and {b_name} are not both rushes"
+    if ida in BEHAVIOUR_IDS:
+        return False, f"{a_name} works in a way of its own"
+    if tb != 2 and not has_effect_set(b_pack):
+        return False, f"{b_name} has no effects of its own"
+    return True, ""
+
+
+def is_rush_effect(data, slot):
+    """Whether a Blast 2 / Ultimate's effect module plays a camera of its own when it connects (types 2 and 9)."""
+    return slot >= 2 and super_info(data, slot - 2)[2] in (2, 9)
+
+
+def finish_camera(eff, slot):
+    """A technique's rush camera (bytes, b"" none) in an effects pack (Pack)."""
+    gen = try_split(eff[6]) if slot >= 2 else None
+    if not gen or len(gen) < FINISH_ENTRY:
+        return b""
+    cams = try_split(gen[FINISH_ENTRY - 1])
+    return cams[slot - 2] if cams and len(cams) > slot - 2 else b""
+
+
+def set_finish_camera(eff, slot, cam):
+    """Puts a rush camera into effects pack `eff` (Pack) for slot `slot`; False when its pack has no place for it."""
+    gen = try_split(eff[6])
+    if not gen or len(gen) < FINISH_ENTRY:
+        return False
+    cams = try_split(gen[FINISH_ENTRY - 1])
+    if not cams or len(cams) <= slot - 2:
+        return False
+    cams[slot - 2] = cam
+    gen[FINISH_ENTRY - 1] = join_pack(cams)
+    eff[6] = join_pack(gen)
+    return True
 
 # Motions (ids into the animation pack) of the groups.
 MELEE_MOTIONS = (list(range(0x37, 0x41)) + list(range(0x4C, 0x5C)) + list(range(0x5E, 0x6B)) + [0x6D, 0x70, 0x93]
@@ -1069,14 +1216,48 @@ class Fighter:
         self.paint = paint_entries(spec)
         self._paint_ref = {}  # look -> the texture file the paint was made on (undamaged, before the colours)
         self.moves = {}
+        self.move_mix = {}  # slot -> {"effects" | "camera" | "camera_in" | ...: (character, slot)}
         for key, v in spec.get("moves", {}).items():
             if key not in SLOTS:
                 raise Fail(f"unknown move slot {key!r}: one of {', '.join(SLOTS)}")
             d = SLOTS[key]
+            if isinstance(v, dict) and v.get("slot", key) not in SLOTS:
+                raise Fail(f"{key}: unknown slot {v.get('slot')!r}")
             s = SLOTS[v.get("slot", key)] if isinstance(v, dict) else d
             if SLOT_KIND[s] != SLOT_KIND[d]:
                 raise Fail(f"{key} can only take a move of the same kind ({SLOT_KIND[d]}), not {v.get('slot')}")
-            self.moves[d] = (ref(v), s)
+            if isinstance(v, dict) and "chara" not in v:  # (only effects or a camera for the moveset's own move)
+                self.moves[d] = (self.moveset, s)
+            else:
+                self.moves[d] = (ref(v), s)
+            mix = {}
+            for part in ("effects", "camera", "camera_in", "camera_loop", "camera_finish"):
+                w = v.get(part) if isinstance(v, dict) else None
+                if not w:
+                    continue
+                wkey = (w.get("slot") if isinstance(w, dict) else None) or ("ultimate" if part == "camera_in" else key)
+                if wkey not in SLOTS:
+                    raise Fail(f"{key} {part}: unknown slot {wkey!r}")
+                ws = SLOTS[wkey]
+                if part == "effects" and (ws < 2) != (d < 2):
+                    raise Fail(f"{key}: the effects of a Blast 1 go with a Blast 1, of a Blast 2 or Ultimate with those")
+                if part != "effects" and (d < 2 or ws < 2):
+                    raise Fail(f"{key} {part}: a Blast 1 has no camera of its own (only Blast 2 and Ultimates have)")
+                if part == "camera_in" and (d != 4 or ws != 4):
+                    raise Fail(f"{key}: camera_in is the opening of an Ultimate, from another Ultimate")
+                mix[part] = (ref(w), ws)
+            if mix:
+                self.move_mix[d] = mix
+        self.tint = {}
+        for key, v in (spec.get("attack_tint") or {}).items():
+            if key not in SLOTS:
+                raise Fail(f"attack_tint: unknown {key!r}")
+            try:
+                self.tint[SLOTS[key]] = (float(v["hue"]) % 360, min(100.0, max(0.0, float(v["strength"]))),
+                                         min(100.0, max(0.0, float(v["light"]))))
+            except (KeyError, TypeError, ValueError):
+                raise Fail(f"attack_tint {key}: needs hue (0..360), strength and light (0..100)")
+        self._fit = {}
         self.names = {}
         for key, v in spec.get("names", {}).items():
             if key not in SLOTS:
@@ -1142,6 +1323,8 @@ class Fighter:
                     if dst < len(blocks) and src_slot < len(dblocks):
                         blocks[dst] = dblocks[src_slot]
                         m[e] = join_text(h, blocks, t)
+        for dst, mix in self.move_mix.items():
+            self.mix_slot(m, dst, mix, damaged)
         for slot, name in self.names.items():
             for e in TEXT_ENTRIES:
                 if m[e]:
@@ -1155,6 +1338,99 @@ class Fighter:
             for e in LIP_ENTRIES:
                 m[e] = v[e]
         return m
+
+    def move_label(self, who, slot):
+        try:
+            return move_names(self.disc.model(*who))[slot]
+        except (Fail, IndexError):
+            return f"{name(who[0])}'s move"
+
+    def effects_ok(self, dst):
+        """Whether slot dst takes the effects its spec names (else it keeps its own, in their colours: a note)."""
+        if dst not in self._fit:
+            who, s = self.moves[dst]
+            bw, bs = self.move_mix[dst]["effects"]
+            e = E_SUPER if dst >= 2 else E_SKILL
+            an, bn = self.move_label(who, s), self.move_label(bw, bs)
+            ok, why = effects_fit(self.disc.model(*who)[e], s, self.disc.model(*bw)[e], bs,
+                                  self.disc.effects(bw[0])[bs + 1], an, bn)
+            if not ok:
+                self.note(f"{an} keeps its own effects, in {bn}'s colours: {why}")
+            self._fit[dst] = ok
+        return self._fit[dst]
+
+    def finish_of(self, dst):
+        """(character, slot) whose rush camera slot dst plays when it connects, None: its own."""
+        key = ("finish", dst)
+        if key not in self._fit:
+            mix = self.move_mix.get(dst, {})
+            src = mix.get("camera_finish") or mix.get("camera")
+            out = None
+            if src and dst >= 2:
+                said = "camera_finish" in mix
+                w0, s0 = mix["effects"] if "effects" in mix and self.effects_ok(dst) else self.moves[dst]
+                mine = self.move_label(*self.moves[dst])
+                if not is_rush_effect(self.disc.model(*w0)[E_SUPER], s0):
+                    if said:
+                        self.note(f"{mine} is not a rush: its end is filmed by the battle's camera, not "
+                                  f"{self.move_label(*src)}'s")
+                elif not finish_camera(self.disc.effects(src[0][0]), src[1]):
+                    if said:
+                        self.note(f"{self.move_label(*src)} has no finish camera: {mine} keeps its own")
+                else:
+                    out = src
+            self._fit[key] = out
+        return self._fit[key]
+
+    def mix_slot(self, m, dst, mix, damaged):
+        """Slot dst of model m (its move already copied in) with the effects and cameras of other moves."""
+        d = self.disc
+        if "effects" in mix and self.effects_ok(dst):
+            bw, bs = mix["effects"]
+            b = d.model(*bw, damaged)
+            if dst >= 2:
+                i, j = dst - 2, bs - 2
+                out = bytearray(copy_slot_data(m[E_SUPER], b[E_SUPER], EFFECT_SUPER, 3, i, j))
+                fa, ida = super_info(m[E_SUPER], i)[:2]
+                fb, idb = super_info(b[E_SUPER], j)[:2]
+                struct.pack_into("<I", out, i * 4, (fb & ~SHAKE_BITS) | (fa & SHAKE_BITS))
+                if idb in EFFECT_IDS or ida in EFFECT_IDS:
+                    struct.pack_into("<h", out, 0x18 + i * 2, idb)
+                m[E_SUPER] = bytes(out)
+            else:
+                m[E_SKILL] = copy_slot_data(m[E_SKILL], b[E_SKILL], EFFECT_SKILL, 2, dst, bs)
+        if dst < 2:
+            return
+        i = dst - 2
+        cuts, data = bytearray(m[E_CUTS]), bytearray(m[E_SUPER])
+
+        def put_cut(src, k_src, k_dst):
+            c = src[E_CUTS][k_src * CUT_SIZE:(k_src + 1) * CUT_SIZE]
+            if len(c) == CUT_SIZE and (k_dst + 1) * CUT_SIZE <= len(cuts):
+                cuts[k_dst * CUT_SIZE:(k_dst + 1) * CUT_SIZE] = c
+
+        def opening(w, ws):  # its cut until it fires, and its camera shakes
+            src = d.model(*w, damaged)
+            put_cut(src, ws - 2, i)
+            f = struct.unpack_from("<I", data, i * 4)[0]
+            g = super_info(src[E_SUPER], ws - 2)[0]
+            struct.pack_into("<I", data, i * 4, (f & ~SHAKE_BITS) | (g & SHAKE_BITS))
+
+        if "camera" in mix:
+            w, ws = mix["camera"]
+            opening(w, ws)
+            if dst == 4 and ws == 4:
+                put_cut(d.model(*w, damaged), 3, 3)
+        if "camera_loop" in mix:
+            opening(*mix["camera_loop"])
+        if "camera_in" in mix:
+            put_cut(d.model(*mix["camera_in"][0], damaged), 3, 3)
+        fin = self.finish_of(dst)
+        if fin:  # (the times of the rush finish's cut 9 go with its camera)
+            src = d.model(*fin[0], damaged)[E_SUPER]
+            for off in (0x22C, 0x238):
+                data[off + i * 4:off + i * 4 + 4] = src[off + (fin[1] - 2) * 4:off + (fin[1] - 2) * 4 + 4]
+        m[E_CUTS], m[E_SUPER] = bytes(cuts), bytes(data)
 
     def mixed(self, m, damaged):
         """The look with its pieces and workshop changes. A layer that cannot be put on is left out (with a
@@ -1274,6 +1550,31 @@ class Fighter:
         e = self.disc.effects(self.moveset[0])
         for dst, (who, s) in self.moves.items():
             e[dst + 1] = self.disc.effects(who[0])[s + 1]
+        like = []  # (slot, effects pack, its slot): the slot keeps its own effects in the colours of that one
+        for dst, mix in sorted(self.move_mix.items()):
+            if "effects" in mix:
+                bw, bs = mix["effects"]
+                src = self.disc.effects(bw[0])
+                if not self.effects_ok(dst):
+                    like.append((dst, src, bs))
+                else:
+                    parts, own = try_split(src[bs + 1]), try_split(e[dst + 1])
+                    if dst >= 2 and parts and own and len(parts) >= 3 and len(own) >= 3:
+                        parts[2] = own[2]  # (the rush scene's placements belong to the motions)
+                        e[dst + 1] = join_pack(parts)
+                    else:
+                        e[dst + 1] = src[bs + 1]
+            fin = self.finish_of(dst)
+            if fin and not set_finish_camera(e, dst, finish_camera(self.disc.effects(fin[0][0]), fin[1])):
+                self.note(f"{self.move_label(*self.moves[dst])}: no place for {self.move_label(*fin)}'s finish camera")
+        if like or self.tint:
+            fx = fx_module()
+            data = e.bytes()
+            for dst, src, bs in like:
+                data = fx.recolour_attack(data, dst, fx.match_changes(data, dst, src.bytes(), bs))
+            for slot, (h, s, l) in sorted(self.tint.items()):
+                data = fx.recolour_attack(data, slot, fx.tint_changes(fx.attack_colours(data, slot), h, s, l))
+            e = Pack(data)
         if self.fx:
             fx = fx_module()
             data = e.bytes()
@@ -1288,7 +1589,7 @@ class Fighter:
         return e
 
     def changes_motions(self):
-        return bool(self.moveset[0] != self.look[0] or self.moves or self.melee or self.kiblasts)
+        return bool(self.moveset[0] != self.look[0] or self.moves or self.melee or self.kiblasts or self.tint)
 
     def describe(self):
         def nm(r):
@@ -1309,6 +1610,12 @@ class Fighter:
                 own = "?"
             skey = [k for k, v in SLOTS.items() if v == s][0]
             lines.append(f"  {key:9s} {self.names.get(slot, own)}  <- {name(who[0])}'s {own} ({skey})")
+            mix = self.move_mix.get(slot, {})
+            took = [f"{part.replace('_', ' ')} of {name(w[0])}'s {self.move_label(w, ws)}"
+                    + (" (does not fit: its own, in those colours)" if part == "effects" and not self.effects_ok(slot) else "")
+                    for part, (w, ws) in mix.items()]
+            if took:
+                lines.append("            " + "; ".join(took))
         lines.append(f"  voice     {nm(self.voice)}")
         return "\n".join(lines)
 
@@ -1328,6 +1635,37 @@ def folder_name(name):
 
 
 BUILD_NOTES = []  # what the last builds had to change or leave out (shown by the creator)
+
+# A transformation's kind: (sequence +0xA0 = `<dir>_type`, burst +0xA4 = `<dir>_effect`) of the parameter block
+# (BtlAct_QueueTransform, btl_act_j.c; the actions in btl_act_h_b.c; the bursts EftTransform_*, eft_ab_b.c). Those
+# that need no partner, no moon and no animations of their own: action 0xEC the power-up (lead-in, waiting loop,
+# closing), 0xEE the same without the wait, 0xF0 a longer one, 0xED a change without a burst; burst 2 the standard.
+FORM_KINDS = {"power_up": (0, 2), "quick": (2, 2), "big": (4, 2), "instant": (1, 0)}
+
+
+def form_lines(spec):
+    """character.txt lines of the spec's form_kinds, form_bursts and form_default."""
+    out = []
+    for direction, kind in (spec.get("form_kinds") or {}).items():
+        if direction not in ("left", "up", "right", "down"):
+            raise Fail(f"form_kinds: {direction!r} is not left, up, right or down")
+        if kind not in FORM_KINDS:
+            raise Fail(f"form_kinds {direction}: {kind!r} is not one of {', '.join(FORM_KINDS)}")
+        seq, burst = FORM_KINDS[kind]
+        out += [f"{direction}_type={seq}", f"{direction}_effect={burst}"]
+    for direction, rgb in (spec.get("form_bursts") or {}).items():
+        if direction not in ("left", "up", "right", "down"):
+            raise Fail(f"form_bursts: {direction!r} is not left, up, right or down")
+        try:
+            out.append(f"{direction}_burst=%02x%02x%02x" % hex_rgb(rgb))
+        except (ValueError, AttributeError):
+            raise Fail(f"form_bursts {direction}: {rgb!r} is not a colour (#rrggbb)")
+    d = spec.get("form_default")
+    if d:
+        if d not in ("left", "up", "right"):
+            raise Fail(f"form_default: {d!r} is not left, up or right")
+        out.append(f"default={d}")
+    return out
 
 
 def write_package(disc, spec_path, chars_dir, done):
@@ -1415,6 +1753,7 @@ def write_package(disc, spec_path, chars_dir, done):
                 ahead.append(linked)
     for direction, cost in spec.get("form_costs", {}).items():
         manifest.append(f"{direction}_cost={int(cost)}")
+    manifest += form_lines(spec)
     (out / "character.txt").write_bytes(("\n".join(manifest) + "\n").encode("utf-8"))
     # A form of this warrior whose own file names no way back goes back to this warrior (R3 + Down). (The game also
     # remembers who a fighter transformed from, whatever the files say: src/battle/btl_char_mgr.c.)

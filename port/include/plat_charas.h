@@ -94,6 +94,7 @@ void PortChips_Free(void);
    Port_CharaFormTarget gives the id for a slot (0..3 transformations, 4..6 fusions): the folder's id if it is
    installed, 0xFF (none) if it is not, and -1 where forms.txt says nothing (the table's own number counts). */
 int Port_CharaFormTarget(int chara, int slot);
+int Port_CharaBurst(int chara, int slot); /* a transformation's burst colour 0xRRGGBB, -1 the game's */
 /* For the character select, where the disc shows a character's forms under one cell: the forms of an added
    character, itself first, then those its transformations lead to (through forms.txt), at most `max`. Returns
    their number (1: a character on its own), or -1 if `chara` is itself a form of another installed character and

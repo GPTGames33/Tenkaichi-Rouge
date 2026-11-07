@@ -290,11 +290,17 @@ class App:
                 layers.append({"piece": piece.rstrip("+"), "label": f"{piece.rstrip('+')} from {cf.name(who[0])}", "nodes": nodes})
         return {"layers": layers, "body": body}
 
-    def fx_colours(self, spec, what):
-        """An attack's colours and a picture of its textures: what = a move slot, "ki_blasts" or "charge"."""
+    def fx_colours(self, spec, what, plain=False):
+        """An attack's colours and a picture of its textures: what = a move slot, "ki_blasts" or "charge". plain: as
+        the move has them before the warrior's colour changes of it (the Technique Colour panel starts from those):
+        also "dominant", the colour its tint is about, and "tint": [hue, strength, light] of it."""
         import base64
         import fxcolour as fx
         spec = dict(spec, name=spec.get("name") or "preview")
+        if plain:
+            for k in ("attack_colours", "attack_tint"):
+                if isinstance(spec.get(k), dict) and what in spec[k]:
+                    spec[k] = {x: v for x, v in spec[k].items() if x != what}
         eff = cf.Fighter(self.disc, spec, "preview").effects().bytes()
         if what in cf.SLOTS:
             cols, png = fx.attack_colours(eff, cf.SLOTS[what]), fx.attack_preview_png(eff, cf.SLOTS[what])
@@ -302,7 +308,75 @@ class App:
             cols, png = fx.kiblast_colours(eff), fx.kiblast_preview_png(eff)
         else:
             cols, png = fx.aura_colours(eff), fx.aura_preview_png(eff)
-        return {"colours": cols, "png": base64.b64encode(png).decode() if png else ""}
+        out = {"colours": cols, "png": base64.b64encode(png).decode() if png else ""}
+        dom = fx.dominant(cols)
+        out["dominant"] = dom or ""
+        out["tint"] = [round(x) for x in fx.tint_of(dom)] if dom else [0, 0, 100]
+        return out
+
+    def mix_info(self, spec):
+        """For the MOVES tab: per move slot whether its effects from another move fit ("effects": true / false, null
+        none chosen), whether it is a rush (its finish can be filmed: "rush"), and the builder's notes."""
+        spec = dict(spec, name=spec.get("name") or "preview")
+        f = cf.Fighter(self.disc, spec, "preview")
+        out = {}
+        for key, d in cf.SLOTS.items():
+            mix = f.move_mix.get(d, {})
+            who, s = f.moves.get(d, (f.moveset, d))
+            ok = f.effects_ok(d) if "effects" in mix else None
+            w0, s0 = mix["effects"] if ok else (who, s)
+            rush = d >= 2 and cf.is_rush_effect(self.disc.model(*w0)[cf.E_SUPER], s0)
+            if d >= 2:
+                f.finish_of(d)
+            out[key] = {"effects": ok, "rush": rush}
+        return {"slots": out, "notes": list(f.notes)}
+
+    def tech_fit(self, spec, slot, what, chara):
+        """For the LEARN A TECHNIQUE grid: the techniques of character `chara` that can be chosen for `what` of the
+        warrior's move slot `slot` ("move", "effects", "camera", "camera_in", "camera_loop", "camera_finish"):
+        {"techs": [{"slot", "name", "fits", "why"}]} (a technique that does not fit can still be chosen when "why"
+        says what happens then: "effects" keeps its own in that one's colours)."""
+        spec = dict(spec, name=spec.get("name") or "preview")
+        f = cf.Fighter(self.disc, spec, "preview")
+        c = cf.chara_id(chara)
+        d = cf.SLOTS[slot]
+        try:
+            names = cf.move_names(self.disc.model(c, 0)) if not cf.is_bt4(c) else cf.bt4_move_names(c)
+        except (cf.Fail, IndexError):
+            names = []
+        if d < 2:
+            slots = [0, 1] if what in ("move", "effects") else []
+        elif what == "camera_in":
+            slots = [4]
+        else:
+            slots = [2, 3, 4]
+        who, s = f.moves.get(d, (f.moveset, d))
+        e = cf.E_SUPER if d >= 2 else cf.E_SKILL
+        a_name = f.move_label(who, s)
+        out = []
+        a = None
+        for k in slots:
+            t = {"slot": [x for x, v in cf.SLOTS.items() if v == k][0], "name": names[k] if k < len(names) else "-",
+                 "fits": True, "why": "", "finish": False}
+            try:
+                t["finish"] = k >= 2 and bool(cf.finish_camera(self.disc.effects(c), k))
+                if what == "effects":
+                    if a is None:
+                        a = self.disc.model(*who)[e]
+                    ok, why = cf.effects_fit(a, s, self.disc.model(c, 0)[e], k, self.disc.effects(c)[k + 1], a_name, t["name"])
+                    t["fits"], t["why"] = ok, ("" if ok else f"{why}; {a_name} keeps its own effects, in {t['name']}'s colours")
+                elif what == "camera_finish":
+                    if not t["finish"]:
+                        t["fits"], t["why"] = False, "not a rush: it has no finish camera"
+            except cf.Fail as x:
+                t["fits"], t["why"] = False, str(x)
+            out.append(t)
+        mine = None
+        if d >= 2 and what in ("camera_finish", "camera"):
+            mix = f.move_mix.get(d, {})
+            w0, s0 = mix["effects"] if "effects" in mix and f.effects_ok(d) else (who, s)
+            mine = cf.is_rush_effect(self.disc.model(*w0)[cf.E_SUPER], s0)
+        return {"techs": out, "rush": mine}
 
     def colours(self, spec):
         """The textures the warrior's look draws with (costume 1, pieces and colour changes applied): their picture
@@ -663,8 +737,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.send(200, a.preview(body["spec"], int(body.get("costume", 0))))
                 if act == "/api/layernodes":
                     return self.send(200, a.layer_nodes(body["spec"]))
+                if act == "/api/mixinfo":
+                    return self.send(200, a.mix_info(body["spec"]))
+                if act == "/api/techfit":
+                    return self.send(200, a.tech_fit(body["spec"], body["slot"], body["what"], body["chara"]))
                 if act == "/api/fxcolours":
-                    return self.send(200, a.fx_colours(body["spec"], body["what"]))
+                    return self.send(200, a.fx_colours(body["spec"], body["what"], bool(body.get("plain"))))
                 if act == "/api/colours":
                     return self.send(200, a.colours(body["spec"]))
                 if act == "/api/textures":

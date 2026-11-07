@@ -835,6 +835,17 @@ void StgTint_Start(u32 slot, s32 dir, f32 seconds) {
         colors[0][1].z = stage[6];
         colors[0][1].w = stage[7];
     }
+#ifdef PORT
+    if (slot == 1) { /* the transformation's flash, in a package's burst colour (port/src/plat_burst.c) */
+        extern int Port_BurstFlash(float out[3]);
+        float c[3];
+        if (Port_BurstFlash(c)) {
+            colors[1][0].x = colors[1][1].x = c[0];
+            colors[1][0].y = colors[1][1].y = c[1];
+            colors[1][0].z = colors[1][1].z = c[2];
+        }
+    }
+#endif
     if (slot >= STG_TINT_COUNT) {
         slot = 0;
     }
