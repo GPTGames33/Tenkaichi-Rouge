@@ -80,6 +80,7 @@ typedef struct {
     short par[PAR_COUNT];      /* bytes of the parameter block from 0x98 (PAR_*): -1 not said */
     unsigned char freshSet;    /* bits 0..3: `<slot>_fresh` said (bit 4 + k of +0xAD) */
     unsigned char freshOn;
+    int burst[4];              /* `<slot>_burst=rrggbb`: the colour of the transformation's burst; -1 the game's */
 } Chara;
 
 enum { CHIP_SIZE = 5504, NAME_ENTRY = 128, NAME_LINES_MAX = 256, PKG_MAX = 320, TEXT_MAX = 16384 };
@@ -326,6 +327,17 @@ static int apply_par(Chara *c, const char *key, const char *value) {
         n = strlen(kSlot[k]);
         if (strncmp(key, kSlot[k], n) != 0 || key[n] != '_') {
             continue;
+        }
+        if (strcmp(key + n, "_burst") == 0) { /* rrggbb (or #rrggbb, none) */
+            const char *v = value[0] == '#' ? value + 1 : value;
+            if (strcmp(v, "none") == 0 || v[0] == ' ') {
+                c->burst[k] = -1;
+            } else if (strlen(v) == 6 && strspn(v, "0123456789abcdefABCDEF") == 6) {
+                c->burst[k] = (int)strtol(v, NULL, 16);
+            } else {
+                note(c, "%s is not a colour (rrggbb)", key);
+            }
+            return 1;
         }
         if (strcmp(key + n, "_fresh") == 0) {
             c->freshSet |= (unsigned char)(1 << k);
@@ -644,6 +656,9 @@ static Chara *scan(const char *root, const char *name, const Chara *owner) {
     for (k = 0; k < PAR_COUNT; k++) {
         c->par[k] = -1;
     }
+    for (k = 0; k < 4; k++) {
+        c->burst[k] = -1;
+    }
     snprintf(c->name, sizeof(c->name), "%s", name);
     snprintf(c->dir, sizeof(c->dir), "%s", path);
     if (owner != NULL) {
@@ -778,6 +793,9 @@ static Chara *scan(const char *root, const char *name, const Chara *owner) {
         }
         for (k = 0; k < PORT_STAT_COUNT; k++) {
             has |= c->stat[k] >= 0;
+        }
+        for (k = 0; k < 4; k++) {
+            has |= c->burst[k] >= 0;
         }
         for (k = 0; k < SLOTS; k++) {
             has |= c->form[k][0] != '\0';
@@ -2018,6 +2036,16 @@ unsigned short *Port_CharaSkillText(int chara, unsigned short *text, void *param
     skill_put(out, &o, SKILL_MAX - 2, "!F@\n");
     out[o] = 0;
     return out;
+}
+
+/* The colour (0xRRGGBB) of the burst of character `chara`'s transformation `slot` (0..3: left, up, right, down), from
+   its package's `<slot>_burst`; -1 the game's own (no package, none said, or in a session). The transformation's
+   effect draws in it (port/src/plat_burst.c). */
+int Port_CharaBurst(int chara, int slot) {
+    const Chara *c;
+    PortCharas_Init();
+    c = chara_of(chara);
+    return c != NULL && slot >= 0 && slot < 4 ? c->burst[slot] : -1;
 }
 
 int Port_CharaFormTarget(int chara, int slot) {

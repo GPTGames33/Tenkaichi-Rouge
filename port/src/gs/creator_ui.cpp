@@ -1221,7 +1221,7 @@ struct WsPath {
 
 // ---- the screens over the list (the grid, the keyboard, lists, the colours): a stack
 enum { OV_GRID, OV_LIST, OV_KEYS, OV_COLOURS, OV_PALETTE, OV_TEXT, OV_FX, OV_WORKSHOP, OV_TEXPICK, OV_PAINT, OV_WHEEL, OV_WSEDIT,
-       OV_SHADING, OV_HSL, OV_STANCE }; // (OV_STANCE: creator_stance.cpp) // (the last two: creator_shading.cpp, creator_hsl.cpp)
+       OV_SHADING, OV_HSL, OV_STANCE, OV_TECHHSL }; // (creator_shading.cpp, creator_hsl.cpp, creator_stance.cpp, creator_hsl.inc)
 struct Overlay {
     int kind = OV_LIST;
     int id = 0;                          // (which one: a choice may close it and open another in its place)
@@ -1263,6 +1263,15 @@ struct Overlay {
     float hue = 0, sat = 0, val = 1;
     unsigned startRgb = 0;
     std::function<void(unsigned)> rgbPicked;
+    // the technique colour (OV_TECHHSL, creator_hsl.inc): hue, strength, light in hue / sat / val
+    bool hslOwn = false, hslStartOwn = false;
+    float hslStart[3] = {0, 0, 0};
+    std::function<void(bool, float, float, float)> hslChanged;
+    std::function<void()> hslMore;
+    // the technique grid (creator_moves.inc): what the choice is for, the creator's word on the fighter's techniques
+    std::string forWhat, fitSlot, fitWhat, warrior; // (warrior: the file of the user's warrior chosen, "" a fighter)
+    int fitChara = -1, fitAsked = -1;
+    J fit;
 };
 static std::vector<Overlay> sOv;
 static int sOvIds;
@@ -1278,6 +1287,18 @@ static void ov_close(void) {
     }
 }
 static void ov_close_all(void) { while (!sOv.empty()) { ov_close(); } }
+// (creator_moves.inc, creator_hsl.inc: the MOVES and FORMS tabs, the technique grid's side, the technique colour)
+struct Row;
+static void moves_rows(std::vector<Row> &rows);
+static void forms_rows(std::vector<Row> &rows);
+static float grid_side_width(const Overlay &o);
+static void grid_side(Overlay &o, const J *c, ImVec2 a, ImVec2 b);
+static void grid_pill(const Overlay &o);
+static void grid_tech_rows(Overlay &o, const J *c, std::vector<Row> &rows);
+static void grid_add_warriors(const Overlay &o, std::vector<const J *> &out);
+static const J *grid_warrior(const std::string &file);
+static void open_hsl(const std::string &title, const std::string &name, bool own, float hue, float strength, float light,
+                     std::function<void(bool, float, float, float)> changed, std::function<void()> more);
 
 static std::vector<const J *> grid_items(const Overlay &o) {
     std::vector<const J *> out;
@@ -1295,6 +1316,7 @@ static std::vector<const J *> grid_items(const Overlay &o) {
         }
         out.push_back(&c);
     }
+    grid_add_warriors(o, out); // (choosing a technique: the user's own warriors too)
     return out;
 }
 
@@ -2306,152 +2328,8 @@ static void rows_parts(std::vector<Row> &rows) {
     rows.push_back(sh);
 }
 
-static void rows_moves(std::vector<Row> &rows) {
-    rows.push_back(sec("FIGHTING"));
-    Row r;
-    r.label = "Moveset";
-    r.value = nm(moveset(), "?");
-    r.sub = "everything below starts from it";
-    r.face = chara_id(moveset());
-    r.tip = "Stance, animations, stats and the techniques you do not change.";
-    r.ok = [] {
-        open_grid("WHOSE MOVESET?", [](const J *p) {
-            if (!p) { return; }
-            J m = J::obj();
-            m.set("chara", (*p)["chara"]);
-            sSpec.set("moveset", m);
-            touch();
-        });
-    };
-    rows.push_back(r);
-    static const char *const kDonor[2][3] = {{"Melee & rush", "melee", "Combos, rushes and finishers."},
-                                             {"Ki blasts", "ki_blasts", "The ki blasts and charged shots."}};
-    for (int i = 0; i < 2; i++) {
-        Row d;
-        d.label = kDonor[i][0];
-        d.value = nm(sSpec[kDonor[i][1]], "the moveset's");
-        d.face = chara_id(sSpec[kDonor[i][1]]);
-        d.tip = kDonor[i][2];
-        std::string key = kDonor[i][1], label = kDonor[i][0];
-        for (char &c : label) { c = (char)SDL_toupper((unsigned char)c); }
-        d.ok = [key, label] {
-            open_grid(label + ": FROM WHOM?", [key](const J *p) {
-                if (p) { J m = J::obj(); m.set("chara", (*p)["chara"]); sSpec.set(key.c_str(), m); } else { sSpec.erase(key.c_str()); }
-                touch();
-            }, false, "Moveset's own");
-        };
-        rows.push_back(d);
-    }
-    static const char *const kGroups[3] = {"BLAST 1", "BLAST 2", "ULTIMATE"};
-    for (int k = 0; k < 5; k++) {
-        if (k == 0 || k == 2 || k == 4) { rows.push_back(sec(kGroups[k / 2])); }
-        MoveOf m = move_of(k);
-        bool renamed = sSpec["names"][kSlots[k]].isStr();
-        Row s;
-        s.label = kSlotLabel[k];
-        s.value = m.shown;
-        s.sub = renamed ? "(" + m.name + ", " + nm(m.who, "?") + ")" : "from " + nm(m.who, "?");
-        s.face = chara_id(m.who);
-        s.tip = "Whose technique should your warrior learn? Triangle renames it.";
-        std::vector<int> kinds;
-        if (k < 2) { kinds = {0, 1}; } else if (k < 4) { kinds = {2, 3}; } else { kinds = {4}; }
-        std::string title = std::string(kSlotLabel[k]) + ": WHOSE TECHNIQUE?";
-        for (char &c : title) { c = (char)SDL_toupper((unsigned char)c); }
-        s.ok = [k, kinds, title] {
-            open_grid(title, [k](const J *p) {
-                if (p) {
-                    sSpec.at("moves").set(kSlots[k], *p);
-                    toast(move_name(*p, slot_index((*p)["slot"].text(kSlots[k]))) + "! Good choice!");
-                } else {
-                    J *mv = sSpec.find("moves");
-                    if (mv) { mv->erase(kSlots[k]); }
-                    clean_empty("moves");
-                    toast("Back to the moveset's own.");
-                }
-                touch();
-            }, false, "Moveset's own", false, 0, kinds);
-        };
-        int nfx = fx_changes(kSlots[k]);
-        if (nfx) { s.sub = std::to_string(nfx) + (nfx > 1 ? " colours changed - " : " colour changed - ") + s.sub; }
-        s.sqLabel = "Colours";
-        std::string shown = m.shown;
-        s.sq = [k, shown] { open_fx(kSlots[k], shown); };
-        s.tip = "Whose technique should your warrior learn? Triangle renames it, square recolours it.";
-        s.triLabel = "Rename";
-        std::string own = m.name;
-        s.tri = [k, own] {
-            open_keys("NAME YOUR TECHNIQUE! (empty: " + own + ")", sSpec["names"][kSlots[k]].text(), 40, [k](const std::string &t) {
-                if (!t.empty()) { sSpec.at("names").set(kSlots[k], J::str(t)); }
-                else { J *n = sSpec.find("names"); if (n) { n->erase(kSlots[k]); } clean_empty("names"); }
-                touch();
-            });
-        };
-        rows.push_back(s);
-    }
-    rows.push_back(sec("ATTACK COLOURS"));
-    Row sum;
-    sum.label = "Recoloured";
-    for (int k = 0; k < 7; k++) {
-        const char *what = k < 5 ? kSlots[k] : k == 5 ? "ki_blasts" : "charge";
-        if (fx_changes(what)) { sum.value += (sum.value.empty() ? "" : ", ") + (k < 5 ? move_of(k).shown : std::string(fx_label(what))); }
-    }
-    if (sum.value.empty()) { sum.value = "nothing yet: square on a technique recolours it"; }
-    sum.locked = true;
-    rows.push_back(sum);
-    static const char *const kFx[2][3] = {{"ki_blasts", "Ki blasts", "The ki blasts and their charge glow."},
-                                          {"charge", "Ki charge", "The glow and sparks when charging ki (the aura flames are the game's own)."}};
-    for (int i = 0; i < 2; i++) {
-        Row r;
-        r.label = kFx[i][1];
-        int nfx = fx_changes(kFx[i][0]);
-        r.value = nfx ? std::to_string(nfx) + (nfx > 1 ? " colour changes" : " colour change") : "Original colours";
-        r.tip = kFx[i][2];
-        std::string what = kFx[i][0];
-        r.ok = [what] { open_fx(what); };
-        if (nfx) {
-            r.sqLabel = "Original colours";
-            r.sq = [what] { fx_original(what); sound(2); };
-        }
-        rows.push_back(r);
-    }
-}
-
-static void rows_forms(std::vector<Row> &rows) {
-    static const char *const kDirs[4][2] = {{"up", "R3 + Up"}, {"left", "R3 + Left"}, {"right", "R3 + Right"}, {"down", "R3 + Down (back)"}};
-    rows.push_back(sec("TRANSFORMATIONS"));
-    for (int i = 0; i < 4; i++) {
-        const char *d = kDirs[i][0];
-        std::string t = sSpec["forms"][d].text();
-        Row r;
-        r.label = kDirs[i][1];
-        if (t.empty()) { r.value = "none"; }
-        else if (t.compare(0, 5, "disc:") == 0) {
-            J id = J::num(atoi(t.c_str() + 5));
-            const J *c = entry_of(id);
-            r.value = c != NULL ? (*c)["name"].text() : t;
-            r.face = atoi(t.c_str() + 5);
-        } else {
-            r.value = fighter_name(t);
-        }
-        int cost = (int)sSpec["form_costs"][d].number(0);
-        if (!t.empty() && i < 3) {
-            r.sub = "costs " + std::to_string(cost) + " blast stocks";
-            std::string dir = d;
-            r.lrLabel = "Cost";
-            r.lr = [dir](int k) {
-                int v = (int)sSpec["form_costs"][dir.c_str()].number(0) + k;
-                v = v < 0 ? 0 : v > 7 ? 7 : v;
-                sSpec.at("form_costs").set(dir.c_str(), J::num(v));
-                touch();
-                sound(0);
-            };
-        }
-        r.tip = "Transform into another of your warriors, a new form of this one, or a roster character.";
-        std::string dir = d;
-        r.ok = [dir] { pick_form(dir.c_str()); };
-        rows.push_back(r);
-    }
-}
+static void rows_moves(std::vector<Row> &rows) { moves_rows(rows); }
+static void rows_forms(std::vector<Row> &rows) { forms_rows(rows); }
 
 static void rows_finish(std::vector<Row> &rows) {
     rows.push_back(sec("SAVE"));
@@ -2888,6 +2766,7 @@ static void ov_title(const Overlay &o) {
 
 static void grid_frame(Overlay &o, std::vector<Prompt> &ps) {
     std::vector<const J *> items = grid_items(o);
+    if (!o.forWhat.empty()) { o.pill = o.forWhat; } // ("for: camera (in)": in the title's gold pill)
     float top0 = sBoxA.y + S(50);
     // the game filter and the search
     bool games = sHaveBt4 && !o.bt3only && o.stage == 0;
@@ -2917,8 +2796,9 @@ static void grid_frame(Overlay &o, std::vector<Prompt> &ps) {
         }
     }
     if (o.stage == 0) {
-        // the faces
-        ImVec2 ga(sBoxA.x + S(14), top0 + S(32)), gb(sBoxB.x - S(14), sBoxB.y - S(70));
+        // the faces (and beside them, choosing a technique, the fighter's techniques)
+        float side = grid_side_width(o);
+        ImVec2 ga(sBoxA.x + S(14), top0 + S(32)), gb(sBoxB.x - S(14) - side, sBoxB.y - S(70));
         float cw = S(61), ch = S(60);
         int cols = (int)((gb.x - ga.x) / cw);
         if (cols < 1) { cols = 1; }
@@ -2962,6 +2842,7 @@ static void grid_frame(Overlay &o, std::vector<Prompt> &ps) {
             if (click_in(a, b)) { clicked = i; }
         }
         sDl->PopClipRect();
+        if (side > 0) { grid_side(o, n > 0 ? items[o.cur] : NULL, ImVec2(gb.x + S(8), top0 + S(34)), ImVec2(sBoxB.x - S(14), sBoxB.y - S(12))); }
         if (clicked >= 0) { o.cur = clicked; sIn.ok = true; }
         { // the arrows where more faces are; under the grid, the one the cursor is on
             float mx = (ga.x + gb.x) * 0.5f, t = S(7);
@@ -3024,6 +2905,7 @@ static void grid_frame(Overlay &o, std::vector<Prompt> &ps) {
         if (sIn.ok && n > 0) {
             const J &c = *items[o.cur];
             o.chosen = (int)c["id"].number(0);
+            o.warrior = c["warrior"].text();
             if (!o.moveKinds.empty()) { o.stage = 2; o.cur = 0; o.top = 0; sound(1); return; }
             if (o.costume && c["costumes"].size() > 1) { o.stage = 1; o.cur = 0; o.top = 0; sound(1); return; }
             J r = ref_of(c);
@@ -3036,7 +2918,7 @@ static void grid_frame(Overlay &o, std::vector<Prompt> &ps) {
     }
     // the costumes or the techniques of the one chosen
     J idj = J::num(o.chosen);
-    const J *c = entry_of(idj);
+    const J *c = o.warrior.empty() ? entry_of(idj) : grid_warrior(o.warrior);
     if (c == NULL) { ov_close(); return; }
     std::vector<Row> rows;
     if (o.stage == 1) {
@@ -3055,20 +2937,7 @@ static void grid_frame(Overlay &o, std::vector<Prompt> &ps) {
             rows.push_back(r);
         }
     } else {
-        rows.push_back(sec(((*c)["name"].text() + ": WHICH TECHNIQUE?").c_str()));
-        for (int k : o.moveKinds) {
-            Row r;
-            r.label = kSlotLabel[k];
-            r.value = (*c)["moves"][(size_t)k].text("-");
-            r.ok = [k, c, &o] {
-                J ref = ref_of(*c);
-                ref.set("slot", J::str(kSlots[k]));
-                std::function<void(const J *)> f = o.picked;
-                ov_close();
-                f(&ref);
-            };
-            rows.push_back(r);
-        }
+        grid_tech_rows(o, c, rows);
     }
     int cur = o.cur + 1;
     int clicked = draw_rows(ImVec2(sBoxA.x + S(10), top0), ImVec2(sBoxB.x - S(10), sBoxB.y - S(10)), rows, cur, o.top, true);
@@ -4945,6 +4814,8 @@ static void wheel_frame(Overlay &o, std::vector<Prompt> &ps) {
 #define CREATOR_UI_PARTS
 #include "creator_hsl.cpp"
 #include "creator_shading.cpp"
+#include "creator_hsl.inc"
+#include "creator_moves.inc"
 
 // =============================================================================================== the camera
 // Zoomed in and out (the right stick up / down, + / -, the wheel over the model), moved (R3 + the right stick, the right
@@ -5670,6 +5541,7 @@ bool Creator_Frame(bool input) {
         else if (kind == OV_SHADING) { tipLine = shading_tip(o); }
         else if (kind == OV_HSL) { tipLine = "Any colour you like! Fire it in a fight to see it."; }
         else if (kind == OV_STANCE) { tipLine = "Grab the dots and pose him, right on the model - then fight in that stance!"; }
+        else if (kind == OV_TECHHSL) { tipLine = "Any colour you like! Fire it in a fight to see it."; }
         else if (kind == OV_LIST && o.cur < (int)o.rows.size() && !o.rows[o.cur].tip.empty()) { tipLine = o.rows[o.cur].tip; }
         switch (kind) {
         case OV_GRID: grid_frame(o, ops); break;
@@ -5686,6 +5558,7 @@ bool Creator_Frame(bool input) {
         case OV_SHADING: shading_frame(o, ops); break;
         case OV_HSL: hsl_frame(o, ops); break;
         case OV_STANCE: stance_frame(o, ops); break;
+        case OV_TECHHSL: tech_hsl_frame(o, ops); break;
         default: text_frame(o, ops); break;
         }
         sBoxA = keepA;
@@ -5700,7 +5573,7 @@ bool Creator_Frame(bool input) {
     {
         int top = sOv.empty() ? -1 : sOv.back().kind;
         bool beside = top < 0 || top == OV_WORKSHOP || top == OV_WSEDIT || top == OV_PAINT || top == OV_TEXPICK || top == OV_COLOURS || top == OV_WHEEL || top == OV_PALETTE ||
-                      top == OV_SHADING || top == OV_HSL || top == OV_STANCE;
+                      top == OV_SHADING || top == OV_HSL || top == OV_STANCE || top == OV_TECHHSL;
         float turn = sIn.r3 ? 0.0f : sIn.turn * 0.05f;
         if (sMouse && ImGui::IsMouseDragging(0) && beside && io.MouseClickedPos[0].x > std::max(sOvRight, P(740, 0).x) && !stance_mouse_busy()) { turn += io.MouseDelta.x * 0.012f; }
         if (turn != 0.0f) {

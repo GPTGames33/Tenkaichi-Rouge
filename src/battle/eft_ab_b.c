@@ -63,6 +63,10 @@ extern void EftStage_UpdateSprite(void);
 extern void EftStage_DrawSprite(EftAbVec *pos);
 extern void StgTint_Start(u32 slot, s32 dir, f32 seconds);
 extern s32 ScrWarp_Spawn(s32 view, EftAbVec *pos, f32 seconds, f32 radius, f32 width, f32 speed, f32 jitter);
+#ifdef PORT
+extern void Port_BurstBegin(void *set, s32 objId); /* port/src/plat_burst.c: a package's burst colour */
+extern void Port_BurstEnd(void);
+#endif
 
 /* Steps every emitter of the set and spawns its particles at the task's position. */
 void EftTransform_SpawnParts(s32 objId, EftAbTask *task, EftAbSet *set) {
@@ -256,6 +260,9 @@ void EftTransform_Init(EftAbTask *task, EftTransformArg *req) {
     w->flags |= EFT_TF_ALIVE;
     w->endFrames = EftEmit_GetEndFrames(w->set);
     gEftTransform->busy = 1;
+#ifdef PORT
+    Port_BurstBegin(w->set, arg->objId); /* (the set in the colour of the fighter's transformation, if it has one) */
+#endif
 }
 
 /* Term callback: undoes the tint and the hidden fighter if the task dies between flash and reveal. */
@@ -277,6 +284,9 @@ void EftTransform_Term(EftAbTask *task) {
         gEftTransform->task = NULL;
         gEftTransform->busy = 0;
     }
+#ifdef PORT
+    Port_BurstEnd();
+#endif
 }
 
 /* Update callback: the flash sequence (task->step 0 start, 1 wait for the flash, 2 wait for the reveal). */
@@ -392,6 +402,9 @@ void EftTransformMgr_Init(EftAbTask *task) {
 /* Manager term callback: frees the sets and the module. */
 void EftTransformMgr_Term(void) {
     s32 i;
+#ifdef PORT
+    Port_BurstEnd(); /* (the common file's colours back before the sets go) */
+#endif
 
     for (i = 0; i < EFT_TF_SETS; i++) {
         EftEmit_FreeSet(&gEftTransform->set[i]);

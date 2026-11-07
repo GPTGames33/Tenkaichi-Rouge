@@ -425,6 +425,65 @@ def recolour_attack(eff_pack_bytes, slot, changes):
     return _apply(eff_pack_bytes, slot_sites(eff_pack_bytes, slot), changes)
 
 
+TINT_GREY = 0.12   # a main colour less saturated than this is a grey / the white core: kept by a tint
+
+
+def dominant(cols):
+    """The colour a tint is about (the panel's sliders start on it): the most used coloured one, the colour tracks
+    before the palettes; None when the move has none (a grey or white effect)."""
+    for where in ("param", "texture palette"):
+        for c in cols:
+            if c["where"] == where and _hsv(cf.hex_rgb(c["rgb"]))[1] >= TINT_GREY:
+                return c["rgb"]
+    return None
+
+
+def tint_changes(cols, hue, strength, light):
+    """One colour for a whole move (the Technique Colour panel): the changes (as recolour_attack takes them) that
+    give its dominant colour hue `hue` (degrees), saturation strength / 100 and brightness light / 100, and its
+    other colours the same hue with their saturation and brightness kept in proportion to it (the shading of a
+    beam's gradient stays). Greys and the white cores stay, unless the move has no colour at all: then its greys
+    take the hue."""
+    dom = dominant(cols)
+    if dom is None:
+        grey = [c for c in cols if max(cf.hex_rgb(c["rgb"])) > 24]
+        ref = max((_hsv(cf.hex_rgb(c["rgb"]))[2] for c in grey), default=1.0) or 1.0
+        out = []
+        for c in grey:
+            v = _hsv(cf.hex_rgb(c["rgb"]))[2]
+            out.append({"from": c["rgb"], "to": _hex(hue / 360, strength / 100, light / 100 * v / ref), "range": 1.5})
+        return out
+    _, S, V = _hsv(cf.hex_rgb(dom))
+    out = []
+    for c in cols:
+        h, s, v = _hsv(cf.hex_rgb(c["rgb"]))
+        if s < TINT_GREY:
+            continue
+        out.append({"from": c["rgb"], "to": _hex(hue / 360, strength / 100 * s / max(S, 0.05),
+                                                   light / 100 * v / max(V, 0.02)), "range": 1.5})
+    return out
+
+
+def _hex(h, s, v):
+    r, g, b = colorsys.hsv_to_rgb(h % 1.0, min(1.0, max(0.0, s)), min(1.0, max(0.0, v)))
+    return "#%02x%02x%02x" % (round(r * 255), round(g * 255), round(b * 255))
+
+
+def tint_of(rgb):
+    """(hue 0..360, strength 0..100, light 0..100) of a colour."""
+    h, s, v = _hsv(cf.hex_rgb(rgb))
+    return h * 360, s * 100, v * 100
+
+
+def match_changes(eff_a, slot_a, eff_b, slot_b):
+    """Slot slot_a of effects pack eff_a in the colours of slot slot_b of eff_b: its dominant colour becomes the
+    other's (the rest follows, tint_changes). [] when either has no colour."""
+    dom = dominant(attack_colours(eff_b, slot_b))
+    if dom is None:
+        return []
+    return tint_changes(attack_colours(eff_a, slot_a), *tint_of(dom))
+
+
 def kiblast_colours(eff_pack_bytes):
     return _group(_samples(eff_pack_bytes, general_sites(eff_pack_bytes, KIBLAST_ENTRIES)))
 
