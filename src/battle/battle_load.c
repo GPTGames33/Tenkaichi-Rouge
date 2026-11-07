@@ -1658,9 +1658,11 @@ void BattleSetup_SetMember(s32 sideNo, s32 idx, s32 chara, s32 costume, s32 vari
 #ifdef PORT
     {
         extern int Port_TestChara(int side); /* port/src/plat_charas.c: BT3_TEST_CHARA=<id> (testing), else -1 */
+        extern char *getenv(const char *name);
+        extern int atoi(const char *s);
         if (idx == 0 && Port_TestChara(sideNo) >= 0) {
             chara = Port_TestChara(sideNo);
-            costume = 0;
+            costume = getenv("BT3_COSTUME") != NULL ? atoi(getenv("BT3_COSTUME")) : 0; /* (BT3_COSTUME=<n>: that costume) */
         }
     }
 #endif

@@ -3406,7 +3406,12 @@ static void ws_outline(const Overlay &o, std::vector<Row> &rows, std::vector<WsI
         bool shown = ws_shown(p);
         const J &e = ws_read(p);
         bool edited = false;
-        for (size_t i = 0; i < e.k.size(); i++) { edited |= e.k[i] != "shown" && e.k[i] != "node"; }
+        static const char *const kNot[] = {"shown", "node", "nodes", "copies", "regions", "build", "patch"};
+        for (size_t i = 0; i < e.k.size(); i++) {
+            bool other = true;
+            for (const char *k : kNot) { other &= e.k[i] != k; }
+            edited |= other;
+        }
         r.sub = !shown ? "taken off" : edited ? "changed" : extra;
         r.locked = false;
         return r;
@@ -3827,9 +3832,14 @@ static void ws_blink_update(void) {
             memset((void *)gPortBlinkNodes, 0, sizeof(gPortBlinkNodes));
             for (int n : sBlink) { if (n >= 0 && n < 256) { gPortBlinkNodes[n] = 1; } }
             was = sBlink;
+            if (getenv("BT3_CREATOR_SCRIPT") != NULL) { // (testing: what blinks)
+                std::string l;
+                for (int n : sBlink) { l += " " + std::to_string(n); }
+                fprintf(stderr, "bt3: creator: workshop: blinking nodes%s\n", l.c_str());
+            }
         }
     }
-    gPortBlinkOn = on && (sFrames / 14) % 2 == 1;
+    gPortBlinkOn = on && ((sFrames / 14) % 2 == 1 || getenv("BT3_BLINK_HOLD") != NULL); // (testing: held off)
 }
 
 // =============================================================================================== the texture painter
@@ -4056,8 +4066,11 @@ static bool pt_load(const J &t, int costume) { // a texture into the painter (th
     for (size_t i = 0; i < p.list.size(); i++) { if (p.list[i]["key"].text() == p.key) { p.at = (int)i; } }
     return true;
 }
+static void cam_set(float zoom, float focus, float px, float py);
+static void cam_preset(int which);
 static void open_painter(const J &t, int costume) {
     if (!pt_load(t, costume)) { return; }
+    cam_set(0.8f, 0.0f, 85.0f, 55.0f); // (the model smaller, under the painter's controls)
     Overlay o;
     o.kind = OV_PAINT;
     o.title = "TEXTURES";
@@ -4309,7 +4322,7 @@ static void painter_frame(Overlay &o, std::vector<Prompt> &ps) {
     }
 
     // ---- the controls (right, over the model): how to paint, the buttons, the tools, the colour
-    ImVec2 ca = P(894, 108), cb = P(1336, 372);
+    ImVec2 ca = P(894, 108), cb(P(1336, 0).x, ca.y + S(242));
     sDl->AddRectFilled(ImVec2(ca.x, ca.y + S(4)), ImVec2(cb.x, cb.y + S(4)), IM_COL32(0, 0, 0, 80), S(10));
     sDl->AddRectFilled(ca, cb, IM_COL32(40, 22, 82, 240), S(10));
     sDl->AddRect(ca, cb, IM_COL32(245, 197, 66, 255), S(10), 0, S(2));
@@ -4389,6 +4402,7 @@ static void painter_frame(Overlay &o, std::vector<Prompt> &ps) {
     if (sIn.back) {
         painter_close();
         ov_close();
+        cam_preset(0);
         if (!sOv.empty() && sOv.back().kind == OV_TEXPICK && sOv.back().text == "painter") { ov_close(); } // (its list goes with it)
         sound(2);
         return;
@@ -5148,7 +5162,7 @@ bool Creator_Frame(bool input) {
             sSh.turn += (int)(turn * 1000.0f);
             SDL_UnlockMutex(sShare);
         }
-        if ((sScreen == SC_EDIT || sScreen == SC_HOME) && beside) { cam_frame(std::max(sOvRight, P(740, 0).x), top != OV_PAINT); }
+        if ((sScreen == SC_EDIT || sScreen == SC_HOME) && beside && top != OV_PAINT) { cam_frame(std::max(sOvRight, P(740, 0).x), true); } // (the painter: its controls there)
     }
     model_frame();
     ws_blink_update();
