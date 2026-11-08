@@ -5,6 +5,8 @@
 #include "sys/save.h"
 #include "battle/btl_script.h"
 #include "battle/btl_seq.h"
+#include <stdio.h>
+#include <stdlib.h>
 
 /*
  * PC only: the battle half of the Story Creator (main menu item 14; menu/port_story.c is its menu half, and
@@ -133,6 +135,7 @@ extern s32 BattleSide_GetObjId(s32 side);
 extern void *BtlObj_Get(s32 id);
 extern void BtlObj_SetSubState(void *obj, s32 mode, s32 arg);
 extern void BtlCharApi_GetPos(s32 objId, Vec4 *out);
+extern void BtlCharApi_GetRot(s32 objId, Vec4 *out);
 extern void BtlCharApi_GetNodePos(s32 objId, s32 node, Vec4 *out);
 extern s32 BtlCharApi_GetChara(s32 objId);
 extern void *BtlChar_Get(s32 side);
@@ -927,9 +930,19 @@ static s32 PortStoryCmd_Watch(u32 phase, void *work) {
 #define HUB_NPC_MAX 8
 #define PORT_HUB_MENU 99
 #define PORT_HUB_TRAVEL 100
-#define HUB_LAND_FRAMES 100
-#define HUB_TAKEOFF_FRAMES 84
-#define HUB_FLY_HEIGHT 260.0f
+#define HUB_LAND_FRAMES 70     /* coming down, to the touch of the ground */
+#define HUB_LAND_SETTLE 34     /* the landing pose, the camera going round behind */
+#define HUB_TAKEOFF_CHARGE 30
+#define HUB_TAKEOFF_FRAMES 96
+#define HUB_FLY_HEIGHT 300.0f
+/* the fighters' own motions (src/battle/btl_act_d.c, btl_act_c.c) */
+#define HUB_MO_FASTUP_START 0x2E
+#define HUB_MO_FASTUP 0x2F
+#define HUB_MO_FASTDOWN 0x32
+#define HUB_MO_FASTDOWN_STOP 0x33
+#define HUB_MO_LAND 0x2D
+#define HUB_MO_CHARGE_START 0x34
+#define HUB_MO_CHARGE 0x35
 #define HUB_UP (-1.0f)          /* (the game's y is down) */
 /* the map's buttons, as gPortHubMapKeys collects them */
 #define MAPKEY_LEFT 1
@@ -973,6 +986,9 @@ static struct {
     s32 travel;                 /* the place taken off for */
     f32 stickX;
     f32 stickY;
+    f32 height;                 /* how tall the player's fighter stands */
+    f32 face;                   /* which way they face, landing / taking off */
+    Vec4 eye;                   /* the camera of the landing / the takeoff */
     Vec4 center;
     Vec4 ground;                /* where the player lands / took off from */
     f32 radius;
@@ -990,6 +1006,9 @@ extern s32 ChrView_GetModelFile(s32 chara, s32 costume, s32 damaged);
 extern void Hud_ShowAll(s32 on);
 extern s32 File_GetSize(s32 id);
 extern unsigned Port_GameBigAlloc(int size);
+extern void BtlFacade_StopCharMotion(s32 side);
+extern void BtlFacade_ClearFixedCamera(void);
+extern void BtlAct_PlayLandFx(void *chr, s32 hard);
 
 static void PortHub_Free(void) {
     s32 i;
@@ -1230,8 +1249,46 @@ static s32 PortHub_MapKeys(void) {
 /* The player's fighter in the air at `lift` over the ground (landing: coming down; taking off: going up). */
 static void PortHub_Lift(f32 lift) {
     Vec4 p = V(sHub.ground.x, sHub.ground.y + HUB_UP * lift, sHub.ground.z);
+    Vec4 rot = V(0.0f, sHub.face, 0.0f);
 
     BtlFacade_SetCharPos(0, &p);
+    BtlFacade_SetCharRot(0, &rot);
+}
+
+/* The camera of the landing and the takeoff: on the ground in front of the player and a little to the side (in
+   heights of the fighter), looking up at them wherever they are in the air. */
+static void PortHub_CamSet(f32 dist, f32 side) {
+    f32 h = sHub.height;
+    f32 fx = sinf(sHub.face);
+    f32 fz = cosf(sHub.face);
+
+    sHub.eye = V(sHub.ground.x + fx * h * dist + fz * h * side, sHub.ground.y + HUB_UP * h * 0.35f,
+                 sHub.ground.z + fz * h * dist - fx * h * side);
+}
+
+static void PortHub_CamLook(f32 lift) {
+    Vec4 at = V(sHub.ground.x, sHub.ground.y + HUB_UP * (lift + sHub.height * 0.6f), sHub.ground.z);
+
+    PortStory_Camera(&sHub.eye, &at, NULL, NULL, 0.0f);
+}
+
+/* Ready for the landing / the takeoff: how tall the player is, which way they face. */
+static void PortHub_Prepare(s32 takeoff) {
+    f32 dx = sHub.center.x - sHub.ground.x;
+    f32 dz = sHub.center.z - sHub.ground.z;
+
+    sHub.height = PortStory_Height(0);
+    if (sHub.height < 8.0f || sHub.height > 60.0f) {
+        sHub.height = 16.0f;
+    }
+    if (takeoff) {
+        Vec4 rot;
+
+        BtlCharApi_GetRot(BattleSide_GetObjId(0), &rot);
+        sHub.face = rot.y;
+    } else {
+        sHub.face = dx * dx + dz * dz > 1.0f ? atan2f(dx, dz) : 0.0f; /* (landing facing the middle) */
+    }
 }
 
 /* 9007 "hub": every frame of the place's battle. */
@@ -1301,28 +1358,56 @@ static s32 PortStoryCmd_Hub(u32 phase, void *work) {
         if (sHub.phase == 1) {
             sHub.phaseFrames = 0;
             gPortHubFade = 255;
+            PortHub_Prepare(0);
             PortHub_Lift(HUB_FLY_HEIGHT);
         }
         return 0;
     }
 
     switch (sHub.phase) {
-    case 1: { /* landing: down from high over the ground, slowing, then the standing pose */
-        f32 t = (f32)sHub.phaseFrames / (f32)HUB_LAND_FRAMES;
-        f32 e = 1.0f - t;
+    case 1: { /* landing: down out of the sky fast, aura blazing, braking hard near the ground, the landing pose, dust;
+                 the camera on the ground watching them come, then round behind them, and they are let go */
+        s32 f = sHub.phaseFrames;
 
-        if (sHub.phaseFrames == 1) {
-            BtlFacade_PlayCharMotion(0, 0x30, 1, 0.0f); /* (coming down) */
+        if (f == 1) {
+            PortHub_Prepare(0);
+            PortHub_CamSet(4.2f, 1.6f);
+            BtlFacade_PlayCharMotion(0, HUB_MO_FASTDOWN, 1, 0.0f);
+            BtlFacade_SetCtrlFE(0); /* (the aura) */
         }
-        gPortHubFade = sHub.phaseFrames < 30 ? 255 - sHub.phaseFrames * 8 : 0;
-        if (t >= 1.0f) {
-            PortHub_Lift(0.0f);
-            BtlFacade_PlayCharMotion(0, 0, 1, 0.0f);
-            BtlFacade_ShakeCamera(0.3f);
+        gPortHubFade = f < 16 ? 255 - f * 16 : 0;
+        if (f <= HUB_LAND_FRAMES) {
+            f32 t = (f32)f / (f32)HUB_LAND_FRAMES;
+            f32 e = 1.0f - t;
+            f32 lift = HUB_FLY_HEIGHT * e * e * e; /* (fast, then braking) */
+
+            if (f == HUB_LAND_FRAMES - 16) {
+                BtlFacade_PlayCharMotion(0, HUB_MO_FASTDOWN_STOP, 0, 0.15f);
+            }
+            if (f == HUB_LAND_FRAMES) {
+                lift = 0.0f;
+                BtlFacade_PlayCharMotion(0, HUB_MO_LAND, 0, 0.1f);
+                BtlFacade_SetCtrlFF(0);
+                BtlAct_PlayLandFx(BtlChar_Get(0), 1); /* (the dust and the thud) */
+                BtlFacade_ShakeCamera(0.4f);
+            }
+            PortHub_Lift(lift);
+            PortHub_CamLook(lift);
+        } else if (f == HUB_LAND_FRAMES + 12) { /* round behind them, as the game's camera will be */
+            Vec4 from = sHub.eye;
+            Vec4 fromAt = V(sHub.ground.x, sHub.ground.y + HUB_UP * sHub.height * 0.6f, sHub.ground.z);
+            Vec4 at;
+
+            PortHub_CamSet(-4.6f, 0.0f);
+            sHub.eye.y = sHub.ground.y + HUB_UP * sHub.height * 1.5f;
+            at = V(sHub.ground.x + sinf(sHub.face) * sHub.height * 3.0f, sHub.ground.y + HUB_UP * sHub.height * 0.8f,
+                   sHub.ground.z + cosf(sHub.face) * sHub.height * 3.0f);
+            PortStory_Camera(&sHub.eye, &at, &from, &fromAt, (f32)(HUB_LAND_SETTLE - 12) / 30.0f);
+        } else if (f >= HUB_LAND_FRAMES + HUB_LAND_SETTLE) {
+            BtlFacade_StopCharMotion(0); /* (out of the scripted pose: the player's again) */
+            BtlFacade_ClearFixedCamera();
             gPortHubFade = 0;
             PortHub_Phase(0);
-        } else {
-            PortHub_Lift(HUB_FLY_HEIGHT * e * e * e);
         }
         break;
     }
@@ -1334,31 +1419,49 @@ static s32 PortStoryCmd_Hub(u32 phase, void *work) {
             BtlCharApi_GetPos(BattleSide_GetObjId(0), &me);
             sHub.ground = me;
             PortHub_Phase(3);
-            BtlFacade_SetCtrl101(0); /* (a charge before taking off) */
         } else if (!gPortHubMapOpen) {
             PortHub_Phase(0); /* (closed from the screens: Circle / Triangle) */
         }
         break;
-    case 3: { /* taking off: a moment's charge, then up and away, faster and faster, into black */
+    case 3: { /* taking off: powering up where they stand, then a burst up into the sky, faster and faster, into black */
         s32 f = sHub.phaseFrames;
+        f32 lift = 0.0f;
 
-        if (f == 18) {
+        if (f == 1) {
+            PortHub_Prepare(1);
+            PortHub_CamSet(3.6f, 1.4f);
+            BtlFacade_PlayCharMotion(0, HUB_MO_CHARGE_START, 0, 0.15f);
+            BtlFacade_SetCtrl101(0); /* (the charge) */
+            BtlFacade_SetCtrlFE(0);
+        }
+        if (f == 8) {
+            BtlFacade_PlayCharMotion(0, HUB_MO_CHARGE, 1, 0.15f);
+        }
+        if (f == HUB_TAKEOFF_CHARGE) {
             BtlFacade_ClearCtrl101(0);
-            BtlFacade_PlayCharMotion(0, 0x2B, 1, 0.0f); /* (going up) */
-            BtlFacade_ShakeCamera(0.5f);
+            BtlFacade_SetCtrl102(0); /* (a burst of ki) */
+            BtlFacade_PlayCharMotion(0, HUB_MO_FASTUP_START, 0, 0.1f);
+            BtlFacade_ShakeCamera(0.6f);
         }
-        if (f > 18) {
-            f32 t = (f32)(f - 18) / (f32)(HUB_TAKEOFF_FRAMES - 18);
+        if (f == HUB_TAKEOFF_CHARGE + 10) {
+            BtlFacade_PlayCharMotion(0, HUB_MO_FASTUP, 1, 0.15f);
+        }
+        if (f > HUB_TAKEOFF_CHARGE) {
+            f32 t = (f32)(f - HUB_TAKEOFF_CHARGE) / (f32)(HUB_TAKEOFF_FRAMES - HUB_TAKEOFF_CHARGE);
 
-            PortHub_Lift(HUB_FLY_HEIGHT * 1.6f * t * t);
+            lift = HUB_FLY_HEIGHT * 1.8f * t * t;
         }
-        gPortHubFade = f > HUB_TAKEOFF_FRAMES - 30 ? (f - (HUB_TAKEOFF_FRAMES - 30)) * 9 : 0;
+        PortHub_Lift(lift);
+        PortHub_CamLook(lift);
+        gPortHubFade = f > HUB_TAKEOFF_FRAMES - 26 ? (f - (HUB_TAKEOFF_FRAMES - 26)) * 10 : 0;
         if (gPortHubFade > 255) {
             gPortHubFade = 255;
         }
         if (f >= HUB_TAKEOFF_FRAMES) {
             sHub.ending = 1;
             gPortHubFade = 255;
+            BtlFacade_SetCtrlFF(0);
+            BtlFacade_SetCtrl100(0); /* (gone into the sky: hidden, the camera kept on the sky, until the place closes) */
             return PortHub_Leave(PORT_HUB_TRAVEL + sHub.travel);
         }
         break;
@@ -1370,6 +1473,9 @@ static s32 PortStoryCmd_Hub(u32 phase, void *work) {
     BtlCharApi_GetPos(BattleSide_GetObjId(0), &me);
     gPortHubPlaces[0] = me.x;
     gPortHubPlaces[1] = me.z;
+    if ((sHub.frames % 30) == 0 && getenv("BT3_HUB_LOG") != NULL) { /* (testing: where the player is) */
+        fprintf(stderr, "bt3: hub: frame %d phase %d at %.1f %.1f %.1f\n", sHub.frames, sHub.phase, me.x, me.y, me.z);
+    }
     near = -1;
     best = 30.0f;
     for (i = 0; i < sHub.count; i++) {

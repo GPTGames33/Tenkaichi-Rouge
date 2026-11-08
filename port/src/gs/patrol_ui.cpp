@@ -273,12 +273,12 @@ const char *const kRaceIds[6] = {
     "100-109,129,130,144",
 };
 const Race kRaces[6] = {
-    {"Saiyan", "A warrior race that comes back stronger from every beating. Brutal up close, explosive with ki, and too proud to stay down.", 73, 0, {5, 3, 4, 3}},
-    {"Namekian", "Calm, patient and hard to kill. Long reach, quick recovery, and the wisdom to outlast anyone who rushes them.", 24, 0, {3, 4, 4, 3}},
-    {"Arcosian", "Frieza's kind: cold, fast and merciless. Devastating ki techniques and a body that shrugs off what would kill others.", 91, 0, {4, 4, 5, 4}},
-    {"Human", "No tail, no transformations, just discipline. Humans learn technique faster than anyone, and never stop surprising people.", 27, 0, {3, 3, 3, 5}},
-    {"Majin", "Born of magic and mischief. Rubbery, resilient and relentless; hits keep coming and so do they.", 65, 0, {4, 5, 3, 3}},
-    {"Bio-Android", "Grown from the cells of the greatest fighters. Adapts to every opponent, and borrows a little of everyone it faces.", 109, 0, {4, 4, 4, 4}},
+    {"Saiyan", "A warrior race born to fight. They get stronger after every battle, hit hard and never back down.", 73, 0, {5, 3, 4, 3}},
+    {"Namekian", "Calm and patient. Namekians are tough, recover fast and can stretch their arms to strike from far away.", 24, 0, {3, 4, 4, 3}},
+    {"Arcosian", "The same race as Frieza. Fast, ruthless and tough, with some of the deadliest ki attacks there are.", 91, 0, {4, 4, 5, 4}},
+    {"Human", "No tail and no transformations, just hard training. Humans pick up techniques faster than anyone.", 27, 0, {3, 3, 3, 5}},
+    {"Majin", "Born from Majin Buu's magic. Stretchy, tough and very hard to keep down.", 65, 0, {4, 5, 3, 3}},
+    {"Bio-Android", "Made from the cells of the greatest fighters. Bio-Androids are good at everything.", 109, 0, {4, 4, 4, 4}},
 };
 const char *const kTraitNames[4] = {"POWER", "TOUGHNESS", "KI", "SPEED"};
 
@@ -1171,10 +1171,10 @@ void play_bounty(void) {
     int foe = pool[(size_t)(SDL_rand((Sint32)pool.size()))];
     int stage = kBountyStages[SDL_rand((Sint32)(sizeof(kBountyStages) / sizeof(kBountyStages[0])))];
     static const char *const kTaunts[] = {
-        "The Patrol's errand runner? Perfect. I was getting bored of hitting rocks.",
-        "Feel that? The Malice says you're weak. I'm inclined to agree.",
-        "Turn around and I'll let you keep your limbs. Final offer.",
-        "Every one of you I break makes the whispers louder. Come here.",
+        "You're with the Patrol? Good. I've been looking for someone to beat up!",
+        "Ha! I've never felt this strong! You don't stand a chance!",
+        "Get out of my way, or I'll crush you!",
+        "This power is amazing... Come on, let me try it out on you!",
     };
     J ep = J::obj();
     ep.set("title", J::str("Bounty: Corrupted " + StoryKit_ShortName(foe)));
@@ -1921,7 +1921,7 @@ void scr_story(bool input) {
     int cur = draw_rows(rows, sLists[S_STORY], a, b, input && !sAsking);
     want_model(cur >= 0 && rows[(size_t)cur].model >= 0 ? rows[(size_t)cur].model : 58, 0);
     place_default();
-    tip_box(cur >= 0 && !rows[(size_t)cur].tip.empty() ? rows[(size_t)cur].tip : "The Malice is spreading. Every Corrupted fighter we free is one more on our side.", 58);
+    tip_box(cur >= 0 && !rows[(size_t)cur].tip.empty() ? rows[(size_t)cur].tip : "The Malice is spreading. Every fighter we free is one more on our side.", 58);
     prompts({{B_CROSS, "Start"}, {B_CIRCLE, "Back"}});
     if (input && !sAsking && sIn.back) { sound(2); back(); }
 }
@@ -2640,7 +2640,16 @@ void Patrol_HubOverlay(void) {
     int phase = gPortHubPhase;
     if (lastPhase == 1 && phase == 0) { landedAt = sFrames; }
     lastPhase = phase;
-    if (phase != 3) {
+    static float bars = 0.0f; // landing / taking off: a film's black bars, nothing else over the picture
+    if (phase == 1) { bars = 1.0f; }
+    else if (phase == 3) { bars = std::min(1.0f, bars + 0.08f); }
+    else { bars = std::max(0.0f, bars - 0.06f); }
+    if (bars > 0.0f) {
+        float hb = S(70) * bars;
+        sDl->AddRectFilled(ImVec2(sX0, sY0), ImVec2(sX0 + sW, sY0 + hb), IM_COL32(0, 0, 0, 255));
+        sDl->AddRectFilled(ImVec2(sX0, sY0 + sH - hb), ImVec2(sX0 + sW, sY0 + sH), IM_COL32(0, 0, 0, 255));
+    }
+    if (phase == 0 || phase == 2) {
         // the place's name, as Xenoverse shows it on arriving (bigger for a few seconds after landing)
         float since = (float)(sFrames - landedAt);
         if (since < 240.0f) {
@@ -2712,7 +2721,7 @@ void Patrol_HubOverlay(void) {
     }
     if (phase == 3 && sMapCur >= 0 && sMapCur < (int)gLocs.size()) {
         std::string t = "Flying to " + gLocs[(size_t)sMapCur].name + "...";
-        outlined(sBold, S(26), ImVec2(P(688, 0).x - text_w(sBold, S(26), t.c_str()) * 0.5f, P(0, 640).y), kInk, IM_COL32(4, 12, 32, 255), t, S(1.5f));
+        outlined(sBold, S(26), ImVec2(P(688, 0).x - text_w(sBold, S(26), t.c_str()) * 0.5f, P(0, 708).y), kInk, IM_COL32(4, 12, 32, 255), t, S(1.5f));
     }
     int fade = gPortHubFade;
     if (fade > 0) { sDl->AddRectFilled(ImVec2(sX0, sY0), ImVec2(sX0 + sW, sY0 + sH), IM_COL32(0, 0, 0, std::min(255, fade))); }

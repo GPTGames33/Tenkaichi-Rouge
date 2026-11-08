@@ -556,15 +556,21 @@ static SDL_Gamepad *pad_of(int player) {
 }
 
 /* BT3_PAD="frame:button,frame:button,...": scripted presses for player 1, each held for 4 frames from that frame
-   (frame = the renderer's frame counter). Buttons: start select up down left right cross circle square triangle
-   l1 r1 l2 r2. For tests without a person at the keyboard. */
+   (frame = the renderer's frame counter; "frame:button+n" holds it n frames). Buttons: start select up down left
+   right cross circle square triangle l1 r1 l2 r2, and the left stick pushed: sup sdown sleft sright. For tests
+   without a person at the keyboard. */
+#define SCRIPT_SUP 0x10000000u
+#define SCRIPT_SDOWN 0x20000000u
+#define SCRIPT_SLEFT 0x40000000u
+#define SCRIPT_SRIGHT 0x80000000u
 static unsigned script_buttons(void) {
     static const struct { const char *name; unsigned bit; } names[] = {
         {"start", B_START}, {"select", B_SELECT}, {"up", B_UP}, {"down", B_DOWN}, {"left", B_LEFT}, {"right", B_RIGHT},
         {"cross", B_CROSS}, {"circle", B_CIRCLE}, {"square", B_SQUARE}, {"triangle", B_TRIANGLE}, {"l1", B_L1}, {"r1", B_R1},
-        {"l2", B_L2}, {"r2", B_R2},
+        {"l2", B_L2}, {"r2", B_R2}, {"sup", SCRIPT_SUP}, {"sdown", SCRIPT_SDOWN}, {"sleft", SCRIPT_SLEFT},
+        {"sright", SCRIPT_SRIGHT},
     };
-    static struct { unsigned frame, bit; } ev[256];
+    static struct { unsigned frame, bit, hold; } ev[256];
     static int count = -1;
     unsigned btn = 0;
     int i;
@@ -580,18 +586,23 @@ static unsigned script_buttons(void) {
             if (sscanf(p, "%u:%15[a-z0-9]%n", &frame, name, &used) != 2) {
                 break;
             }
+            p += used;
             for (k = 0; k < sizeof(names) / sizeof(names[0]); k++) {
                 if (strcmp(name, names[k].name) == 0) {
                     ev[count].frame = frame;
+                    ev[count].hold = 4;
+                    if (*p == '+') {
+                        ev[count].hold = (unsigned)strtoul(p + 1, NULL, 10);
+                    }
                     ev[count++].bit = names[k].bit;
                 }
             }
-            p += used;
+            while (*p == '+' || (*p >= '0' && *p <= '9')) { p++; }
             if (*p == ',') { p++; }
         }
     }
     for (i = 0; i < count; i++) {
-        if (gGsFrame >= ev[i].frame && gGsFrame < ev[i].frame + 4) {
+        if (gGsFrame >= ev[i].frame && gGsFrame < ev[i].frame + ev[i].hold) {
             btn |= ev[i].bit;
         }
     }
@@ -1133,6 +1144,11 @@ int Port_PadRead(int socket, unsigned char *data) {
     }
     if (socket == 0) {
         btn |= script_buttons();
+        if (btn & SCRIPT_SUP) { ly = 0x00; }
+        if (btn & SCRIPT_SDOWN) { ly = 0xFF; }
+        if (btn & SCRIPT_SLEFT) { lx = 0x00; }
+        if (btn & SCRIPT_SRIGHT) { lx = 0xFF; }
+        btn &= ~(SCRIPT_SUP | SCRIPT_SDOWN | SCRIPT_SLEFT | SCRIPT_SRIGHT);
     }
     if (socket == 0 && getenv("BT3_STICK_TEST") != NULL) { /* the numbers, once: what was read, what was passed, what the game has */
         static const char *const dirs[5] = {"-", "up", "down", "left", "right"};

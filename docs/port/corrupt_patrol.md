@@ -24,8 +24,11 @@ own homes once won over.
 - Walking about: Circle beside someone talks to them; Triangle opens the **world map** (a hologram of the world, the
   other worlds beside it; the stick or d-pad moves to the nearest place that way, L1 / R1 the next, Cross flies there,
   Circle / Triangle closes it); START opens the Patrol Menu. The list at the left shows who is there and how far.
-- Flying: the warrior charges, takes off and climbs out of sight; the map shows the flight; at the other place they
-  come down from the sky and land, and the place's name comes up.
+- Flying: the warrior powers up, bursts up into the sky and is gone, a camera on the ground watching; the map shows
+  the flight; at the other place they dive down out of the sky, brake, land in a crouch, the camera comes round behind
+  them and the place's name comes up (black bars meanwhile). The fighters' own motions (fast ascend 0x2E / 0x2F, fast
+  descend 0x32 / 0x33, landing 0x2D, ki charge 0x34 / 0x35); at the end the scripted motion is stopped
+  (BtlFacade_StopCharMotion), or the player's fighter would stay in it, taking no buttons.
 - The menus are drawn over the stage of the place the player is at, the person talked to standing on it.
 
 ## The warrior
@@ -66,7 +69,7 @@ its warrior, level, zeni and items and starts the new story.
 
 ## The content
 
-The places, the story, the quests and the masters' lines are data: `port/assets/patrol/` (`locations.json`,
+The writing is plain spoken dialogue, in each character's voice as in the show (no prose, no running jokes). The places, the story, the quests and the masters' lines are data: `port/assets/patrol/` (`locations.json`,
 `story.json`, `quests_b.json`, `quests_c.json`), made one document by `port/tools/patrol_content.py` (which checks it:
 every quest giver at their place, every master unlocked exactly once) into `content.json` and
 `port/src/gs/patrol_content.inc`, built into the game. A `patrol/content.json` next to the game is read in its place.
@@ -86,6 +89,8 @@ battle (1 the left side, 2 the right).
 - `BT3_PATROL_DUMP=1`: the last battle's saga written to `patrol/_last_battle.json`.
 - `BT3_PATROL_NOHUB=1`: the list of the people there instead of walking; `BT3_PATROL_NOCREATOR=1`: a new warrior without
   the creator (the stand-in).
+- `BT3_HUB_LOG=1`: where the player is in a place, every 30 frames (and BT3_PAD's `sup sdown sleft sright`, the left
+  stick, with `+n` to hold n frames).
 - `BT3_PATROL_HP=<percent>`, `BT3_PATROL_FOE_HP=<percent>`: the player's / the foe's starting health.
 
 ## How it is made
