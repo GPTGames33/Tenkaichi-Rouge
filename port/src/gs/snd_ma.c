@@ -37,6 +37,7 @@
 #define MA_IMPLEMENTATION
 #include "../../third_party/miniaudio/miniaudio.h"
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,7 +50,68 @@ typedef struct PortMaSound {
     ma_decoder decoder;
     ma_sound   sound;
     int        loop; /* played round and round, as the disc's looping music is (an added song) */
+    float     *pcm;   /* a voice clip of the player's (title/, menu/), decoded and made loud (voice_load), played
+                         from `buffer` instead of the decoder; NULL for anything else */
+    ma_audio_buffer buffer;
 } PortMaSound;
+
+/* The player's own voice clips (the title call, the main menu's lines: plat_file.c) are decoded in full when they
+   start and made loud: a recording made elsewhere is usually much quieter than the game's lines. The clip is
+   scaled so its loudest sample would be twice full scale (+6 dB over plain peak matching), and a soft limiter
+   rounds off everything above 0.6 so nothing clips. The settings' voice volume still scales it: VOICE_USUAL is
+   the gain snd_adx.c gives a menu line at the defaults (-5.1 dB), at which the clip plays as made here. */
+#define VOICE_USUAL 0.555f
+#define VOICE_PEAK 2.0f
+#define VOICE_KNEE 0.6f
+static int is_voice_clip(const char *path) {
+    return strncmp(path, "title/", 6) == 0 || strncmp(path, "menu/", 5) == 0;
+}
+
+static float *voice_load(const char *path, ma_uint32 channels, ma_uint32 rate, ma_uint64 *frames) {
+    ma_decoder d;
+    ma_decoder_config c = ma_decoder_config_init(ma_format_f32, channels, rate);
+    float *pcm = NULL, peak = 0.0f, g;
+    ma_uint64 n = 0, cap = 0, got;
+    ma_uint32 ch;
+    size_t i;
+
+    if (ma_decoder_init_file(path, &c, &d) != MA_SUCCESS) {
+        return NULL;
+    }
+    ch = d.outputChannels;
+    for (;;) {
+        if (n + 4096 > cap) {
+            float *more = (float *)realloc(pcm, (size_t)(cap = cap * 2 + 65536) * ch * sizeof(float));
+            if (more == NULL) { free(pcm); ma_decoder_uninit(&d); return NULL; }
+            pcm = more;
+        }
+        if (ma_decoder_read_pcm_frames(&d, pcm + n * ch, 4096, &got) != MA_SUCCESS || got == 0) {
+            break;
+        }
+        n += got;
+    }
+    ma_decoder_uninit(&d);
+    for (i = 0; i < (size_t)(n * ch); i++) {
+        float a = pcm[i] < 0 ? -pcm[i] : pcm[i];
+        if (a > peak) { peak = a; }
+    }
+    if (n == 0 || peak < 0.01f) {
+        free(pcm);
+        return NULL;
+    }
+    g = VOICE_PEAK / peak;
+    for (i = 0; i < (size_t)(n * ch); i++) {
+        float y = pcm[i] * g, a = y < 0 ? -y : y;
+        if (a > VOICE_KNEE) { /* (above the knee: approaches 1 and never passes it) */
+            a = VOICE_KNEE + (1.0f - VOICE_KNEE) * tanhf((a - VOICE_KNEE) / (1.0f - VOICE_KNEE));
+            y = y < 0 ? -a : a;
+        }
+        pcm[i] = y;
+    }
+    fprintf(stderr, "bt3: voice clip %s: peak %.3f, lifted x%.2f with a soft limit\n", path, peak, g);
+    *frames = n;
+    return pcm;
+}
 
 static ma_engine sEngine;
 static int sEngineState; /* 0 not looked at yet, 1 created, -1 could not be */
@@ -170,6 +232,23 @@ void *PortMa_Start(const char *path, int loop) {
     if (s == NULL) {
         return NULL;
     }
+    if (is_voice_clip(path)) {
+        ma_uint64 frames = 0;
+        ma_uint32 ch = sMono ? 1 : 2;
+        s->pcm = voice_load(path, ch, ma_engine_get_sample_rate(&sEngine), &frames);
+        if (s->pcm != NULL) {
+            ma_audio_buffer_config bc = ma_audio_buffer_config_init(ma_format_f32, ch, frames, s->pcm, NULL);
+            bc.sampleRate = ma_engine_get_sample_rate(&sEngine);
+            if (ma_audio_buffer_init(&bc, &s->buffer) != MA_SUCCESS ||
+                ma_sound_init_from_data_source(&sEngine, &s->buffer, 0, NULL, &s->sound) != MA_SUCCESS) {
+                fprintf(stderr, "bt3: miniaudio: cannot play %s\n", path);
+                free(s->pcm);
+                free(s);
+                return NULL;
+            }
+            goto started;
+        }
+    }
     {
         ma_decoder_config config = ma_decoder_config_init_default();
         if (sMono) {
@@ -187,6 +266,7 @@ void *PortMa_Start(const char *path, int loop) {
         free(s);
         return NULL;
     }
+started:
     s->loop = loop != 0;
     ma_sound_set_looping(&s->sound, s->loop ? MA_TRUE : MA_FALSE);
     ma_sound_set_spatialization_enabled(&s->sound, MA_FALSE); /* music and effects, not placed in a room */
@@ -203,7 +283,12 @@ void PortMa_Stop(void *handle) {
         return;
     }
     ma_sound_uninit(&s->sound); /* stops it and detaches it from the engine */
-    ma_decoder_uninit(&s->decoder);
+    if (s->pcm != NULL) {
+        ma_audio_buffer_uninit(&s->buffer);
+        free(s->pcm);
+    } else {
+        ma_decoder_uninit(&s->decoder);
+    }
     free(s);
 }
 
@@ -212,7 +297,10 @@ void PortMa_SetVolume(void *handle, float gain) {
     PortMaSound *s = (PortMaSound *)handle;
 
     if (s != NULL) {
-        float v = gain * native_lift();
+        float v = s->pcm != NULL ? gain / VOICE_USUAL : gain * native_lift();
+        if (s->pcm != NULL && v > 1.0f) {
+            v = 1.0f; /* (never past full scale, the settings' voice volume above 100% included) */
+        }
         ma_sound_set_volume(&s->sound, v < 0.0f ? 0.0f : v);
     }
 }

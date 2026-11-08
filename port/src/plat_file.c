@@ -144,6 +144,28 @@ static const char *title_call(const char *rel) {
     }
 }
 
+/* The main menu's lines for Custom Character and the Story Creator (menu/menu_a.c: voice files 65500 / 65501 of
+   partition 2, which the disc doesn't have): the player's clips in menu/ next to the game. */
+static const char *menu_hover(const char *rel) {
+    static const char *const name[2] = {"menu/hover_custom_character", "menu/hover_custom_story"};
+    static const char *const ext[] = {"mp3", "wav", "flac"};
+    static char path[2][64];
+    int n, e;
+    FILE *fp;
+
+    if (strncmp(rel, "pzs3us2/", 8) != 0 || sscanf(rel + 8, "%d.bin", &n) != 1 || n < 65500 || n > 65501) {
+        return NULL;
+    }
+    for (e = 0; e < 3; e++) {
+        snprintf(path[n - 65500], sizeof(path[0]), "%s.%s", name[n - 65500], ext[e]);
+        if ((fp = fopen(path[n - 65500], "rb")) != NULL) {
+            fclose(fp);
+            return path[n - 65500];
+        }
+    }
+    return NULL;
+}
+
 static PortFile *open_rel(const char *rel) {
     PortFile *f;
     long size = Port_FileSize(rel); /* (says so itself when the file is missing) */
@@ -178,6 +200,9 @@ int Port_FilePath(int ptid, int flid, const char *fname, char *out, int size) {
         /* The streamed audio (a song added from outside the disc) reads through this path, so the manifest's
            aliases must apply here too, not only in open_rel. */
         const char *a = title_call(rel);
+        if (a == NULL) {
+            a = menu_hover(rel);
+        }
         if (a == NULL) {
             a = alias_target(rel);
         }

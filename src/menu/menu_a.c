@@ -142,6 +142,18 @@ static void PortMainMenu_WriteText(u8 *tex, s32 row, s32 lit, char *text) {
     Heap_Free(index);
 }
 #define MAINMENU_VOICED(item) ((item) < MAINMENU_TBO)
+/* Custom Character and the Story Creator have a line of their own when the cursor lands on them: voice files
+   65500 / 65501 of partition 2, which the disc doesn't have; port/src/plat_file.c sends them to the player's clips
+   (menu/hover_custom_character.mp3, menu/hover_custom_story.mp3 next to the game). Without the clip, silence. */
+#define MAINMENU_HOVER_VOICE(item) ((item) == MAINMENU_CREATOR ? 0xD48 + 65500 : (item) == MAINMENU_STORY ? 0xD48 + 65501 : 0)
+extern void Voice_Play(s32 voice, s32 id, s32 vol, s32 pan); /* sys/adx.c */
+extern void Voice_StopWithLip(void);                         /* battle/view_b_c.c */
+static void PortMainMenu_HoverVoice(s32 item) {
+    if (MAINMENU_HOVER_VOICE(item) != 0) {
+        Voice_StopWithLip(); /* (the guide's mouth stops with the line it was reading) */
+        Voice_Play(0, MAINMENU_HOVER_VOICE(item), 0x80, 0);
+    }
+}
 #else
 #define MM_LABEL(item) (item)
 #define MM_ICON(item) (item)
@@ -547,6 +559,9 @@ void MainMenu_Update(void) {
                     Voice_PlayWithSubtitle(gMainMenu->subtitles, MAINMENU_VOICE_BASE, gMainMenu->voiceLine);
                 } else {
                     gMainMenu->voiceLine = -1;
+#ifdef PORT
+                    PortMainMenu_HoverVoice(MAINMENU_CUR(gMainMenu));
+#endif
                 }
             }
         }
@@ -632,6 +647,9 @@ void MainMenu_Input(s32 *result) {
             Voice_PlayWithSubtitle(gMainMenu->subtitles, MAINMENU_VOICE_BASE, gMainMenu->voiceLine);
         } else {
             gMainMenu->voiceLine = -1;
+#ifdef PORT
+            PortMainMenu_HoverVoice(MAINMENU_CUR(gMainMenu));
+#endif
         }
         Snd_PlaySe(1, 0);
     } else if (gPad[0].gamePressed & 0x200) {
