@@ -967,12 +967,14 @@ bool compile(const J &saga, int number, const std::string &preview, CEp &out, st
     g.cmd(10, {Gsc::I(stage), Gsc::I(bgm), Gsc::I(0), Gsc::I(fight ? 3 : 0), Gsc::I(0)});
     for (int s = 0; s < 2; s++) { g.cmd(11, {Gsc::I(s), Gsc::I((int)teams[s].chara.size())}); }
     int cpu = kCpuLevels[std::max(0, std::min(4, (int)bt["cpu"].number(1)))];
+    if (bt.has("cpu_level")) { cpu = std::max(0, std::min(40, (int)bt["cpu_level"].number(cpu))); } // (Corrupt Patrol: the AI's own scale)
     for (int s = 0; s < 2; s++) {
         int hp = std::max(1, std::min(100, (int)bt[s ? "enemy_health" : "player_health"].number(100)));
+        const J &items = bt[s ? "enemy_items" : "player_items"]; // (Corrupt Patrol: Z items of the side's fighters, up to 8 ids)
         for (size_t m = 0; m < teams[s].chara.size(); m++) {
             std::vector<Gsc::Op> ops = {Gsc::I((s << 15) | (int)m), Gsc::I(teams[s].chara[m]), Gsc::I(teams[s].costume[m]), Gsc::I(0),
-                                        Gsc::I(s ? cpu : 0), Gsc::I(-1), Gsc::I(hp)};
-            for (int i = 0; i < 7; i++) { ops.push_back(Gsc::I(-1)); }
+                                        Gsc::I(s ? cpu : 0), Gsc::I(items.size() > 7 ? (int)items[7].number(-1) : -1), Gsc::I(hp)};
+            for (int i = 0; i < 7; i++) { ops.push_back(Gsc::I(i < (int)items.size() ? (int)items[i].number(-1) : -1)); }
             g.cmd(12, ops);
         }
     }
@@ -1187,6 +1189,40 @@ extern "C" int PortStoryUi_Prepare(void) {
     SDL_UnlockMutex(sMx);
     if (!ok) { notice(why, true); }
     return ok ? 1 : 0;
+}
+// (the game's thread) Corrupt Patrol's battles: an episode of a saga made by the mode (gs/patrol_ui.cpp) rather than
+// one of the sagas folder, made into its script as PortStoryUi_Prepare makes the Story Creator's
+J sExtDoc;
+extern "C" int PortStoryUi_PrepareDoc(const char *json, int episode) {
+    J doc;
+    std::string why;
+    if (json == NULL || !js_read(json, doc)) { fprintf(stderr, "bt3: story: a mode's saga could not be read\n"); return 0; }
+    if (sMx == NULL) { sMx = SDL_CreateMutex(); }
+    SDL_LockMutex(sMx);
+    sExtDoc = doc;
+    bool ok = compile(sExtDoc, episode, "", sEp, why);
+    if (ok) {
+        sInBattle = true;
+        sSh.say = -1;
+        sSh.title = -1;
+        sSh.hud = -1;
+        sSh.letterbox = 0;
+        sSh.flash = 0;
+        sSh.fadeAlpha = 0;
+        sSh.timer = -1;
+        sSh.result = 0;
+    }
+    SDL_UnlockMutex(sMx);
+    if (ok) { fprintf(stderr, "bt3: story: a mode's episode %d (%d lines)\n", episode + 1, (int)sEp.lines.size()); }
+    else { fprintf(stderr, "bt3: story: a mode's episode %d could not be made: %s\n", episode + 1, why.c_str()); }
+    return ok ? 1 : 0;
+}
+// ... its battle ended (the overlay is put away; the mode reads the result itself)
+extern "C" void PortStoryUi_EndDoc(void) {
+    if (sMx == NULL) { return; }
+    SDL_LockMutex(sMx);
+    sInBattle = false;
+    SDL_UnlockMutex(sMx);
 }
 extern "C" void PortStoryUi_Result(int result) {
     SDL_LockMutex(sMx);
@@ -3187,3 +3223,11 @@ bool Story_OverlayOn(void) { return sInBattle && !sActive; }
 void Story_Overlay(void) {
     if (Story_OverlayOn()) { overlay_draw(); }
 }
+
+// ---- for Corrupt Patrol (gs/patrol_ui.cpp): the Story Creator's portraits and names, made public
+bool StoryKit_Face(int chara, ImTextureID *tex, ImVec2 *uv0, ImVec2 *uv1) { return face(chara, tex, uv0, uv1); }
+void StoryKit_FrameStart(void) { sFacesThisFrame = 0; }
+std::string StoryKit_CharaName(int chara) { return chara_name(chara); }
+std::string StoryKit_ShortName(int chara) { return short_name(chara); }
+// an added character's id by its folder name in `characters` ("added:<folder>" in a saga), -1 when it is not there
+int StoryKit_AddedId(const std::string &folder) { return chara_of(J::str("added:" + folder)); }

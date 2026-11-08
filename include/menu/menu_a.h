@@ -171,7 +171,7 @@ extern MenuProgress *gProgress;
 /* ---- MainMenu (menu_a.c) ---- */
 
 #ifdef PORT
-#define MAINMENU_ITEM_MAX 15 /* PC: "Tenkaichi Budokai Online" (11), the Mod Manager (12), Custom Character (13) and the Story Creator (14) are listed too */
+#define MAINMENU_ITEM_MAX 16 /* PC: "Tenkaichi Budokai Online" (11), the Mod Manager (12), Custom Character (13), the Story Creator (14) and Corrupt Patrol (15) are listed too */
 #else
 #define MAINMENU_ITEM_MAX 11
 #endif

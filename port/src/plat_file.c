@@ -144,16 +144,16 @@ static const char *title_call(const char *rel) {
     }
 }
 
-/* The main menu's lines for Custom Character and the Story Creator (menu/menu_a.c: voice files 65500 / 65501 of
+/* The main menu's lines for Custom Character, the Story Creator and Corrupt Patrol (menu/menu_a.c: voice files 65500..65502 of
    partition 2, which the disc doesn't have): the player's clips in menu/ next to the game. */
 static const char *menu_hover(const char *rel) {
-    static const char *const name[2] = {"menu/hover_custom_character", "menu/hover_custom_story"};
+    static const char *const name[3] = {"menu/hover_custom_character", "menu/hover_custom_story", "menu/hover_corrupt_patrol"};
     static const char *const ext[] = {"mp3", "wav", "flac"};
-    static char path[2][64];
+    static char path[3][64];
     int n, e;
     FILE *fp;
 
-    if (strncmp(rel, "pzs3us2/", 8) != 0 || sscanf(rel + 8, "%d.bin", &n) != 1 || n < 65500 || n > 65501) {
+    if (strncmp(rel, "pzs3us2/", 8) != 0 || sscanf(rel + 8, "%d.bin", &n) != 1 || n < 65500 || n > 65502) {
         return NULL;
     }
     for (e = 0; e < 3; e++) {

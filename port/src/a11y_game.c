@@ -107,11 +107,11 @@ typedef struct {
     int cursor;                  /* 0x10C: row 0..3 */
     int timer;                   /* 0x110 */
     int unk114;
-    int items[15];               /* 0x118: item ids in list order (MAINMENU_ITEM_MAX: the PC's items too) */
-    int itemCount;               /* 0x154 */
-    int top;                     /* 0x158: list index of the plate above the first row (a ring) */
+    int items[16];               /* 0x118: item ids in list order (MAINMENU_ITEM_MAX: the PC's items too) */
+    int itemCount;               /* 0x158 */
+    int top;                     /* 0x15C: list index of the plate above the first row (a ring) */
 } A11yMainMenu;
-LAYOUT_ASSERT(offsetof(A11yMainMenu, top) == 0x158, "MainMenu");
+LAYOUT_ASSERT(offsetof(A11yMainMenu, top) == 0x15C, "MainMenu");
 extern A11yMainMenu GAME_PTR gMainMenu;
 #define MAINMENU_CHOSEN 1
 #define MAINMENU_LEAVING 2
@@ -567,7 +567,7 @@ static void main_menu(void) {
     }
     index = (m->top + m->cursor + 1) % m->itemCount;
     cur = m->items[index];
-    if (cur < 0 || cur > 13) {
+    if (cur < 0 || cur > 15) {
         return;
     }
     if (!open) {
@@ -575,7 +575,7 @@ static void main_menu(void) {
         open = 1;
     }
     if (cur != item) {
-        say_item(cur == 11 ? "Tenkaichi Budokai Online" : cur == 12 ? tr("Mod Manager") : cur == 13 ? tr("Custom Character") : cur == 14 ? tr("Story Creator") : tr(kMainMenuItems[cur]),
+        say_item(cur == 11 ? "Tenkaichi Budokai Online" : cur == 12 ? tr("Mod Manager") : cur == 13 ? tr("Custom Character") : cur == 14 ? tr("Story Creator") : cur == 15 ? tr("Corrupt Patrol") : tr(kMainMenuItems[cur]),
                  index, m->itemCount, follow());
         item = cur;
     }

@@ -142,6 +142,17 @@ s32 Progress_Main(s32 arg) {
             gProgress->mode = 38;
         }
     }
+    { /* a battle of Corrupt Patrol (menu/port_patrol.c): the hub, a quest, a master's training; its screens follow */
+        extern s32 PortPatrol_AfterBattle(s32 flags, s32 reason);
+        extern s32 gPortDuelRole;
+
+        if (PortPatrol_AfterBattle(flags, reason)) {
+            gProgress->flags &= ~MPROG_FLAG10;
+            gProgress->flags &= ~MPROG_FLAG20;
+            gPortDuelRole = 5;
+            gProgress->mode = 38;
+        }
+    }
 #endif
     if (gProgress->mode == 1 || gProgress->mode == 4) {
         if (gMenuArc1 == NULL) {

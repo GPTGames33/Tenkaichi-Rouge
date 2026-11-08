@@ -205,6 +205,12 @@ int __wrap_Progress_Main(int arg) {
                     } else if (strcmp(getenv("BT3_TEST_MODMGR"), "menustory") == 0) {
                         gProgress->mode = 4;
                         gProgress->mainMenuItem = 14;
+                    } else if (strcmp(getenv("BT3_TEST_MODMGR"), "patrol") == 0) {
+                        gPortDuelRole = 5; /* (=patrol: Corrupt Patrol, main menu item 15) */
+                        gProgress->mode = 38;
+                    } else if (strcmp(getenv("BT3_TEST_MODMGR"), "menupatrol") == 0) {
+                        gProgress->mode = 4;
+                        gProgress->mainMenuItem = 15;
                     } else {
                         gPortDuelRole = 2;
                         gProgress->mode = 38;

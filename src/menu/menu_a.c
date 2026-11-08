@@ -54,10 +54,12 @@ MainMenu *gMainMenu = NULL;
 #define MAINMENU_MOD_MANAGER 12
 #define MAINMENU_CREATOR 13
 #define MAINMENU_STORY 14
+#define MAINMENU_PATROL 15 /* "Corrupt Patrol": the fourth row of the third sheets (label 19), its icon Ultimate Battle's; the Duel mode
+                              runs it with gPortDuelRole 5 (menu/port_patrol.c, port/src/gs/patrol_ui.cpp) */
 s32 gPortDuelRole; /* the Duel screens (progress mode 38) are open for a screen of the PC's: 2 the Mod Manager, 3 Custom Character,
                       4 the Story Creator */
-#define MM_LABEL(item) ((item) == MAINMENU_MOD_MANAGER ? 16 : (item) == MAINMENU_CREATOR ? 17 : (item) == MAINMENU_STORY ? 18 : (item)) /* whose label row an item shows */
-#define MM_ICON(item) ((item) == MAINMENU_MOD_MANAGER ? 7 : (item) == MAINMENU_CREATOR ? 5 : (item) == MAINMENU_STORY ? 0 : (item) == MAINMENU_TBO ? 4 : (item)) /* whose icon an item shows */
+#define MM_LABEL(item) ((item) == MAINMENU_MOD_MANAGER ? 16 : (item) == MAINMENU_CREATOR ? 17 : (item) == MAINMENU_STORY ? 18 : (item) == MAINMENU_PATROL ? 19 : (item)) /* whose label row an item shows */
+#define MM_ICON(item) ((item) == MAINMENU_MOD_MANAGER ? 7 : (item) == MAINMENU_CREATOR ? 5 : (item) == MAINMENU_STORY ? 0 : (item) == MAINMENU_PATROL ? 1 : (item) == MAINMENU_TBO ? 4 : (item)) /* whose icon an item shows */
 
 /* A third label sheet for a plate state (slot 8: not chosen, 12: chosen): the movie takes a label's sheet as the
    n-th entry behind the one in gMainMenu->tex[slot], so the two entries of the game are copied into a block with
@@ -145,7 +147,7 @@ static void PortMainMenu_WriteText(u8 *tex, s32 row, s32 lit, char *text) {
 /* Custom Character and the Story Creator have a line of their own when the cursor lands on them: voice files
    65500 / 65501 of partition 2, which the disc doesn't have; port/src/plat_file.c sends them to the player's clips
    (menu/hover_custom_character.mp3, menu/hover_custom_story.mp3 next to the game). Without the clip, silence. */
-#define MAINMENU_HOVER_VOICE(item) ((item) == MAINMENU_CREATOR ? 0xD48 + 65500 : (item) == MAINMENU_STORY ? 0xD48 + 65501 : 0)
+#define MAINMENU_HOVER_VOICE(item) ((item) == MAINMENU_CREATOR ? 0xD48 + 65500 : (item) == MAINMENU_STORY ? 0xD48 + 65501 : (item) == MAINMENU_PATROL ? 0xD48 + 65502 : 0)
 extern void Voice_Play(s32 voice, s32 id, s32 vol, s32 pan); /* sys/adx.c */
 extern void Voice_StopWithLip(void);                         /* battle/view_b_c.c */
 static void PortMainMenu_HoverVoice(s32 item) {
@@ -288,7 +290,7 @@ void MainMenu_Init(s32 section) {
         if (i == 4 && !Port_NetMenuListed()) {
             continue;
         }
-        if (i == MAINMENU_TBO || i == MAINMENU_MOD_MANAGER || i == MAINMENU_CREATOR || i == MAINMENU_STORY) { /* (listed after the game's they follow, below) */
+        if (i == MAINMENU_TBO || i == MAINMENU_MOD_MANAGER || i == MAINMENU_CREATOR || i == MAINMENU_STORY || i == MAINMENU_PATROL) { /* (listed after the game's they follow, below) */
             continue;
         }
 #else
@@ -309,6 +311,7 @@ void MainMenu_Init(s32 section) {
             if (!Port_NetSession()) {
                 gMainMenu->items[gMainMenu->itemCount++] = MAINMENU_CREATOR;
                 gMainMenu->items[gMainMenu->itemCount++] = MAINMENU_STORY;
+                gMainMenu->items[gMainMenu->itemCount++] = MAINMENU_PATROL;
             }
         }
 #endif
@@ -330,6 +333,8 @@ void MainMenu_Init(s32 section) {
         PortMainMenu_WriteText(on, 1, 1, "Custom Character");
         PortMainMenu_WriteText(off, 2, 0, "Story Creator");
         PortMainMenu_WriteText(on, 2, 1, "Story Creator");
+        PortMainMenu_WriteText(off, 3, 0, "Corrupt Patrol");
+        PortMainMenu_WriteText(on, 3, 1, "Corrupt Patrol");
     }
 #endif
     gMainMenu->top = gMainMenu->itemCount - 1;
@@ -717,6 +722,11 @@ void MainMenu_Input(s32 *result) {
             break;
         case MAINMENU_STORY: /* the Duel mode runs the Story Creator (menu_g_b.c, menu/port_story.c) */
             gPortDuelRole = 4;
+            MAINMENU_COUNT();
+            MAINMENU_CHOOSE(38);
+            break;
+        case MAINMENU_PATROL: /* the Duel mode runs Corrupt Patrol (menu_g_b.c, menu/port_patrol.c) */
+            gPortDuelRole = 5;
             MAINMENU_COUNT();
             MAINMENU_CHOOSE(38);
             break;

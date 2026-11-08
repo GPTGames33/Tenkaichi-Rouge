@@ -50,7 +50,9 @@ static s32 sPlaying; /* a saga's battle is set up or running */
 
 /* (the battle side, src/battle/port_story_btl.c) */
 s32 PortStory_Playing(void) {
-    return sPlaying;
+    extern s32 PortPatrol_StoryPlaying(void); /* menu/port_patrol.c: Corrupt Patrol plays its battles through the same script */
+
+    return sPlaying || PortPatrol_StoryPlaying();
 }
 
 /* Progress_Main (src/menu/menu_a_b.c), after any battle: 1 when it was a saga's (the Story Creator follows). */

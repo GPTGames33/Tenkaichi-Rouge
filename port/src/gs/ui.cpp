@@ -124,7 +124,9 @@ bool Story_Typing(void);
 bool Story_OverlayOn(void);                     // ... a saga's battle: its text boxes over the picture
 void Story_Overlay(void);
 extern "C" int PortStoryUi_Active(void);
-static int screen_owned(void) { return PortCreator_Active() || PortStoryUi_Active(); } // a screen of ours has the input
+bool Patrol_Frame(bool input);                  // gs/patrol_ui.cpp: Corrupt Patrol's screens (main menu item 15)
+extern "C" int PortPatrolUi_Active(void);
+static int screen_owned(void) { return PortCreator_Active() || PortStoryUi_Active() || PortPatrolUi_Active(); } // a screen of ours has the input
 static const char *spec_view_name(int view);
 static int sForceTab = -1;                     // BT3_UI_OPEN=<tab>: open at start on that tab (testing)
 static int sCapKind, sCapPlayer, sCapAction;   // waiting for a key (1) or a controller button (2) to bind
@@ -3144,6 +3146,7 @@ static bool frame_build(void) {
     if (creator) {
         Creator_Frame(!sOpen && !sQuit); // (under the settings window, which has the input while it is open)
         Story_Frame(!sOpen && !sQuit);
+        Patrol_Frame(!sOpen && !sQuit);
     }
     if (sOpen) {
         if (sNet) {

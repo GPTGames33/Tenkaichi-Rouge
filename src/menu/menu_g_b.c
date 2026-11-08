@@ -66,6 +66,16 @@ s32 Duel_Main(void) {
         gProgress->mode = 4; /* (after a saga's battle, PortStory_AfterBattle in menu_a_b.c sends it back here) */
         done = 1;
     }
+    if (gPortDuelRole == 5) { /* opened from the main menu's Corrupt Patrol item (menu/port_patrol.c): its screens; its
+                                 battles (the hub, quests, training) come back here (PortPatrol_AfterBattle, menu_a_b.c) */
+        extern s32 PortPatrol_Run(void);
+
+        result = PortPatrol_Run();
+        Adx_StopAll();
+        gPortDuelRole = 0;
+        gProgress->mode = 4;
+        done = 1;
+    }
 #endif
     do {
         switch (gProgress->mode) {
