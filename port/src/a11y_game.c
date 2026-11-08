@@ -2405,6 +2405,27 @@ LAYOUT_ASSERT(offsetof(A11yShop, flags) == 0x230 && offsetof(A11yShop, level) ==
                offsetof(A11yShop, list) == 0x284 && offsetof(A11yShop, items) == 0x2EE4, "Shop");
 extern A11yShop GAME_PTR gShop; /* NULL outside the screen */
 #define SHOP_STARTED 4
+/* Corrupt Patrol (port/src/gs/patrol_ui.cpp, while the game's shop is open for it: src/menu/port_patrol.c): an item's
+   name and description (0-based item), its kind, slots, price and flags. 0 when the shop is not open or the item has
+   no name. */
+int PortA11y_ItemInfo(int item, char *name, int nn, char *desc, int nd, int *info) {
+    A11yShop GAME_PTR s = gShop;
+
+    if (s == NULL || gItemHelp == NULL || item < 0 || item >= SAVE_ITEMS) {
+        return 0;
+    }
+    if (text_line(name, nn, gItemHelp->nameText, item) == 0) {
+        return 0;
+    }
+    text_line(desc, nd, gItemHelp->descText, item);
+    if (s->items != NULL) {
+        info[0] = s->items[item].type;
+        info[1] = s->items[item].slots;
+        info[2] = s->items[item].price;
+        info[3] = s->items[item].flags;
+    }
+    return 1;
+}
 #define SHOP_TABS 4
 #define SHOP_LV_MENU 0
 #define SHOP_LV_BUY 1

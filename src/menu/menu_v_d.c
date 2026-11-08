@@ -1300,6 +1300,13 @@ s32 Shop_Run(s32 section) {
     s32 result = 1;
 
     Shop_Init(section);
+#ifdef PORT
+    {
+        extern void PortPatrolUi_ShopOpened(void); /* (Corrupt Patrol reads the items' names: port/src/gs/patrol_ui.cpp) */
+
+        PortPatrolUi_ShopOpened();
+    }
+#endif
     ColorFade_StartIn(0, 0, 0, 0x14);
     while (1) {
         Gfx_BeginFrame();

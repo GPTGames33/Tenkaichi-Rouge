@@ -567,7 +567,10 @@ void BtlInput_Sample(BtlInputChr *chr) {
            whose menu it is go to the menu and not to the fighter, who stands as with a pad left alone. */
         extern int Port_NetActive(void);
         extern s32 BtlPause_GetMenuPad(void);
-        if (Port_NetActive() && (Battle_GetWork()->flags & BATTLE_FLAG_PAUSE_MENU) && pad == &gPad[BtlPause_GetMenuPad()]) {
+        extern volatile s32 gPortHubFreeze; /* (Corrupt Patrol: its world map is up, or the player takes off / lands:
+                                                src/battle/port_story_btl.c) */
+        if ((Port_NetActive() && (Battle_GetWork()->flags & BATTLE_FLAG_PAUSE_MENU) && pad == &gPad[BtlPause_GetMenuPad()]) ||
+            (gPortHubFreeze && pad == &gPad[0])) {
             in->rawHeld = 0;
             in->rawStickX = 0x7F;
             in->rawStickY = 0x7F;

@@ -981,8 +981,11 @@ void Mm_ViewOpen(void) {
 }
 
 static void Mm_ViewHostTerm(void);
+static void Mm_ViewLineTerm(void);
+s32 Mm_ViewLineReading(void);
 void Mm_ViewClose(void) {
     Mm_ViewHostTerm();
+    Mm_ViewLineTerm();
     if (ChrView_PortInitDone()) {
         ChrView_Hide();
     }
@@ -999,7 +1002,7 @@ void Mm_ViewWant(s32 key, s32 chara, s32 costume, s32 mod, s32 rested) {
         return;
     }
     Job_Run(); /* (the viewer's reads) */
-    if (key == sMvShown || ChrView_IsLoading() || (key >= 0 && !rested)) {
+    if (key == sMvShown || ChrView_IsLoading() || (key >= 0 && !rested) || Mm_ViewLineReading()) {
         return;
     }
     if (key < 0) {
@@ -1164,7 +1167,7 @@ static void Mm_ViewHostUpdate(f32 dist, f32 mainFeet, f32 mainH) {
         if (sMvHostWant >= MM_CHARA_COUNT) {
             Mm_ViewHostDrop();
             sMvHostShown = sMvHostWant;
-        } else if (!ChrView_IsLoading()) {
+        } else if (!ChrView_IsLoading() && !Mm_ViewLineReading()) {
             Mm_ViewHostDrop();
             if (sMvHostFile[0].buf == NULL) {
                 sMvHostFile[0].buf = Heap_Alloc(0x900000, 0x40, 0, 2);
@@ -1228,6 +1231,190 @@ static void Mm_ViewHostUpdate(f32 dist, f32 mainFeet, f32 mainH) {
     }
 }
 
+/* ---- a row of models beside the viewer's (Corrupt Patrol's choice of race: menu/port_patrol.c) ----
+ * Up to MV_LINE_MAX more battle objects of the host's kind, each read into a buffer of its own outside the game's
+ * heap (one read at a time, never while the viewer or the host reads; the viewer waits for them), placed each frame
+ * from where the viewer's model stands to where the screen wants it, as the host is. A screen that wants none of them
+ * any more has them dropped when the viewer closes. */
+#define MV_LINE_MAX 6
+typedef struct MvLine {
+    s32 want;          /* the character wanted (this frame), -1 none */
+    s32 shown;         /* the one read, -1 none */
+    s32 obj;
+    s32 reading;
+    f32 place[3];
+    f32 yaw;
+    f32 base;
+    MmFile file[3];
+} MvLine;
+static MvLine sMvLine[MV_LINE_MAX];
+static s32 sMvLineOn; /* (the lines were set up) */
+extern s32 File_GetSize(s32 id);
+extern unsigned Port_GameBigAlloc(int size);
+
+static void Mm_ViewLineSetup(void) {
+    s32 k;
+
+    if (sMvLineOn) {
+        return;
+    }
+    sMvLineOn = 1;
+    for (k = 0; k < MV_LINE_MAX; k++) {
+        memset(&sMvLine[k], 0, sizeof(sMvLine[k]));
+        sMvLine[k].want = -1;
+        sMvLine[k].shown = -1;
+        sMvLine[k].obj = -1;
+    }
+}
+
+/* Each frame, for each of the row (k 0..5): `chara` (a disc character, -1 none) with its feet at (cx, feet) and
+   `height` tall (mockup pixels), turned by `yaw` (pi: facing the camera). */
+void Mm_ViewSetLine(s32 k, s32 chara, f32 cx, f32 feet, f32 height, f32 yaw) {
+    Mm_ViewLineSetup();
+    if (k < 0 || k >= MV_LINE_MAX) {
+        return;
+    }
+    sMvLine[k].want = chara;
+    sMvLine[k].place[0] = cx;
+    sMvLine[k].place[1] = feet;
+    sMvLine[k].place[2] = height;
+    sMvLine[k].yaw = yaw;
+}
+
+/* 1 while one of the row is being read (the viewer and the host wait). */
+s32 Mm_ViewLineReading(void) {
+    s32 k;
+
+    for (k = 0; sMvLineOn && k < MV_LINE_MAX; k++) {
+        if (sMvLine[k].reading) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void Mm_ViewLineDrop(MvLine *l) {
+    if (l->reading) {
+        File_CancelRequests();
+        l->reading = 0;
+    }
+    if (l->obj >= 0) {
+        BtlObj_Destroy(l->obj);
+        l->obj = -1;
+    }
+    if (l->file[0].buf != NULL) {
+        Heap_Free(l->file[0].buf); /* (a block of Port_GameBigAlloc's: Heap_Free gives it back there) */
+        l->file[0].buf = NULL;
+    }
+    l->shown = -1;
+}
+
+static void Mm_ViewLineTerm(void) {
+    s32 k;
+
+    for (k = 0; sMvLineOn && k < MV_LINE_MAX; k++) {
+        Mm_ViewLineDrop(&sMvLine[k]);
+        sMvLine[k].want = -1;
+    }
+}
+
+/* Reads what is wanted (one at a time) and places the row over the camera the viewer's model set. */
+static void Mm_ViewLineUpdate(f32 dist, f32 mainH) {
+    s32 k;
+    s32 busy = 0;
+    f32 narrow = 1333.0f / (f32)Port_PageAspectMilli();
+
+    if (!sMvLineOn) {
+        return;
+    }
+    for (k = 0; k < MV_LINE_MAX; k++) {
+        MvLine *l = &sMvLine[k];
+
+        if (l->reading) {
+            busy = 1;
+            if (File_UpdateRequests() != 0) {
+                u8 *o;
+
+                l->reading = 0;
+                l->obj = BtlObj_Create(3, l->file, 1);
+                o = l->obj >= 0 ? BtlObj_Get(l->obj) : NULL;
+                if (o != NULL) {
+                    f32 *m = (f32 *)(o + 0x9A0);
+
+                    BtlObjAnim_PlayModel(o, 7, 2);
+                    *(u32 *)(o + 0xA40) &= ~0x02000000;
+                    l->base = sqrtf(m[4] * m[4] + m[5] * m[5] + m[6] * m[6]);
+                }
+            }
+        }
+    }
+    for (k = 0; k < MV_LINE_MAX && !busy; k++) {
+        MvLine *l = &sMvLine[k];
+
+        if (l->want >= 0 && l->want != l->shown && l->want < MM_CHARA_COUNT && !ChrView_IsLoading() && !sMvHostReading) {
+            s32 file = ChrView_GetModelFile(l->want, 0, 0);
+
+            Mm_ViewLineDrop(l);
+            l->shown = l->want;
+            l->file[0].size = File_GetSize(file);
+            l->file[0].buf = (void *)Port_GameBigAlloc(l->file[0].size);
+            l->file[0].id = -1;
+            if (l->file[0].buf != NULL) {
+                BtlRes_LoadSingle(0, l->file, file);
+                l->reading = 1;
+            }
+            busy = 1;
+        }
+    }
+    for (k = 0; k < MV_LINE_MAX; k++) {
+        MvLine *l = &sMvLine[k];
+        u8 *o = l->obj >= 0 && !l->reading ? BtlObj_Get(l->obj) : NULL;
+
+        if (o != NULL) {
+            /* as the host: further from the camera than the viewer's model so that it is `height` tall at its own
+               size, across where the screen wants it at that distance */
+            f32 *m = (f32 *)(o + 0x9A0);
+            MmCharaInfo *mine = ChrView_GetCharaInfo((u32)sMvChara);
+            MmCharaInfo *its = ChrView_GetCharaInfo((u32)l->shown);
+            f32 natural = mine != NULL && its != NULL && mine->targetY > 0.01f ? its->targetY / mine->targetY : 1.0f;
+            f32 want = Mx_SizeFracY(l->place[2]);
+            f32 kk = mainH / (want > 0.01f ? want : 0.01f) * natural;
+            f32 s = l->base;
+            f32 c = cosf(l->yaw);
+            f32 sn = sinf(l->yaw);
+            f32 ox;
+            f32 oy = 0.0f;
+            f32 oz;
+
+            if (kk < 1.0f) {
+                kk = 1.0f;
+            }
+            ox = -(Mx_ScreenFracX(l->place[0]) - 0.492f) / 0.76f * dist * kk;
+            oz = (kk - 1.0f) * dist * sMvHostZSign;
+            if (l->want < 0 || l->want != l->shown) {
+                oy = -100000.0f; /* (not wanted this frame: out of sight) */
+            }
+            *(f32 *)(o + 0x964) = l->yaw;
+            *(f32 *)(o + 0x950) = ox;
+            *(f32 *)(o + 0x954) = oy;
+            *(f32 *)(o + 0x958) = oz;
+            m[0] = c * s * narrow;
+            m[1] = 0.0f;
+            m[2] = -sn * s;
+            m[4] = 0.0f;
+            m[5] = s;
+            m[6] = 0.0f;
+            m[8] = sn * s * narrow;
+            m[9] = 0.0f;
+            m[10] = c * s;
+            m[12] = ox;
+            m[13] = oy;
+            m[14] = oz;
+        }
+        l->want = -1; /* (wanted again next frame, or hidden) */
+    }
+}
+
 /* One frame of the 3D scene with the stage: what the viewer's own frame function draws (ChrView_Update), without
    the pad and the stage's sounds. */
 static void Mm_SceneStage(void) {
@@ -1283,6 +1470,7 @@ void Mm_ViewDraw(f32 cx, f32 feet, f32 height) {
     place[2] = height;
     Mm_PlaceModel(ChrView_GetCharaInfo((u32)sMvChara), BtlObj_Get(gChrView->cur->obj), place, &sMvYaw, 0, &dist, &fy, &hf);
     Mm_ViewHostUpdate(dist, fy, hf);
+    Mm_ViewLineUpdate(dist, hf);
     if (sMvStage) {
         Mm_SceneStage();
     } else {

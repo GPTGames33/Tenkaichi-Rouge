@@ -185,6 +185,7 @@ void Mm_ViewDraw(f32 cx, f32 feet, f32 height);
 void Mm_ViewUseStage(s32 file);
 void Mm_ViewSetStage(s32 on);
 void Mm_ViewSetHost(s32 chara, f32 cx, f32 feet, f32 height, f32 yaw);
+void Mm_ViewSetLine(s32 k, s32 chara, f32 cx, f32 feet, f32 height, f32 yaw); /* (a row of models: Corrupt Patrol's races) */
 s32 Mm_ViewHostReading(void);
 void Mm_TexReset(void);
 f32 Mm_Ease(f32 t);

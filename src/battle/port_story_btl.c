@@ -909,23 +909,48 @@ static s32 PortStoryCmd_Watch(u32 phase, void *work) {
     return 0;
 }
 
-/* ---- Corrupt Patrol's headquarters: a battle without a fight ------------------------------------------------ */
+/* ---- Corrupt Patrol's places: a battle without a fight ----------------------------------------------------------- */
 
 /*
- * 9007 "hub": count, then count pairs of (character, costume). The battle is a place to walk in: the player's fighter
- * (side 0) walks, dashes, jumps and flies, with no lock-on and no attack (gPortHubMode: btl_char_flag.c,
- * btl_act_h_b.c); the other side is a stand-in kept far away and out of sight; the HUD is off; the battle never ends
- * by itself. The people of the place stand round the middle of the stage, each a plain model in its standing pose,
- * turning to the player who comes near. Circle near one of them, or START, ends the battle: gPortHubExit says which
- * of them (0..count-1) or the menu (PORT_HUB_MENU); Corrupt Patrol's screens take it from there
- * (port/src/gs/patrol_ui.cpp). gPortHubNear is the one within talking range (-1 none), for the prompt over the picture.
+ * 9007 "hub": count, then count pairs of (character, costume), then `arrive` (1: the player flies in and lands) and
+ * `spread` (how far over the stage the people stand, percent of the small places' ring). The battle is a place to walk
+ * in: the player's fighter (side 0) walks, dashes, jumps and flies, with no lock-on and no attack (gPortHubMode:
+ * btl_char_flag.c, btl_act_h_b.c); the other side is a stand-in kept far away and out of sight; the HUD is off; the
+ * battle never ends by itself. The people of the place stand about it, each a plain model in its standing pose, turning
+ * to the player who comes near. Circle near one of them, START, or a place chosen on the world map (Triangle) ends
+ * the battle: gPortHubExit says which of them (0..count-1), the menu (PORT_HUB_MENU) or the place
+ * (PORT_HUB_TRAVEL + n, after the player has taken off); Corrupt Patrol's screens take it from there
+ * (port/src/gs/patrol_ui.cpp, which also draws the map and works its cursor: gPortHubMapOpen, gPortHubMapKeys,
+ * gPortHubTravel). gPortHubNear is the one within talking range (-1 none), for the prompt over the picture;
+ * gPortHubPlaces where everyone is, for the list of the people there.
  */
-#define HUB_NPC_MAX 6
+#define HUB_NPC_MAX 8
 #define PORT_HUB_MENU 99
+#define PORT_HUB_TRAVEL 100
+#define HUB_LAND_FRAMES 100
+#define HUB_TAKEOFF_FRAMES 84
+#define HUB_FLY_HEIGHT 260.0f
+#define HUB_UP (-1.0f)          /* (the game's y is down) */
+/* the map's buttons, as gPortHubMapKeys collects them */
+#define MAPKEY_LEFT 1
+#define MAPKEY_RIGHT 2
+#define MAPKEY_UP 4
+#define MAPKEY_DOWN 8
+#define MAPKEY_OK 0x10
+#define MAPKEY_BACK 0x20
+#define MAPKEY_L1 0x40
+#define MAPKEY_R1 0x80
 s32 gPortHubMode;               /* a hub battle is up: no lock-on, no attacks (read by the battle's code) */
 volatile s32 gPortHubNear = -1;
 volatile s32 gPortHubExit = -1;
 volatile s32 gPortHubWantMenu;  /* START was pressed (btl_seq.c sets it instead of opening the pause menu) */
+volatile s32 gPortHubFreeze;    /* the player's fighter takes no buttons (btl_input.c): the map, taking off, landing */
+volatile s32 gPortHubMapOpen;   /* the world map is up */
+volatile s32 gPortHubMapKeys;   /* its buttons since the screens last took them (MAPKEY_) */
+volatile s32 gPortHubTravel = -1; /* the place chosen on the map, -1 none */
+volatile s32 gPortHubFade;      /* 0..255: black over the picture */
+volatile s32 gPortHubPhase;     /* 0 walking, 1 landing, 2 the map, 3 taking off */
+volatile f32 gPortHubPlaces[2 + HUB_NPC_MAX * 2]; /* the player's x z, then each person's (patrol_ui.cpp) */
 typedef struct HubNpc {
     s32 chara;
     s32 costume;
@@ -941,7 +966,15 @@ static struct {
     s32 loading;                /* the one being read, -1 none */
     s32 frames;
     s32 ending;
+    s32 arrive;
+    s32 spread;
+    s32 phase;                  /* as gPortHubPhase */
+    s32 phaseFrames;
+    s32 travel;                 /* the place taken off for */
+    f32 stickX;
+    f32 stickY;
     Vec4 center;
+    Vec4 ground;                /* where the player lands / took off from */
     f32 radius;
     Vec4 park;
     HubNpc npc[HUB_NPC_MAX];
@@ -955,6 +988,8 @@ extern void BtlRes_FreeSingle(void *slot);
 extern s32 File_UpdateRequests(void);
 extern s32 ChrView_GetModelFile(s32 chara, s32 costume, s32 damaged);
 extern void Hud_ShowAll(s32 on);
+extern s32 File_GetSize(s32 id);
+extern unsigned Port_GameBigAlloc(int size);
 
 static void PortHub_Free(void) {
     s32 i;
@@ -973,7 +1008,8 @@ static void PortHub_Free(void) {
     }
 }
 
-/* Where the people stand: round the middle of the stage, the player's side of it left free. */
+/* Where the people stand: about the middle of the stage, the player's side of it left free on a small place; on a
+   larger one (spread over 100) all round, on two rings, so that they are to be looked for. */
 static void PortHub_Layout(void) {
     Vec4 s0;
     Vec4 s1;
@@ -995,6 +1031,7 @@ static void PortHub_Layout(void) {
         dz = 1.0f;
     }
     sHub.center = V((s0.x + s1.x) * 0.5f, s0.y, (s0.z + s1.z) * 0.5f);
+    sHub.ground = s0;
     sHub.radius = full * 0.32f;
     if (sHub.radius > 70.0f) {
         sHub.radius = 70.0f;
@@ -1002,13 +1039,24 @@ static void PortHub_Layout(void) {
     if (sHub.radius < 25.0f) {
         sHub.radius = 25.0f;
     }
+    if (sHub.spread > 100) {
+        sHub.radius *= (f32)sHub.spread / 100.0f;
+    }
     a0 = atan2f(dx, dz); /* (the player's side of the middle) */
     for (i = 0; i < sHub.count; i++) {
-        /* spread over the far part of the circle, facing the middle */
-        f32 a = a0 + PS_PI * 0.30f + (PS_PI * 1.40f) * (sHub.count > 1 ? (f32)i / (f32)(sHub.count - 1) : 0.5f);
         HubNpc *n = &sHub.npc[i];
+        f32 a;
+        f32 rad = sHub.radius;
 
-        n->pos = V(sHub.center.x + sinf(a) * sHub.radius, s0.y, sHub.center.z + cosf(a) * sHub.radius);
+        if (sHub.spread > 100) {
+            /* all round, every other one further out */
+            a = a0 + PS_PI * 0.25f + (2.0f * PS_PI) * (f32)i / (f32)(sHub.count > 0 ? sHub.count : 1);
+            rad *= (i & 1) ? 1.0f : 0.55f;
+        } else {
+            /* spread over the far part of the circle, facing the middle */
+            a = a0 + PS_PI * 0.30f + (PS_PI * 1.40f) * (sHub.count > 1 ? (f32)i / (f32)(sHub.count - 1) : 0.5f);
+        }
+        n->pos = V(sHub.center.x + sinf(a) * rad, s0.y, sHub.center.z + cosf(a) * rad);
         n->yaw = atan2f(s0.x - n->pos.x, s0.z - n->pos.z); /* (looking at where the player comes in) */
     }
     sHub.park = V(sHub.center.x + 4000.0f, s0.y - 3000.0f, sHub.center.z + 4000.0f);
@@ -1092,7 +1140,15 @@ static void PortHub_Load(void) {
                 continue;
             }
             memset(&n->slot, 0, sizeof(n->slot));
-            BtlRes_LoadSingle(1, &n->slot, file);
+            /* (a buffer of its own, outside the game's heap: the battle has filled that with the fighters, and a
+               warrior of the player's own is a large model; a model with no room is left out) */
+            n->slot.file[0].size = File_GetSize(file);
+            n->slot.file[0].buf = (void *)Port_GameBigAlloc(n->slot.file[0].size);
+            if (n->slot.file[0].buf == NULL) {
+                n->state = 3;
+                continue;
+            }
+            BtlRes_LoadSingle(0, &n->slot, file);
             n->state = 1;
             sHub.loading = i;
             return;
@@ -1103,6 +1159,9 @@ static void PortHub_Load(void) {
 static s32 PortHub_Leave(s32 code) {
     gPortHubExit = code;
     gPortHubNear = -1;
+    gPortHubFreeze = 0;
+    gPortHubMapOpen = 0;
+    gPortHubPhase = 0;
     PortHub_Free();
     gPortHubMode = 0;
     BattleResult_Set(1, 0);
@@ -1110,7 +1169,72 @@ static s32 PortHub_Leave(s32 code) {
     return 1;
 }
 
-/* 9007 "hub": every frame of the headquarters' battle. */
+static void PortHub_Phase(s32 phase) {
+    sHub.phase = phase;
+    sHub.phaseFrames = 0;
+    gPortHubPhase = phase;
+    gPortHubFreeze = phase != 0;
+    gPortHubMapOpen = phase == 2;
+}
+
+/* The map's buttons this frame (the d-pad, the left stick pushed over, Cross, Circle / Triangle, L1, R1). */
+static s32 PortHub_MapKeys(void) {
+    Pad *pad = &gPad[0];
+    u32 p = pad->gamePressed;
+    s32 k = 0;
+    f32 x = pad->left[0];
+    f32 y = pad->left[1];
+
+    if (p & PADG_LEFT) {
+        k |= MAPKEY_LEFT;
+    }
+    if (p & PADG_RIGHT) {
+        k |= MAPKEY_RIGHT;
+    }
+    if (p & PADG_UP) {
+        k |= MAPKEY_UP;
+    }
+    if (p & PADG_DOWN) {
+        k |= MAPKEY_DOWN;
+    }
+    if (p & PADG_CROSS) {
+        k |= MAPKEY_OK;
+    }
+    if (p & (PADG_CIRCLE | PADG_TRIANGLE)) {
+        k |= MAPKEY_BACK;
+    }
+    if (p & PADG_L1) {
+        k |= MAPKEY_L1;
+    }
+    if (p & PADG_R1) {
+        k |= MAPKEY_R1;
+    }
+    /* the stick: once each time it is pushed over (and let back) */
+    if (x < -0.6f && sHub.stickX >= -0.6f) {
+        k |= MAPKEY_LEFT;
+    }
+    if (x > 0.6f && sHub.stickX <= 0.6f) {
+        k |= MAPKEY_RIGHT;
+    }
+    if (y < -0.6f && sHub.stickY >= -0.6f) {
+        k |= MAPKEY_UP;
+    }
+    if (y > 0.6f && sHub.stickY <= 0.6f) {
+        k |= MAPKEY_DOWN;
+    }
+    sHub.stickX = x;
+    sHub.stickY = y;
+    return k;
+}
+
+/* The player's fighter in the air at `lift` over the ground (landing: coming down; taking off: going up). */
+static void PortHub_Lift(f32 lift) {
+    Vec4 p = V(sHub.ground.x, sHub.ground.y + HUB_UP * lift, sHub.ground.z);
+
+    BtlFacade_SetCharPos(0, &p);
+}
+
+/* 9007 "hub": every frame of the place's battle. */
 static s32 PortStoryCmd_Hub(u32 phase, void *work) {
     static s32 serial;
     s32 i;
@@ -1131,12 +1255,18 @@ static s32 PortStoryCmd_Hub(u32 phase, void *work) {
             sHub.npc[i].costume = Gsc_GetInt();
             sHub.npc[i].obj = -1;
         }
+        sHub.arrive = Gsc_GetInt();
+        sHub.spread = Gsc_GetInt();
         sHub.loading = -1;
         gPortHubMode = 1;
         gPortHubExit = -1;
         gPortHubNear = -1;
         gPortHubWantMenu = 0;
+        gPortHubTravel = -1;
+        gPortHubMapKeys = 0;
+        gPortHubFade = sHub.arrive ? 255 : 0;
         PortHub_Layout();
+        PortHub_Phase(sHub.arrive ? 1 : 0);
         *(s32 *)work = ++serial;
         return phase == GSC_PHASE_BEGIN_ABORT;
     case GSC_PHASE_UPDATE:
@@ -1154,16 +1284,92 @@ static s32 PortStoryCmd_Hub(u32 phase, void *work) {
         PortHub_Free();
         gPortHubMode = 0;
         gPortHubNear = -1;
+        gPortHubFreeze = 0;
+        gPortHubMapOpen = 0;
+        gPortHubPhase = 0;
         return 1;
     }
     gPortHubMode = 1;
     Hud_ShowAll(0);
     sHub.frames++;
+    sHub.phaseFrames++;
     /* the stand-in of the other side: far off and out of sight */
     BtlFacade_SetCtrl100(1);
     BtlFacade_SetCharPos(1, &sHub.park);
     PortHub_Load();
+    if (BtlSeq_GetState() < BTL_SEQ_FIGHT) { /* (still coming up: the landing waits, high over the ground, in black) */
+        if (sHub.phase == 1) {
+            sHub.phaseFrames = 0;
+            gPortHubFade = 255;
+            PortHub_Lift(HUB_FLY_HEIGHT);
+        }
+        return 0;
+    }
+
+    switch (sHub.phase) {
+    case 1: { /* landing: down from high over the ground, slowing, then the standing pose */
+        f32 t = (f32)sHub.phaseFrames / (f32)HUB_LAND_FRAMES;
+        f32 e = 1.0f - t;
+
+        if (sHub.phaseFrames == 1) {
+            BtlFacade_PlayCharMotion(0, 0x30, 1, 0.0f); /* (coming down) */
+        }
+        gPortHubFade = sHub.phaseFrames < 30 ? 255 - sHub.phaseFrames * 8 : 0;
+        if (t >= 1.0f) {
+            PortHub_Lift(0.0f);
+            BtlFacade_PlayCharMotion(0, 0, 1, 0.0f);
+            BtlFacade_ShakeCamera(0.3f);
+            gPortHubFade = 0;
+            PortHub_Phase(0);
+        } else {
+            PortHub_Lift(HUB_FLY_HEIGHT * e * e * e);
+        }
+        break;
+    }
+    case 2: /* the map: the screens draw it and move its cursor; Cross there sets gPortHubTravel */
+        gPortHubMapKeys |= PortHub_MapKeys();
+        if (gPortHubTravel >= 0) {
+            sHub.travel = gPortHubTravel;
+            gPortHubTravel = -1;
+            BtlCharApi_GetPos(BattleSide_GetObjId(0), &me);
+            sHub.ground = me;
+            PortHub_Phase(3);
+            BtlFacade_SetCtrl101(0); /* (a charge before taking off) */
+        } else if (!gPortHubMapOpen) {
+            PortHub_Phase(0); /* (closed from the screens: Circle / Triangle) */
+        }
+        break;
+    case 3: { /* taking off: a moment's charge, then up and away, faster and faster, into black */
+        s32 f = sHub.phaseFrames;
+
+        if (f == 18) {
+            BtlFacade_ClearCtrl101(0);
+            BtlFacade_PlayCharMotion(0, 0x2B, 1, 0.0f); /* (going up) */
+            BtlFacade_ShakeCamera(0.5f);
+        }
+        if (f > 18) {
+            f32 t = (f32)(f - 18) / (f32)(HUB_TAKEOFF_FRAMES - 18);
+
+            PortHub_Lift(HUB_FLY_HEIGHT * 1.6f * t * t);
+        }
+        gPortHubFade = f > HUB_TAKEOFF_FRAMES - 30 ? (f - (HUB_TAKEOFF_FRAMES - 30)) * 9 : 0;
+        if (gPortHubFade > 255) {
+            gPortHubFade = 255;
+        }
+        if (f >= HUB_TAKEOFF_FRAMES) {
+            sHub.ending = 1;
+            gPortHubFade = 255;
+            return PortHub_Leave(PORT_HUB_TRAVEL + sHub.travel);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+
     BtlCharApi_GetPos(BattleSide_GetObjId(0), &me);
+    gPortHubPlaces[0] = me.x;
+    gPortHubPlaces[1] = me.z;
     near = -1;
     best = 30.0f;
     for (i = 0; i < sHub.count; i++) {
@@ -1172,6 +1378,8 @@ static s32 PortStoryCmd_Hub(u32 phase, void *work) {
         f32 dz;
         f32 d;
 
+        gPortHubPlaces[2 + i * 2] = n->pos.x;
+        gPortHubPlaces[3 + i * 2] = n->state == 2 ? n->pos.z : 1.0e9f;
         if (n->state != 2) {
             continue;
         }
@@ -1194,20 +1402,30 @@ static s32 PortStoryCmd_Hub(u32 phase, void *work) {
             }
             n->yaw += diff * 0.12f;
         }
-        if (d < 9.0f && d > 0.01f && __builtin_fabsf(me.y - n->pos.y) < 20.0f) { /* (not walked through) */
+        if (sHub.phase == 0 && d < 9.0f && d > 0.01f && __builtin_fabsf(me.y - n->pos.y) < 20.0f) { /* (not walked through) */
             Vec4 out = V(n->pos.x + dx / d * 9.0f, me.y, n->pos.z + dz / d * 9.0f);
 
             BtlFacade_SetCharPos(0, &out);
         }
         PortHub_PlaceNpc(n);
     }
-    gPortHubNear = near;
+    gPortHubNear = sHub.phase == 0 ? near : -1;
+    if (sHub.phase != 0) {
+        gPortHubWantMenu = 0;
+        return 0;
+    }
     if (sHub.frames > 30 && near >= 0 && (gPad[0].gamePressed & PADG_CIRCLE)) {
         sHub.ending = 1;
         return PortHub_Leave(near);
     }
+    if (sHub.frames > 30 && (gPad[0].gamePressed & PADG_TRIANGLE)) {
+        gPortHubMapKeys = 0;
+        PortHub_Phase(2);
+        PortHub_MapKeys(); /* (the stick as it is now: not a push) */
+        return 0;
+    }
     if (gPortHubWantMenu && sHub.frames < 60) {
-        gPortHubWantMenu = 0; /* (a START from before the Lookout was there: not for its menu) */
+        gPortHubWantMenu = 0; /* (a START from before the place was there: not for its menu) */
     }
     if (gPortHubWantMenu) {
         gPortHubWantMenu = 0;

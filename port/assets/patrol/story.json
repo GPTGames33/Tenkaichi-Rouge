@@ -1,0 +1,569 @@
+{
+  "welcome": [
+    {"chara": 58, "text": "Ah, you're awake. Good. Welcome to Kami's Lookout, {name}. I am the Supreme Kai, and I'm afraid I've just recruited you into a war."},
+    {"chara": 58, "text": "In Hell, a machine washes the evil out of every soul that dies. Someone broke it. All that filth is pooling into a living storm. We call it the Malice."},
+    {"chara": 58, "text": "It slips into your world and finds the proudest, strongest, most wounded hearts, then makes them more of what they're ashamed of. We call them the Corrupted."},
+    {"chara": 58, "text": "Goku went down to Hell to look at the machine. He hasn't come back. So I founded the Corrupt Patrol. For now, the Patrol is you."},
+    {"chara": 58, "text": "I watched the Malice brush against you on your way up here. It slid right off, like rain off glass. I don't know why yet. I intend to find out."},
+    {"chara": 58, "text": "Walk up to anyone and press Circle to talk. Triangle opens the world map when you need to fly somewhere, and START opens the Patrol Menu. Now, when you're ready..."}
+  ],
+  "chapters": [
+    {
+      "id": "ch01",
+      "title": "The Demon King's Son",
+      "location": "rocky", "stage": 1, "music": 13, "level": 1,
+      "foes": [23],
+      "allies": [],
+      "brief": [
+        {"chara": 58, "text": "Our first report: the Rocky Area. Lightning out of a clear sky, and a voice ordering the birds to be quiet. They were."},
+        {"chara": 59, "text": "The ki is Piccolo's. But it tastes wrong. Like his father's, from before Kami's half softened it."},
+        {"chara": 58, "text": "Piccolo shares a soul with Kami, who guarded this very Lookout. If the Malice can take him, it can take anyone. Be careful, {name}."},
+        {"chara": "player", "text": "Any advice for my first fight against someone who can regrow his arms?"},
+        {"chara": 59, "text": "Aim for the head. He regrows that more slowly."}
+      ],
+      "intro": [
+        {"speaker": "narrator", "text": "Rocky Area. The wind has stopped. Even the dust hangs in the air, waiting for permission to fall."},
+        {"speaker": "enemy", "text": "So the Kais finally sent someone. One. A rookie with no scent of a past on them at all.", "effects": ["aura_on"]},
+        {"speaker": "player", "text": "Piccolo. Whatever's inside you, you can still fight it."},
+        {"speaker": "enemy", "text": "Fight it? I've fought it for years. Diapers, homework, Goku's hopeless son. I was born to rule this planet and I chose to babysit it."},
+        {"speaker": "enemy", "text": "My father had the right idea. He only lacked patience. I have plenty. Let's see how long yours lasts.", "effects": ["charge_on"], "camera": "close"}
+      ],
+      "win": [
+        {"speaker": "enemy", "text": "Gh... get it out... GET IT OUT!", "effects": ["aura_off", "big_shake"]},
+        {"speaker": "narrator", "text": "Violet smoke tears out of Piccolo's chest and hangs in the air a moment, as if it is looking at you. Then it's gone."},
+        {"speaker": "enemy", "text": "...I said those things about Gohan. Out loud. To a stranger."},
+        {"speaker": "enemy", "text": "That smell. Black water, gone stagnant. Kami remembers it. That's not possible. That mist was sealed away with its master."},
+        {"speaker": "player", "text": "Whose master?"},
+        {"speaker": "enemy", "text": "Kami won't say the name. It sits under his tongue like something he's ashamed of. Take me to the Lookout. I'll get it out of him."}
+      ],
+      "lose": [
+        {"speaker": "enemy", "text": "Stay down. My father would have finished you. Consider that my last kindness."}
+      ],
+      "after": [
+        {"chara": 23, "text": "Kami fought a mist like this once, long ago. It turned people into beasts. He sealed away the one who brought it. Not well enough, apparently."},
+        {"chara": 58, "text": "Then someone's been reading old history. Rest, Piccolo. {name}, you'll want him teaching you. He'll want it too, though he'd never say so."},
+        {"chara": 23, "text": "Hmph. The next report is from the Wasteland. Vegeta. If the Malice found him, it found a feast."}
+      ],
+      "masters": [23, 22]
+    },
+    {
+      "id": "ch02",
+      "title": "A Prince Without a Planet",
+      "location": "wasteland", "stage": 23, "music": 9, "level": 5,
+      "foes": [31],
+      "allies": [23],
+      "brief": [
+        {"chara": 58, "text": "Vegeta has carved a word into the Wasteland, big enough to read from orbit. It's his own name."},
+        {"chara": 23, "text": "Subtle as ever."},
+        {"chara": 58, "text": "He's challenging every fighter who passes and making the losers bow. The ones who refuse to bow don't get up."},
+        {"chara": 23, "text": "I'm coming. Vegeta's pride is a weapon on a good day. With the Malice behind it, he'll try to break you just to prove he can."}
+      ],
+      "intro": [
+        {"speaker": "narrator", "text": "The Wasteland at dusk. A crater the size of a town, and at its heart a Saiyan who hasn't bowed to anything in years."},
+        {"speaker": "enemy", "text": "Piccolo. And a nobody. The Kais insult me twice in one evening.", "effects": ["aura_on"]},
+        {"speaker": "player2", "text": "Vegeta, listen to yourself. Something is speaking through your pride."},
+        {"speaker": "enemy", "text": "Through it? No. It finally AGREES with it. Second to Kakarot, prince of a dead race, house guest on a mud ball. I swallowed it for years."},
+        {"speaker": "enemy", "text": "The Malice offers me a people again. Proud, strong, obedient. I'll be their king, and the first law of my kingdom is to forget the name Kakarot."},
+        {"speaker": "player", "text": "Hard to rule anything from the bottom of a crater."},
+        {"speaker": "enemy", "text": "Ha! Insolent. Good. Insolent things make the most satisfying noise when they break.", "effects": ["charge_on"], "camera": "close"}
+      ],
+      "win": [
+        {"speaker": "enemy", "text": "No... I am... the PRINCE...", "effects": ["aura_off", "big_shake"]},
+        {"speaker": "narrator", "text": "The violet light drains out of Vegeta like blood. He stays on one knee, and for once he does not get up quickly."},
+        {"speaker": "enemy", "text": "It was in my head. Rummaging. Using my own voice to say what I wanted to hear."},
+        {"speaker": "enemy", "text": "Nobody uses the Prince of all Saiyans. Not Frieza, not Babidi, and not some festering cloud. Whoever sent it, I will find them first."},
+        {"speaker": "player2", "text": "Then come back to the Lookout and find them with us."},
+        {"speaker": "enemy", "text": "Tch. For now. And you, nobody. You hit harder than you look. Don't let it go to your head. It was a very low bar."}
+      ],
+      "lose": [
+        {"speaker": "enemy", "text": "Kneel. You've earned that much. The right to kneel before a prince."}
+      ],
+      "after": [
+        {"chara": 31, "text": "I'll train your rookie, Kai. Not as a favour. I want them strong enough to hold the door while I go through it after whoever did this."},
+        {"chara": 58, "text": "Thank you, Vegeta. I think."},
+        {"chara": 23, "text": "Bad news. Gohan has gone to the Cell Games Arena. Alone. He hasn't set foot there since the day he killed Cell."}
+      ],
+      "masters": [31, 32, 33]
+    },
+    {
+      "id": "ch03",
+      "title": "The Boy in the Ring",
+      "location": "cellarena", "stage": 6, "music": 3, "level": 9,
+      "foes": [17],
+      "allies": [23],
+      "brief": [
+        {"chara": 58, "text": "Gohan's ki is rolling off the Cell Games Arena in waves. It feels like the day of the Games. That isn't a compliment."},
+        {"chara": 23, "text": "He was eleven. Goku threw him into that ring and told him to get angry. We all stood back and let it happen. I let it happen."},
+        {"chara": 58, "text": "The Malice goes for old wounds. That one never closed."},
+        {"chara": 23, "text": "I'm going with {name}. If he has something to say to me, I'd rather hear it to my face."}
+      ],
+      "intro": [
+        {"speaker": "narrator", "text": "The Cell Games Arena. The cracked tiles were never replaced. Someone has swept them anyway, very carefully."},
+        {"speaker": "enemy", "text": "Mr. Piccolo. You brought help. That's new. Last time, I was the help.", "effects": ["aura_on"]},
+        {"speaker": "player2", "text": "Gohan. Come home. Videl is worried sick. Your mother's worse."},
+        {"speaker": "enemy", "text": "Everyone wants me home, until something scary shows up. Then it's 'Gohan, get angry.' 'Gohan, let it out.' Well. I'm out."},
+        {"speaker": "enemy", "text": "Do you know what this feels like? Being the thing everyone fears, instead of the one who has to be brave? It's so quiet."},
+        {"speaker": "player", "text": "Quiet. That's what you call this?"},
+        {"speaker": "enemy", "text": "Compared to a ring at eleven years old? Yes. Let's see what you do when it's your turn.", "effects": ["charge_on"], "camera": "close"}
+      ],
+      "win": [
+        {"speaker": "enemy", "text": "Stop... please, I don't want to...", "effects": ["aura_off", "flash"]},
+        {"speaker": "narrator", "text": "The Malice pulls out of Gohan in a long violet thread, clinging, reluctant, as if it had found somewhere warm."},
+        {"speaker": "enemy", "text": "Mr. Piccolo, I... I said it to you. I said it about Dad. I don't even know if I meant it."},
+        {"speaker": "player2", "text": "You meant some of it. That's allowed. You were a child, and we used you. I'm sorry, Gohan."},
+        {"speaker": "enemy", "text": "There was more. Power I haven't touched since the old Kai unlocked it, all the way down. I almost used it on you. I almost wanted to."},
+        {"speaker": "enemy", "text": "I can't go near that again. Not yet. I'm sorry, {name}. I'll teach you everything else."}
+      ],
+      "lose": [
+        {"speaker": "enemy", "text": "Stay down. Please. It's easier for both of us if you just stay down."}
+      ],
+      "after": [
+        {"chara": 17, "text": "I'm going to call home. Then I'm going to train with {name} until I stop feeling like this."},
+        {"chara": 58, "text": "Kibito Kai has been tracing the rifts the Malice comes through. One opens over Namek, and someone very proud is waiting under it."},
+        {"chara": 23, "text": "Frieza. Wonderful."}
+      ],
+      "masters": [17, 18, 19]
+    },
+    {
+      "id": "ch04",
+      "title": "The Emperor's Borrowed Crown",
+      "location": "namek", "stage": 3, "music": 12, "level": 13,
+      "foes": [94],
+      "allies": [17],
+      "brief": [
+        {"chara": 58, "text": "Namek is shaking itself apart. Again. The Namekians evacuated in time, thank goodness. They've had practice."},
+        {"chara": 59, "text": "It is Frieza's ki, unmistakably. But he is not raging. He is waiting. He has set out a chair."},
+        {"chara": 17, "text": "I'll go. I was five on Namek, watching him kill Krillin. I've always wanted to look him in the eye as a grown-up."},
+        {"chara": 58, "text": "Frieza is cruel when he's calm and worse when he's scared. Find out which one the Malice is feeding."}
+      ],
+      "intro": [
+        {"speaker": "narrator", "text": "Planet Namek. The sky is the colour of a bruise, and the ground splits open in slow, breathing seams."},
+        {"speaker": "enemy", "text": "Oh, splendid, visitors. And little Gohan, all grown up. Do sit. I've been rehearsing the end of this planet, and I hate an empty theatre.", "effects": ["aura_on"]},
+        {"speaker": "player", "text": "That violet glow isn't yours, Frieza. Something is wearing you."},
+        {"speaker": "enemy", "text": "Wearing me? How quaint. A rather shabby green wizard offered me this power, and I accepted. I am not used. I use."},
+        {"speaker": "player2", "text": "Then why is your hand shaking?"},
+        {"speaker": "enemy", "text": "Because this time I'll destroy Namek properly. No monkeys. No legends. Only me, and the silence afterwards.", "effects": ["charge_on", "big_shake"]}
+      ],
+      "win": [
+        {"speaker": "enemy", "text": "What is... get OFF me! How DARE you!", "effects": ["aura_off", "big_shake"]},
+        {"speaker": "narrator", "text": "The Malice rips out of Frieza in ragged sheets. He watches it go with an expression you have never seen on him before: humiliation."},
+        {"speaker": "enemy", "text": "It was in my thoughts. Turning them over. Like a servant going through my drawers."},
+        {"speaker": "enemy", "text": "That wretched little wizard didn't give me anything. He LENT it. As if I were a pawn, to be returned when he was done with me."},
+        {"speaker": "enemy", "text": "Very well, Kais. I'll teach your pet. Purely so that when we find this wizard, I have someone competent to hold him still."},
+        {"speaker": "player2", "text": "That's the nicest thing he's ever said to anyone."}
+      ],
+      "lose": [
+        {"speaker": "enemy", "text": "Ohohoho. There. The first act is over. Do stay for the finale. It's planet-sized."}
+      ],
+      "after": [
+        {"chara": 94, "text": "Your wizard: short, green, pointed ears, a voice like a choirboy with a grudge. He called himself the rightful guardian of something. I didn't ask what."},
+        {"chara": 23, "text": "Kami knows. I can feel him flinching."},
+        {"chara": 58, "text": "At least we have a face. And there's more: Cell has been seen in the City Ruins. Not attacking anyone. Measuring."}
+      ],
+      "masters": [94, 95]
+    },
+    {
+      "id": "ch05",
+      "title": "Perfect Cartography",
+      "location": "city", "stage": 30, "music": 11, "level": 17,
+      "foes": [107],
+      "allies": [31],
+      "brief": [
+        {"chara": 58, "text": "Cell is drawing on the City Ruins. Circles inside circles, burned into the streets from one end of the city to the other."},
+        {"chara": 59, "text": "It's a map. Each circle marks a rift where the Malice entered this world. He has found every one we know of, and three we didn't."},
+        {"chara": 31, "text": "Of course he has. That insect can't see a thing without wanting to collect it."},
+        {"chara": 31, "text": "I'm going. I once let him become perfect because I wanted a better fight. I'd like to correct that."},
+        {"chara": 58, "text": "Bring back the map if you can. Cell may be the only one who has actually understood what this thing is."}
+      ],
+      "intro": [
+        {"speaker": "narrator", "text": "City Ruins, night. Rings of scorched asphalt glow faintly violet. In the middle of the largest one, Cell is taking notes."},
+        {"speaker": "enemy", "text": "Vegeta. Still sulking about letting me win? And you brought the Kais' little experiment. The one the Malice won't touch.", "effects": ["aura_on"]},
+        {"speaker": "enemy", "text": "You fascinate me, rookie. Everyone it touches lights up like a lantern. You stay dark. Clean. As if you came out of the box yesterday."},
+        {"speaker": "player2", "text": "Enough lecturing. That thing is eating you alive."},
+        {"speaker": "enemy", "text": "Eating me? I am made from the best of Goku, of you, of Frieza and Piccolo. This is simply the rest of everyone. I'm completing the set."},
+        {"speaker": "enemy", "text": "And the set has been busy. Every rift points one way: at a star that isn't on any chart. Something is coming. I want a front row seat.", "effects": ["charge_on"]}
+      ],
+      "win": [
+        {"speaker": "enemy", "text": "Impossible. My calculations were... perfect...", "effects": ["aura_off", "flash"]},
+        {"speaker": "narrator", "text": "The violet light shrinks back from Cell's skin, rejecting him. For one second he looks genuinely offended."},
+        {"speaker": "enemy", "text": "It dropped me. Like an unfinished sketch. That is the rudest thing that has ever happened to me, and I was once erased by a child."},
+        {"speaker": "player2", "text": "The map. Where does it point?"},
+        {"speaker": "enemy", "text": "Read it yourself, prince. The rifts spiral toward a star approaching Earth from beyond the charts. Old texts call it the Makyo Star."},
+        {"speaker": "enemy", "text": "Train the rookie? Gladly. I want to know why it won't touch them. Consider it research."}
+      ],
+      "lose": [
+        {"speaker": "enemy", "text": "Hmm. Disappointing. I'll note your weaknesses for the next one they send."}
+      ],
+      "after": [
+        {"chara": 23, "text": "The Makyo Star. Kami knows that name. When it nears Earth, demons of the Makyo grow strong. The one Kami sealed away was one of them."},
+        {"chara": 58, "text": "Then we're on a clock. But first: Mr. Satan called, crying. Buu hasn't eaten in two days, and all the candy in the house has turned violet."}
+      ],
+      "masters": [107, 108]
+    },
+    {
+      "id": "ch06",
+      "title": "Losers Become Candy",
+      "location": "tournament", "stage": 27, "music": 16, "level": 21,
+      "foes": [112, 113],
+      "allies": [],
+      "brief": [
+        {"chara": 55, "text": "Kai! Mister Kai! Buu's not himself! He says I only keep him around to take credit for beating Majin Buu! Which is... not totally wrong, but!"},
+        {"chara": 58, "text": "Mr. Satan, breathe. Where is he now?"},
+        {"chara": 55, "text": "The Tournament Stage! Biggest tournament ever, he says, and the losers get turned into candy! I'm not going! I'm only telling you!"},
+        {"chara": 58, "text": "Buu's heart is the size of a planet. So is his temper. {name}, go gently. But go now."}
+      ],
+      "intro": [
+        {"speaker": "narrator", "text": "The World Tournament Stage at sunset. The stands are packed with lollipops. Every lollipop has a little face."},
+        {"speaker": "enemy", "text": "Oh! New player! You here for Buu's tournament? Losers become candy. Winners also become candy. Buu likes candy.", "effects": ["aura_on"]},
+        {"speaker": "player", "text": "Buu, Mr. Satan is worried about you. He sent me."},
+        {"speaker": "enemy", "text": "Liar! Mr. Satan doesn't need Buu. Mr. Satan needs a trophy that eats cake. Buu heard him on the phone. Buu heard EVERYTHING.", "effects": ["big_shake"]},
+        {"speaker": "narrator", "text": "Steam pours from the holes in Buu's head, thick and violet. It pools beside him and stands up: thin, grey, grinning."},
+        {"speaker": "enemy2", "text": "Hee hee. The fat one feels sad. Me? I don't feel sad. I feel HUNGRY.", "effects": ["aura_on"]},
+        {"speaker": "enemy", "text": "Bad Buu, wait your turn! ...No. Okay. Together. Buu doesn't care anymore."}
+      ],
+      "win": [
+        {"speaker": "enemy2", "text": "No! Not back in there! It's so SOFT in there!", "effects": ["aura_off", "big_shake"]},
+        {"speaker": "narrator", "text": "The grey Buu comes apart like smoke in a fan, and the Malice wrenches out of the fat one in a long, unhappy whine."},
+        {"speaker": "enemy", "text": "Buu... Buu turned people into candy. Buu almost ate a lollipop that was a mailman.", "effects": ["aura_off"]},
+        {"speaker": "narrator", "text": "One by one the lollipops pop back into dizzy, very sticky people. The mailman seems fine."},
+        {"speaker": "enemy", "text": "Buu wants to say sorry to Mr. Satan. Then Buu will teach {name}. Buu is a very good teacher. Buu only exploded one student, ever."}
+      ],
+      "lose": [
+        {"speaker": "enemy", "text": "Hee! You lose! Buu makes you strawberry. Buu doesn't like strawberry, but Buu will make an exception."},
+        {"speaker": "enemy2", "text": "Don't eat it yet. I want to hear it scream first."}
+      ],
+      "after": [
+        {"chara": 55, "text": "Buu said sorry! To ME! So I said sorry back. Then we had cake. Then he asked about the phone call again, so I had to say sorry a lot more."},
+        {"chara": 58, "text": "I'm glad. But Kibito Kai felt the Malice leave Buu, and it went somewhere very specific. My world. Where Buu was first sealed."},
+        {"chara": 59, "text": "It knows where Buu came from. It is trying to wake the oldest Buu there is."}
+      ],
+      "masters": [112, 113]
+    },
+    {
+      "id": "ch07",
+      "title": "What the Machine Washed Out",
+      "location": "kaiworld", "stage": 7, "music": 15, "level": 25,
+      "foes": [114, 117],
+      "allies": [23],
+      "brief": [
+        {"chara": 58, "text": "Kid Buu killed two of my fellow Supreme Kais while I watched. I was the youngest. He didn't even bother to finish me."},
+        {"chara": 59, "text": "When Kid Buu finally died, his soul went through the machine. The good was reborn as the boy Uub. The evil was scrubbed out and held in the tank."},
+        {"chara": 58, "text": "Until someone broke the tank. The Malice has been gathering him back up like broken glass. On my world, of all places."},
+        {"chara": 23, "text": "Super Buu once kept me inside him like a snack in a pocket. I'm coming."},
+        {"chara": 58, "text": "It should be me who goes. But I froze in front of him once, and I'm afraid I would again. Forgive me, {name}."}
+      ],
+      "intro": [
+        {"speaker": "narrator", "text": "The Supreme Kai's World. The grass is flattened in a perfect circle, and the sky above it turns in a slow violet whirlpool."},
+        {"speaker": "enemy", "text": "Piccolo! I remember the taste. Bitter, like spinach and grudges. And this one... this one smells of nothing at all.", "effects": ["aura_on"]},
+        {"speaker": "enemy", "text": "The fat one keeps saying sorry, so I came out to play without him. And look what I found in the leftovers."},
+        {"speaker": "narrator", "text": "Behind Super Buu, a small pink shape crouches in the grass. It has no words. It has never needed any."},
+        {"speaker": "enemy2", "text": "Hyaaaaaa! Hee hee hee hee!", "effects": ["aura_on", "big_shake"]},
+        {"speaker": "player2", "text": "Kid Buu. The Supreme Kai's nightmare, standing in his own garden."},
+        {"speaker": "enemy", "text": "Isn't he adorable? Pure, perfect hunger. Let's show him what a Kai's planet sounds like when it pops.", "effects": ["charge_on"]}
+      ],
+      "win": [
+        {"speaker": "enemy2", "text": "Gyaaah... ahh...", "effects": ["aura_off", "big_shake"]},
+        {"speaker": "enemy", "text": "Bah. Without the Malice I'm leftovers again. I'll crawl back inside the fat one. It's warm, and he never notices me reading his thoughts.", "effects": ["aura_off"]},
+        {"speaker": "narrator", "text": "Kid Buu stares at the violet dissolving off his hands. Then, for reasons no one will ever explain, he sits down and starts eating the flowers."},
+        {"speaker": "player2", "text": "That is the thing that killed two Supreme Kais?"},
+        {"speaker": "narrator", "text": "Kid Buu looks up, tilts his head and copies your stance exactly. Then he grins. He would very much like a rematch."}
+      ],
+      "lose": [
+        {"speaker": "enemy", "text": "Don't worry. I'll keep you somewhere warm. Right next to Piccolo."}
+      ],
+      "after": [
+        {"chara": 58, "text": "You came back. Both of you. And Kid Buu is sitting in my garden, eating my flowers, which I am choosing to see as progress."},
+        {"chara": 59, "text": "Something else. Down in Hell, the Malice made a sound like a word. As if it were learning to speak."},
+        {"chara": 58, "text": "And we've found Goku's ki. Not in Hell. At home, on Mount Paozu. He's been there for weeks, hiding it. He hasn't called anyone."}
+      ],
+      "masters": [114, 117]
+    },
+    {
+      "id": "ch08",
+      "title": "Nobody Holds Back Ever Again",
+      "location": "paozu", "stage": 22, "music": 5, "level": 29,
+      "foes": [3],
+      "allies": [31],
+      "brief": [
+        {"chara": 58, "text": "Chichi says Goku came home weeks ago and told her to keep it a secret. A surprise for the Kais, he said. He's sat on the roof every night since, watching the sky."},
+        {"chara": 59, "text": "Supreme Kai. The rift map. The very first rift opened over Mount Paozu. Before Piccolo. Before any of them."},
+        {"chara": 58, "text": "...No. Goku went to Hell to stop this. He would never..."},
+        {"chara": 31, "text": "Kakarot would never what? Turn down a stronger opponent? I'm going. If he's done what I think he's done, the first punch is mine."}
+      ],
+      "intro": [
+        {"speaker": "narrator", "text": "Mount Paozu. Laundry on the line, a fish on the fire, and a man on the roof smiling up at a violet sky."},
+        {"speaker": "enemy", "text": "Hey, Vegeta! Hey, {name}! Wow, you got strong. I knew you would. I kept sending you better and better ones.", "effects": ["aura_on"]},
+        {"speaker": "player2", "text": "Sending. So it was you. You opened the rifts. You fed it Piccolo. Your own son."},
+        {"speaker": "enemy", "text": "Gohan was holding back! Everybody's always holding back. The little guy in Hell showed me: with the Malice, nobody ever holds back again."},
+        {"speaker": "enemy", "text": "Think about it, Vegeta. Everyone at full power, all the time, forever. No more peace. No more waiting years for someone worth fighting."},
+        {"speaker": "player", "text": "And when there's nobody left standing?"},
+        {"speaker": "enemy", "text": "Then I guess it's just you and me. Come on, I've been looking forward to this one most of all!", "effects": ["charge_on"], "camera": "close"}
+      ],
+      "win": [
+        {"speaker": "enemy", "text": "Ha... ha ha... aw, man. You really got me...", "effects": ["aura_off", "big_shake"]},
+        {"speaker": "narrator", "text": "The Malice leaves Goku slowly, almost politely, as if it is sorry to lose such a good host."},
+        {"speaker": "enemy", "text": "I was gonna stop it. I really was. Then the little green guy said, 'What if nobody ever held back again?' And I just... wanted it."},
+        {"speaker": "player2", "text": "You wanted it so badly you handed it your son."},
+        {"speaker": "enemy", "text": "Yeah. I know. I'm gonna have to fix that, Vegeta. All of it."},
+        {"speaker": "enemy", "text": "{name}, his name's Garlic Jr. He said when the Makyo Star rises, he's taking the Lookout. That's your home base, right?"}
+      ],
+      "lose": [
+        {"speaker": "enemy", "text": "Haha! That was great! Get up, get up, I'll wait! I can always wait now. That's the best part."}
+      ],
+      "after": [
+        {"chara": 3, "text": "Chichi hit me with a frying pan. Then she cried. Then she hit me again. I deserved the second one more."},
+        {"chara": 17, "text": "Dad. ...Later. We'll talk later. Garlic Jr. is coming here, and I remember him. I fought him when I was little."},
+        {"chara": 23, "text": "Kami finally says the name. Garlic's father wanted to be guardian of Earth. Kami was chosen instead. The son never forgave either of us."},
+        {"chara": 58, "text": "Then we hold the Lookout. Everyone, to your posts."}
+      ],
+      "masters": [3, 4, 5, 6]
+    },
+    {
+      "id": "ch09",
+      "title": "The Rightful Guardian",
+      "location": "lookout", "stage": 5, "music": 7, "level": 33,
+      "foes": [118],
+      "allies": [17],
+      "brief": [
+        {"chara": 58, "text": "The Makyo Star is visible in daylight now. And something is climbing the side of the Lookout. Small. Walking. Taking its time."},
+        {"chara": 17, "text": "That's him. That's how he walked last time. Like he owns the stairs."},
+        {"chara": 3, "text": "Want me to go? I owe everybody."},
+        {"chara": 58, "text": "No, Goku. The Malice may still know your heartbeat. Gohan, {name}: the Lookout is yours."},
+        {"chara": 17, "text": "Last time I faced him I was four, and I cried until I exploded. Let's try a different strategy."}
+      ],
+      "intro": [
+        {"speaker": "narrator", "text": "Kami's Lookout. The palm trees lean toward the stairs, as if something heavy has just reached the top."},
+        {"speaker": "enemy", "text": "At last. The Lookout. My father's by right, stolen by a Namekian with a kind face and a coward's heart.", "effects": ["aura_on"]},
+        {"speaker": "enemy", "text": "And little Gohan. You sealed me in the Dead Zone, child. Do you know how long a moment lasts in there? I counted every one."},
+        {"speaker": "player2", "text": "You broke the machine in Hell. You put that filth inside my father."},
+        {"speaker": "enemy", "text": "Your father begged for it. They all do. Every proud heart is a door, and I hold every key. ...Except yours.", "effects": ["charge_on"]},
+        {"speaker": "enemy", "text": "You. The empty one. No grudges, no shame, no yesterday. My Malice slides off you like rain off a lotus. What ARE you?"},
+        {"speaker": "player", "text": "Your problem."}
+      ],
+      "win": [
+        {"speaker": "enemy", "text": "Kneel! KNEEL! I am the guardian! I am IMMORTAL!", "effects": ["big_shake"]},
+        {"speaker": "player2", "text": "I've been afraid of this power since the day the Malice touched it. I'm not anymore.", "effects": ["burst", "flash"]},
+        {"speaker": "narrator", "text": "Gohan's ki rises, white and steady, and it pushes the violet out of the air around him. Garlic Jr. stumbles back toward the edge."},
+        {"speaker": "enemy", "text": "The Malice! Come to me! I made you! I MADE YOU!"},
+        {"speaker": "narrator", "text": "Far below, something in Hell answers. Not him. The Makyo Star flares red, and Garlic Jr. vanishes up a column of its light."},
+        {"speaker": "player2", "text": "He's gone to the star. He's going to try to drink it."}
+      ],
+      "lose": [
+        {"speaker": "enemy", "text": "Off the edge with you. It's a long way down, and I want to hear every second of it."}
+      ],
+      "after": [
+        {"chara": 17, "text": "That power didn't feel like the Malice. It felt like me. I think I'm finally ready to show you how to find yours, {name}."},
+        {"chara": 58, "text": "Garlic Jr. is on the Makyo Star, gorging on its light. He'll come back stronger than anything on Earth."},
+        {"chara": 3, "text": "Then I'm going. I started this. The least I can do is help {name} finish it."},
+        {"chara": 59, "text": "Supreme Kai. The word the Malice keeps saying in Hell. I heard it clearly this time. It's saying its own name."}
+      ],
+      "masters": [21]
+    },
+    {
+      "id": "ch10",
+      "title": "The Makyo Star Rises",
+      "location": "space", "stage": 16, "music": 14, "level": 37,
+      "foes": [119],
+      "allies": [3],
+      "brief": [
+        {"chara": 58, "text": "The Makyo Star is close enough now to see its craters. Garlic Jr. is on its surface, swelling like a tick on its light."},
+        {"chara": 59, "text": "If he returns to Earth with that power, the Black Water Mist will cover every continent within the hour. Everyone would be Corrupted."},
+        {"chara": 3, "text": "So we go to him. {name}, grab my shoulder. Instant Transmission is way faster than flying."},
+        {"chara": 58, "text": "Goku. Bring {name} home."},
+        {"chara": 3, "text": "Yeah. This time I will."}
+      ],
+      "intro": [
+        {"speaker": "narrator", "text": "Outer Space. The Makyo Star hangs huge and red. On its surface, something that used to be small is standing up."},
+        {"speaker": "enemy", "text": "Goku. The one who wanted it most. Back to grovel?", "effects": ["aura_on", "big_shake"]},
+        {"speaker": "player2", "text": "Back to say thanks for the offer, and no thanks. Took me a while."},
+        {"speaker": "enemy", "text": "Look at me! The star is MINE. The Malice is MINE. When I set foot on that Lookout, every living thing will kneel. Every dead thing too.", "effects": ["charge_on"]},
+        {"speaker": "player", "text": "Then why is the Malice pulling away from you?"},
+        {"speaker": "enemy", "text": "It is not! It's... resting. It answers to me. It has ALWAYS answered to me!"}
+      ],
+      "win": [
+        {"speaker": "enemy", "text": "My star... my power... why won't you ANSWER me?!", "effects": ["aura_off", "big_shake"]},
+        {"speaker": "narrator", "text": "The violet leaves Garlic Jr. all at once. He shrinks back to his true size, gasping, very small against the red star."},
+        {"speaker": "enemy", "text": "It's gone. It went home. Not to me: to the machine. It never listened. It was only waiting until it was big enough to stop pretending."},
+        {"speaker": "player2", "text": "What's waiting down there, Garlic?"},
+        {"speaker": "enemy", "text": "Something with no master. It ate my Mist. It ate my plans. Fools! You beat the only one who wanted to RULE it. Now it only wants to end things."},
+        {"speaker": "narrator", "text": "Far away, in Hell, a huge round shape opens its eyes and claps its hands twice."}
+      ],
+      "lose": [
+        {"speaker": "enemy", "text": "Kneel, Saiyan. You first, then the empty one. I've waited centuries for this. I can savour it."}
+      ],
+      "after": [
+        {"chara": 58, "text": "Garlic Jr. is under a Kai seal in Hell, in a cell, as he deserves. He keeps offering to help. I keep not answering."},
+        {"chara": 118, "text": "You'll need me. I know that machine better than the ogres who built it. Learn my Dead Zone, and use it on THAT thing."},
+        {"chara": 59, "text": "Hell is changing. The Soul Cleansing Machine has swallowed the ogres around it, and there's a giant shape sitting on top of it, humming."},
+        {"chara": 58, "text": "Janemba. That's the name it's been saying. {name}, I'm sorry. You're going to Hell."}
+      ],
+      "masters": [118, 119]
+    },
+    {
+      "id": "ch11",
+      "title": "Ja-Nem-Ba",
+      "location": "hell", "stage": 18, "music": 19, "level": 41,
+      "foes": [137],
+      "allies": [94],
+      "brief": [
+        {"chara": 58, "text": "Hell is folding in on itself. The trees grow upside down and the Blood Pool flows uphill. Paikuhan is holding the gate, but not for long."},
+        {"chara": 94, "text": "I'm coming. Not for Hell, which is ghastly, but that ball of lard has taken over MY corner of it, and I will have it back."},
+        {"chara": 59, "text": "Janemba is the Malice with a body, Frieza. Every evil ever scrubbed from a soul. Including some of yours."},
+        {"chara": 94, "text": "Then it has excellent taste in parts. Come along, {name}. Do try to keep up."},
+        {"chara": 58, "text": "It's still growing. Stop it before it works out what it's for."}
+      ],
+      "intro": [
+        {"speaker": "narrator", "text": "Hell. The sky is upside down. A huge round creature sits on the broken Soul Cleansing Machine, swinging its legs and humming."},
+        {"speaker": "enemy", "text": "Ja... nem... BA!", "effects": ["big_shake"]},
+        {"speaker": "narrator", "text": "It claps twice. The ground behind you becomes a wall. The wall becomes a mouth. The mouth yawns, and goes back to being ground."},
+        {"speaker": "enemy", "text": "Kneel. Stay down. Everyone at full power. Losers become candy.", "effects": ["aura_on"]},
+        {"speaker": "narrator", "text": "Each phrase comes out in a different voice. You recognise every single one of them."},
+        {"speaker": "player2", "text": "Charming. It's wearing every tantrum you pulled out of them. Do try not to add yours to the collection, {name}."},
+        {"speaker": "enemy", "text": "JA-NEM-BA!", "effects": ["charge_on"], "camera": "wide"}
+      ],
+      "win": [
+        {"speaker": "enemy", "text": "Ja... nem...", "effects": ["big_shake"]},
+        {"speaker": "narrator", "text": "Janemba's huge body splits down the middle like a seed pod. It isn't dying. Something inside is climbing out."},
+        {"speaker": "player2", "text": "Oh, you must be joking."},
+        {"speaker": "narrator", "text": "A tall, lean shape steps out of the husk, holding a blade of folded space. The empty body behind it sits down and claps, alone."},
+        {"speaker": "narrator", "text": "The new Janemba cuts a door into the air. Through it, you can see the Lookout. Then it steps through, and the door stays open."},
+        {"speaker": "player2", "text": "{name}, I suggest a tactical retreat. I have never said those words before. Kindly forget that I did."}
+      ],
+      "lose": [
+        {"speaker": "enemy", "text": "Ja-nem-BA! Stay down. Stay down. Stay down."}
+      ],
+      "after": [
+        {"chara": 58, "text": "Super Janemba has cut a door between Hell and Earth, and every hour it gets wider. Fully open, there will be no living world and no dead one. Only its world."},
+        {"chara": 23, "text": "Everyone who gets near it falls to their knees. Vegeta. Goku. Me. It shows you your worst day, again and again, until you stop fighting."},
+        {"chara": 59, "text": "It showed {name} nothing. Its blade passed straight through. There was nothing in there for it to cut."},
+        {"chara": 58, "text": "I think I finally understand why. Come and see me when you're ready. There's something I should have told you at the start."}
+      ],
+      "masters": [137]
+    },
+    {
+      "id": "ch12",
+      "title": "No Yesterday",
+      "location": "timechamber", "stage": 8, "music": 0, "level": 45,
+      "foes": [138],
+      "allies": [],
+      "brief": [
+        {"chara": 58, "text": "The day the machine broke, its last cycle ran far too long. One soul was washed so clean that nothing was left of who it had been. It went out into the world new."},
+        {"chara": 58, "text": "I felt you arrive, {name}. I didn't know what you were, only that the Malice couldn't find a single handhold on you. I'm sorry I never said."},
+        {"chara": "player", "text": "So that thing is everything they scrubbed out of people. And I'm what's left when the scrubbing works."},
+        {"chara": 59, "text": "Janemba is every yesterday that was ever thrown away. You are the only one with no yesterday at all. It cannot open you."},
+        {"chara": 58, "text": "We'll lure it into the Hyperbolic Time Chamber and shut the door: a world with no outside. Only you can go in. I'll be right here when you come out."}
+      ],
+      "intro": [
+        {"speaker": "narrator", "text": "The Hyperbolic Time Chamber. Endless white. Then a stain spreads across it: red sky, black trees, Hell painting itself over nothing."},
+        {"speaker": "enemy", "text": "We were the Demon King's ambition. We were Frieza's first murder. We were the hunger in a little pink thing that ate the Kais.", "effects": ["aura_on"]},
+        {"speaker": "narrator", "text": "Super Janemba speaks in a thousand overlapping voices. Every one of them belongs to someone who once regretted something."},
+        {"speaker": "enemy", "text": "Show us your worst day, empty one."},
+        {"speaker": "player", "text": "Sorry. I'm new here."},
+        {"speaker": "enemy", "text": "Then we will give you one. And we will make it last forever.", "effects": ["charge_on", "big_shake"], "camera": "low"}
+      ],
+      "win": [
+        {"speaker": "enemy", "text": "No... yesterday... no... handhold...", "effects": ["aura_off", "big_shake"]},
+        {"speaker": "narrator", "text": "Super Janemba comes apart into a thousand voices, and one by one they go quiet. The red drains out of the white like water from a sink."},
+        {"speaker": "narrator", "text": "Somewhere very far below, the Soul Cleansing Machine coughs, rattles, and starts working again."},
+        {"speaker": "player", "text": "...Hello? Supreme Kai? You said you'd be right here."},
+        {"speaker": "narrator", "text": "The door of the Chamber opens. Two Kais are standing there. One of them has very obviously been crying.", "effects": ["fade_in"]}
+      ],
+      "lose": [
+        {"speaker": "enemy", "text": "There. Now you have a worst day. We will keep it for you."}
+      ],
+      "after": [
+        {"chara": 58, "text": "You did it, {name}. The machine is running, Hell is the right way up, and Frieza is complaining about the hot springs again. Everything is normal."},
+        {"chara": 59, "text": "With the boundary safe, we can spare some time. If you'll have us, the Supreme Kai and I would like to teach you too."},
+        {"chara": 58, "text": "It's the least we can do. And I've always wanted a student who doesn't fall asleep during the history part."}
+      ],
+      "masters": [138, 58, 59]
+    }
+  ],
+  "ending": [
+    {"chara": 58, "text": "The machine runs clean again. Mostly. There's a stain at the bottom of the tank that won't wash out, and Kibito Kai says there always will be."},
+    {"chara": 3, "text": "So there might be more Corrupted someday? Huh. That's terrible. I'm just saying, if there are, you should totally call me."},
+    {"chara": 31, "text": "Kakarot is on probation. Call me first. Call him never."},
+    {"chara": 59, "text": "And not every rift has closed. Small ones, old ones. Echoes of fighters pulled out of their own time, still wandering, still angry."},
+    {"chara": 58, "text": "So the Patrol stays open. The board, the masters, the map. All of it."},
+    {"chara": 58, "text": "As for who you were before the machine washed you clean: it keeps no records. Perhaps we'll find out together. Perhaps it doesn't matter."},
+    {"chara": 58, "text": "Every day from here on is yours, {name}. That's more than any of us can say. Go on. The world is waiting, and so is Krillin's board."}
+  ],
+  "locations": {
+    "lookout": {"desc": "Kami's palace above the clouds. Patrol headquarters, Videl's wardrobe, and the only door to the Time Chamber.", "arrive": "Kami's Lookout. The wind up here smells of rain and incense."},
+    "timechamber": {"desc": "A white void where a year passes in a day. Thin air, heavy gravity, total silence.", "arrive": "The Hyperbolic Time Chamber. The door closes behind you with a very final sound."},
+    "kamehouse": {"desc": "A pink house on a speck of sand. Krillin's bounty board, Master Roshi, and a magazine stack nobody asks about.", "arrive": "Kame House. Waves, gulls, and from inside, a television playing aerobics."},
+    "tournament": {"desc": "The ring where legends are made, then sold as merchandise. Mr Satan's shop, and Uub training by the stands.", "arrive": "World Tournament Stage. A banner reads HOME OF THE CHAMPION, in Mr Satan's handwriting."},
+    "paozu": {"desc": "Forests, rivers and one round house, where Chichi keeps the Son family fed and in line.", "arrive": "Mount Paozu. Somewhere a pterodactyl screams. Somewhere Chichi screams back, louder."},
+    "wasteland": {"desc": "Red rock and craters to the horizon. Where Saiyans land, and where Yamcha keeps a nervous lookout.", "arrive": "The Wasteland. Every crater out here has a story, and most of them end badly."},
+    "rocky": {"desc": "Cliffs, mesas and old battle scars. Tien trains here, and hears you coming with all three eyes.", "arrive": "Rocky Area. Loose stones tick down the cliffs in the wind."},
+    "mountain": {"desc": "A winding road through the peaks, where Namu once fought to bring water home to his village.", "arrive": "Mountain Road. The roadside shrine has fresh flowers. Namu was here."},
+    "islands": {"desc": "Green islands scattered across a blue sea. Android 18 lives nearby and does not like surprises.", "arrive": "The Islands. Warm wind, white sand, and the distinct feeling of being watched."},
+    "city": {"desc": "Empty towers and broken streets, scarred by Androids and Cell. Trunks patrols what's left.", "arrive": "City Ruins. Somewhere, a traffic light is still changing colour for nobody."},
+    "desert": {"desc": "Dunes, heat haze and bandits. Yajirobe is out here, allegedly guarding something.", "arrive": "The Desert. Hot enough to cook on. Someone clearly has: there's a fish skeleton by your feet."},
+    "glacier": {"desc": "A silent field of ice in the far north, where Android 16 watches the birds.", "arrive": "The Glacier. Your breath freezes. Nearby, a very large figure is feeding a sparrow."},
+    "penguin": {"desc": "A village where nothing makes sense and everyone is fine with that. Arale says hi. Loudly.", "arrive": "Penguin Village. The sun says good morning. It is three in the afternoon."},
+    "muscle": {"desc": "The Red Ribbon Army's frozen fortress, now home to the gentle giant Hatchan.", "arrive": "Muscle Tower. The doors are open these days. Hatchan oiled the hinges."},
+    "castle": {"desc": "The King's Castle and its city. Great Saiyaman patrols the rooftops. Everyone knows who he is.", "arrive": "King's Castle. A guard salutes you. Then a dog in a royal cape salutes you. That's the King."},
+    "cellarena": {"desc": "The ring Cell built for his Games, still standing in the grass. Pan trains here, every bit her grandfather's.", "arrive": "Cell Games Arena. The cracks in the tiles still point to where the beam hit."},
+    "namek": {"desc": "Green skies, blue grass and three suns. Home of the Namekians, and of too many bad memories.", "arrive": "Planet Namek. Three suns, no night, and Nail already knows you're here."},
+    "space": {"desc": "The black between worlds. Asteroids, wreckage, and Bardock, who has nowhere else to be.", "arrive": "Outer Space. A silence so complete you can hear your own aura."},
+    "kaiworld": {"desc": "The Sacred World of the Kais. Quiet meadows, one enormous tree, and a sky that hums.", "arrive": "Supreme Kai's World. The grass leans toward you, curious."},
+    "hell": {"desc": "Red skies, needle mountains and the Soul Cleansing Machine. Paikuhan keeps the peace, mostly with his fists.", "arrive": "Hell. Hot, loud, and full of people who would like a word with you."}
+  },
+  "services": {
+    "shop": [
+      {"chara": 55, "text": "Welcome, welcome! Everything here is Champion-approved. That means I touched it. Some of it I even used, very bravely."},
+      {"chara": 55, "text": "That's a genuine Mr Satan Power Drink! Gives you the strength to defeat Cell! Results not guaranteed. Results never actually observed."},
+      {"chara": 55, "text": "Patrol members get a discount! Buu gets a bigger discount, because I don't want to find out what happens if he doesn't."}
+    ],
+    "board": [
+      {"chara": 25, "text": "Bounty board's up to date. Corrupted thugs, lost echoes, and one guy who keeps stealing Roshi's magazines. That last one's personal."},
+      {"chara": 25, "text": "I'd take a few myself, but my job is the clipboard now. Don't laugh. Clipboards are how you survive this crew."},
+      {"chara": 25, "text": "Careful with the ones marked red. Last time I ignored a red bounty, I got blown up. Okay, every time. I get blown up every time."}
+    ],
+    "wardrobe": [
+      {"chara": 56, "text": "Fitting room's open. Finish a master's lessons and I can tailor their style for you. Want a cape? Ask Gohan first. Then ignore him."},
+      {"chara": 56, "text": "Gi, armour, a Saiyaman helmet... please don't pick the helmet. I've had to look at that helmet for years."},
+      {"chara": 56, "text": "Looking good. It matters, you know. You fight better in clothes you like. Ask Vegeta why he never takes that armour off."}
+    ],
+    "trainer": [
+      {"chara": 59, "text": "The Training Grounds are open. Every master you free waits there, or at home, ready to teach. Five lessons each, one technique per lesson."},
+      {"chara": 59, "text": "The Hyperbolic Time Chamber is for serious work. A year in a day. Bring snacks, and lower your expectations of conversation."},
+      {"chara": 59, "text": "A master teaches you their technique. The style is yours to keep. Wear it, fight in it, and make it look like you."}
+    ],
+    "story_idle": [
+      {"chara": 58, "text": "Rest if you need to. The Malice won't wait, but it can't take you either. A strange sort of comfort, but I'll take it."},
+      {"chara": 58, "text": "I've been reading Kami's old records. Lovely handwriting. Mostly about plants, and a few torn-out pages he clearly didn't want anyone to read."},
+      {"chara": 58, "text": "Talk to me again when you're ready for the next lead. And {name}... thank you for coming back each time. Not everyone does."}
+    ]
+  },
+  "masters": {
+    "3": {"greet": "Hey, {name}! Training? Yeah! First lesson: Instant Transmission. Find a ki you like and just... be there. Easy! It took me a year.", "done": "That's everything I've got in this form! You learn fast. Next time we spar, no holding back. The good kind of no holding back.", "home": "paozu"},
+    "4": {"greet": "This form came from the worst day of my life, on Namek. I'll teach you the moves. Not the day. Nobody should have to learn that part.", "done": "You've got all of it. Krillin would be proud. Heck, I'm proud. Let's go get something to eat.", "home": "paozu"},
+    "5": {"greet": "Super Saiyan 2's a big jump. Gohan got there first, at the Cell Games. I had to work for it in the afterlife. Lots of push-ups.", "done": "There! Now you've got moves Gohan used when he was eleven. Uh, don't tell him I put it like that.", "home": "paozu"},
+    "6": {"greet": "This form eats energy like Buu eats cake. So we go fast, we hit hard, and we stop before we pass out. Mostly.", "done": "Five for five! And you didn't even need the long hair. Honestly, I'm jealous. It gets in my eyes.", "home": "paozu"},
+    "22": {"greet": "This is how I fought when I still meant to conquer the world. Ugly, cruel, effective. Learn the techniques. Leave the attitude.", "done": "Done. You can fight like a demon now, when you need to. Choose carefully when you need to.", "home": "rocky"},
+    "23": {"greet": "Training with me means silence, patience and pain, in that order. Gohan survived it at four. You'll manage.", "done": "That's everything I teach. You did well. Don't make that face. I'm allowed to say it once.", "home": "lookout"},
+    "31": {"greet": "You want to learn from the Prince of all Saiyans. Good instinct. Now pay for it: every lesson, you take a hit you thought you couldn't.", "done": "You've earned my techniques. Not my respect. ...Fine. A little of my respect. Leave before I take it back.", "home": "wasteland"},
+    "32": {"greet": "I became a Super Saiyan alone, in deep space, out of pure spite. You don't need spite to learn this. But it helps.", "done": "Adequate. No... better than adequate. If you tell Kakarot I said that, I'll deny it.", "home": "space"},
+    "33": {"greet": "This is the form that beat an Android in seconds, then lost everything to my own pride. Learn from both halves.", "done": "There. You could call yourself a student of Super Vegeta now. Don't. But you could.", "home": "timechamber"},
+    "17": {"greet": "I train here now because I'm tired of this being the place where I was afraid. Let's make it the place where I taught you instead.", "done": "That's everything. I haven't felt this steady here since I was a kid. Thank you, {name}. I mean it.", "home": "cellarena"},
+    "18": {"greet": "When I go Super Saiyan, I get calm. That surprised everyone. Turns out calm hits the hardest. Let's start there.", "done": "Great work! And if you ever meet the Great Saiyaman around here, that's definitely not me. Totally different guy.", "home": "castle"},
+    "19": {"greet": "This is the form I beat Cell with. It's also the form where I stopped listening to anyone. We'll learn the first part only.", "done": "You've got it, and you stayed yourself the whole time. That's more than I managed the first time.", "home": "cellarena"},
+    "21": {"greet": "The Elder Kai spent hours drawing this power out of me. I'll spare you the dance he did. Mostly. Stand still and breathe.", "done": "That's all of it. I'm not afraid of this power anymore, and I don't want you to be either. Use it well.", "home": "kaiworld"},
+    "94": {"greet": "Consider yourself the first student I haven't killed. I find teaching tedious, so do be quick, and do be impressive.", "done": "There. You fight almost elegantly now. Do try not to embarrass me in front of the monkeys.", "home": "space"},
+    "95": {"greet": "One hundred percent. I used it here once, and it went badly. Today it will go perfectly. That is the only lesson I accept.", "done": "You've seen my full power and lived to imitate it. Treasure that. Very few manage the first part.", "home": "namek"},
+    "107": {"greet": "I built this arena for the greatest tournament in history. Now it hosts a training session for one. How humbling. Shall we?", "done": "Remarkable. You learn like someone who has never had a bad habit. I still want to know why. Do come back and let me study you.", "home": "cellarena"},
+    "108": {"greet": "I came back from being blown to atoms with a Saiyan's comeback and a grudge. Those are the two real lessons. The techniques are a bonus.", "done": "Flawless. Well, nearly. Ninety-eight percent. The other two percent are mine.", "home": "city"},
+    "112": {"greet": "Buu teaches! Rule one: snacks first. Rule two: no turning the teacher into candy. Rule three: Buu forgot rule three.", "done": "You learned everything! Buu is proud. Have a chocolate. It is real chocolate. Buu checked. It was not a person.", "home": "tournament"},
+    "113": {"greet": "The fat one lets me out for lessons. Only lessons, he says. Fine. I'll teach you to hurt things slowly. Pay attention.", "done": "That's all. Now I go back inside where it's soft. Don't miss me. I'll be listening.", "home": "tournament"},
+    "114": {"greet": "I'm only here because the fat one insists. Learn quickly. When I'm bored, I start thinking about absorbing people.", "done": "Hmph. Not bad. You'd have made an excellent addition to my collection. That's the highest compliment I give.", "home": "tournament"},
+    "117": {"greet": "(Kid Buu stops chewing a flower, looks you up and down, and shrieks happily. Then he drops into your stance, only better.)", "done": "(Kid Buu throws back his head and laughs, then pats you hard on the head. It seems you passed. He goes back to his flower.)", "home": "kaiworld"},
+    "118": {"greet": "A Kai seal and a cell, and here I am teaching a Patrol brat. Fine. Learn the Dead Zone, and I'll pretend I'm the one using you.", "done": "There. You know everything I know about fighting. Not about patience; I have eternity for that. Do visit. I'll be here. Forever.", "home": "hell"},
+    "119": {"greet": "Without the star I'm only a shadow of this form. A shadow is still more than you've faced. Learn to drink the Makyo Star's light.", "done": "Enough. You can open the Dead Zone now. Never stand in front of it. I did, once. It's a long way to anywhere from in there.", "home": "hell"},
+    "137": {"greet": "Ja-nem-BA! (The empty husk claps twice. A rock beside you turns into a cake, then back into a rock. It looks very pleased.)", "done": "Ja... nem... ba. (It pats your head gently, sits down and hums. Paikuhan says that means you're friends now.)", "home": "hell"},
+    "138": {"greet": "(A cold whisper from the machine's tank, in many voices.) We have no yesterday left either. Come. We will show you how everyone fights.", "done": "(The voices, quieter now.) You have taken everything we had to teach. Make good days with it. We never could.", "home": "hell"},
+    "58": {"greet": "I'm a little out of practice. Kais aren't really meant to fight. But I've watched you long enough to know what you need. Let me try.", "done": "That's all of it. A Supreme Kai's techniques in a mortal's hands. My ancestors would be scandalised. I'm only proud.", "home": "lookout"},
+    "59": {"greet": "Five lessons. I'll keep them short and precise. My Supreme Kai half wants to add encouragement. I'm suppressing it. ...Good luck!", "done": "Complete. Both halves of me are pleased. One half wants to make you tea. We've compromised: we're making tea.", "home": "kaiworld"}
+  }
+}

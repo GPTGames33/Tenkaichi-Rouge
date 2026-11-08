@@ -1025,11 +1025,13 @@ bool compile(const J &saga, int number, const std::string &preview, CEp &out, st
         g.action(2000); // the referee, a task of its own (the headquarters' own for a hub)
         if (hub) {
             const J &ppl = hubDef["npcs"];
-            std::vector<Gsc::Op> ops = {Gsc::I((int)std::min((size_t)6, ppl.size()))};
-            for (size_t i = 0; i < ppl.size() && i < 6; i++) {
+            std::vector<Gsc::Op> ops = {Gsc::I((int)std::min((size_t)8, ppl.size()))};
+            for (size_t i = 0; i < ppl.size() && i < 8; i++) {
                 ops.push_back(Gsc::I(chara_of(ppl[i]["chara"])));
                 ops.push_back(Gsc::I((int)ppl[i]["costume"].number(0)));
             }
+            ops.push_back(Gsc::I(hubDef["arrive"].truthy() ? 1 : 0)); // (the player flies in and lands)
+            ops.push_back(Gsc::I((int)hubDef["spread"].number(100))); // (how far apart the people stand)
             g.cmd(9007, ops);
         } else {
             g.cmd(9004);
