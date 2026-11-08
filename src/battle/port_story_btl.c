@@ -909,6 +909,314 @@ static s32 PortStoryCmd_Watch(u32 phase, void *work) {
     return 0;
 }
 
+/* ---- Corrupt Patrol's headquarters: a battle without a fight ------------------------------------------------ */
+
+/*
+ * 9007 "hub": count, then count pairs of (character, costume). The battle is a place to walk in: the player's fighter
+ * (side 0) walks, dashes, jumps and flies, with no lock-on and no attack (gPortHubMode: btl_char_flag.c,
+ * btl_act_h_b.c); the other side is a stand-in kept far away and out of sight; the HUD is off; the battle never ends
+ * by itself. The people of the place stand round the middle of the stage, each a plain model in its standing pose,
+ * turning to the player who comes near. Circle near one of them, or START, ends the battle: gPortHubExit says which
+ * of them (0..count-1) or the menu (PORT_HUB_MENU); Corrupt Patrol's screens take it from there
+ * (port/src/gs/patrol_ui.cpp). gPortHubNear is the one within talking range (-1 none), for the prompt over the picture.
+ */
+#define HUB_NPC_MAX 6
+#define PORT_HUB_MENU 99
+s32 gPortHubMode;               /* a hub battle is up: no lock-on, no attacks (read by the battle's code) */
+volatile s32 gPortHubNear = -1;
+volatile s32 gPortHubExit = -1;
+volatile s32 gPortHubWantMenu;  /* START was pressed (btl_seq.c sets it instead of opening the pause menu) */
+typedef struct HubNpc {
+    s32 chara;
+    s32 costume;
+    s32 obj;                    /* battle object id, -1 none yet */
+    s32 state;                  /* 0 to load, 1 loading, 2 placed, 3 failed */
+    f32 base;                   /* the model's own scale */
+    f32 yaw;
+    Vec4 pos;
+    struct { struct { void *buf; s32 size; s32 id; void *orig; } file[3]; u32 flags; s32 number; } slot; /* (a BtlResSlot: battle/btl_obj.h) */
+} HubNpc;
+static struct {
+    s32 count;
+    s32 loading;                /* the one being read, -1 none */
+    s32 frames;
+    s32 ending;
+    Vec4 center;
+    f32 radius;
+    Vec4 park;
+    HubNpc npc[HUB_NPC_MAX];
+} sHub;
+
+extern s32 BtlObj_Create(s32 type, void *res, s32 active);
+extern s32 BtlObj_Destroy(s32 id);
+extern void BtlObjAnim_PlayModel(void *obj, s32 motion, s32 mode);
+extern void BtlRes_LoadSingle(s32 fromHeap, void *slot, s32 model);
+extern void BtlRes_FreeSingle(void *slot);
+extern s32 File_UpdateRequests(void);
+extern s32 ChrView_GetModelFile(s32 chara, s32 costume, s32 damaged);
+extern void Hud_ShowAll(s32 on);
+
+static void PortHub_Free(void) {
+    s32 i;
+
+    for (i = 0; i < sHub.count; i++) {
+        HubNpc *n = &sHub.npc[i];
+
+        if (n->obj >= 0) {
+            BtlObj_Destroy(n->obj);
+            n->obj = -1;
+        }
+        if (n->state == 1 || n->state == 2) {
+            BtlRes_FreeSingle(&n->slot);
+        }
+        n->state = 3;
+    }
+}
+
+/* Where the people stand: round the middle of the stage, the player's side of it left free. */
+static void PortHub_Layout(void) {
+    Vec4 s0;
+    Vec4 s1;
+    Vec4 r;
+    f32 dx;
+    f32 dz;
+    f32 full;
+    f32 a0;
+    s32 i;
+
+    BtlStage_GetStartPlace(0, &s0, &r, 0);
+    BtlStage_GetStartPlace(1, &s1, &r, 0);
+    dx = s0.x - s1.x;
+    dz = s0.z - s1.z;
+    full = sqrtf(dx * dx + dz * dz);
+    if (full < 1.0f) {
+        full = 1.0f;
+        dx = 0.0f;
+        dz = 1.0f;
+    }
+    sHub.center = V((s0.x + s1.x) * 0.5f, s0.y, (s0.z + s1.z) * 0.5f);
+    sHub.radius = full * 0.32f;
+    if (sHub.radius > 70.0f) {
+        sHub.radius = 70.0f;
+    }
+    if (sHub.radius < 25.0f) {
+        sHub.radius = 25.0f;
+    }
+    a0 = atan2f(dx, dz); /* (the player's side of the middle) */
+    for (i = 0; i < sHub.count; i++) {
+        /* spread over the far part of the circle, facing the middle */
+        f32 a = a0 + PS_PI * 0.30f + (PS_PI * 1.40f) * (sHub.count > 1 ? (f32)i / (f32)(sHub.count - 1) : 0.5f);
+        HubNpc *n = &sHub.npc[i];
+
+        n->pos = V(sHub.center.x + sinf(a) * sHub.radius, s0.y, sHub.center.z + cosf(a) * sHub.radius);
+        n->yaw = atan2f(s0.x - n->pos.x, s0.z - n->pos.z); /* (looking at where the player comes in) */
+    }
+    sHub.park = V(sHub.center.x + 4000.0f, s0.y - 3000.0f, sHub.center.z + 4000.0f);
+}
+
+/* An NPC's object where it stands, turned by its yaw, at its own size (the matrix is what it is drawn with). */
+static void PortHub_PlaceNpc(HubNpc *n) {
+    u8 *o = BtlObj_Get(n->obj);
+    f32 *m;
+    f32 c;
+    f32 sn;
+
+    if (o == NULL) {
+        return;
+    }
+    m = (f32 *)(o + 0x9A0);
+    c = cosf(n->yaw);
+    sn = sinf(n->yaw);
+    *(f32 *)(o + 0x950) = n->pos.x;
+    *(f32 *)(o + 0x954) = n->pos.y;
+    *(f32 *)(o + 0x958) = n->pos.z;
+    *(f32 *)(o + 0x964) = n->yaw;
+    m[0] = c * n->base;
+    m[1] = 0.0f;
+    m[2] = -sn * n->base;
+    m[4] = 0.0f;
+    m[5] = n->base;
+    m[6] = 0.0f;
+    m[8] = sn * n->base;
+    m[9] = 0.0f;
+    m[10] = c * n->base;
+    m[12] = n->pos.x;
+    m[13] = n->pos.y;
+    m[14] = n->pos.z;
+}
+
+/* Reads the people's models one at a time and makes them objects. */
+static void PortHub_Load(void) {
+    s32 i;
+
+    if (sHub.loading >= 0) {
+        HubNpc *n = &sHub.npc[sHub.loading];
+
+        if (File_UpdateRequests() == 0) {
+            return;
+        }
+        sHub.loading = -1;
+        if (n->slot.file[0].buf == NULL) {
+            n->state = 3;
+            return;
+        }
+        n->obj = BtlObj_Create(3, &n->slot, 1);
+        if (n->obj < 0) {
+            BtlRes_FreeSingle(&n->slot);
+            n->state = 3;
+            return;
+        }
+        {
+            u8 *o = BtlObj_Get(n->obj);
+            f32 *m = (f32 *)(o + 0x9A0);
+
+            BtlObjAnim_PlayModel(o, 7, 2); /* (its standing pose, round and round) */
+            *(u32 *)(o + 0xA40) &= ~0x02000000;
+            n->base = sqrtf(m[4] * m[4] + m[5] * m[5] + m[6] * m[6]);
+            if (n->base < 0.01f) {
+                n->base = 1.0f;
+            }
+        }
+        n->state = 2;
+        PortHub_PlaceNpc(n);
+        return;
+    }
+    for (i = 0; i < sHub.count; i++) {
+        HubNpc *n = &sHub.npc[i];
+
+        if (n->state == 0) {
+            s32 file = ChrView_GetModelFile(n->chara, n->costume, 0);
+
+            if (file <= 0) {
+                n->state = 3;
+                continue;
+            }
+            memset(&n->slot, 0, sizeof(n->slot));
+            BtlRes_LoadSingle(1, &n->slot, file);
+            n->state = 1;
+            sHub.loading = i;
+            return;
+        }
+    }
+}
+
+static s32 PortHub_Leave(s32 code) {
+    gPortHubExit = code;
+    gPortHubNear = -1;
+    PortHub_Free();
+    gPortHubMode = 0;
+    BattleResult_Set(1, 0);
+    PortStory_SeqTo(BTL_SEQ_END);
+    return 1;
+}
+
+/* 9007 "hub": every frame of the headquarters' battle. */
+static s32 PortStoryCmd_Hub(u32 phase, void *work) {
+    static s32 serial;
+    s32 i;
+    s32 near;
+    f32 best;
+    Vec4 me;
+
+    switch (phase) {
+    case GSC_PHASE_BEGIN:
+    case GSC_PHASE_BEGIN_ABORT:
+        memset(&sHub, 0, sizeof(sHub));
+        sHub.count = Gsc_GetInt();
+        if (sHub.count > HUB_NPC_MAX) {
+            sHub.count = HUB_NPC_MAX;
+        }
+        for (i = 0; i < sHub.count; i++) {
+            sHub.npc[i].chara = Gsc_GetInt();
+            sHub.npc[i].costume = Gsc_GetInt();
+            sHub.npc[i].obj = -1;
+        }
+        sHub.loading = -1;
+        gPortHubMode = 1;
+        gPortHubExit = -1;
+        gPortHubNear = -1;
+        gPortHubWantMenu = 0;
+        PortHub_Layout();
+        *(s32 *)work = ++serial;
+        return phase == GSC_PHASE_BEGIN_ABORT;
+    case GSC_PHASE_UPDATE:
+        if (*(s32 *)work != serial) {
+            return 1;
+        }
+        break;
+    default:
+        return 0;
+    }
+    if (sHub.ending) {
+        return 1;
+    }
+    if (BtlSeq_GetState() > BTL_SEQ_FIGHT) {
+        PortHub_Free();
+        gPortHubMode = 0;
+        gPortHubNear = -1;
+        return 1;
+    }
+    gPortHubMode = 1;
+    Hud_ShowAll(0);
+    sHub.frames++;
+    /* the stand-in of the other side: far off and out of sight */
+    BtlFacade_SetCtrl100(1);
+    BtlFacade_SetCharPos(1, &sHub.park);
+    PortHub_Load();
+    BtlCharApi_GetPos(BattleSide_GetObjId(0), &me);
+    near = -1;
+    best = 30.0f;
+    for (i = 0; i < sHub.count; i++) {
+        HubNpc *n = &sHub.npc[i];
+        f32 dx;
+        f32 dz;
+        f32 d;
+
+        if (n->state != 2) {
+            continue;
+        }
+        dx = me.x - n->pos.x;
+        dz = me.z - n->pos.z;
+        d = sqrtf(dx * dx + dz * dz);
+        if (d < best && __builtin_fabsf(me.y - n->pos.y) < 40.0f) {
+            best = d;
+            near = i;
+        }
+        if (d < 45.0f) { /* (turning to the player who comes near) */
+            f32 want = atan2f(dx, dz);
+            f32 diff = want - n->yaw;
+
+            while (diff > PS_PI) {
+                diff -= 2.0f * PS_PI;
+            }
+            while (diff < -PS_PI) {
+                diff += 2.0f * PS_PI;
+            }
+            n->yaw += diff * 0.12f;
+        }
+        if (d < 9.0f && d > 0.01f && __builtin_fabsf(me.y - n->pos.y) < 20.0f) { /* (not walked through) */
+            Vec4 out = V(n->pos.x + dx / d * 9.0f, me.y, n->pos.z + dz / d * 9.0f);
+
+            BtlFacade_SetCharPos(0, &out);
+        }
+        PortHub_PlaceNpc(n);
+    }
+    gPortHubNear = near;
+    if (sHub.frames > 30 && near >= 0 && (gPad[0].gamePressed & PADG_CIRCLE)) {
+        sHub.ending = 1;
+        return PortHub_Leave(near);
+    }
+    if (gPortHubWantMenu && sHub.frames < 60) {
+        gPortHubWantMenu = 0; /* (a START from before the Lookout was there: not for its menu) */
+    }
+    if (gPortHubWantMenu) {
+        gPortHubWantMenu = 0;
+        sHub.ending = 1;
+        return PortHub_Leave(PORT_HUB_MENU);
+    }
+    return 0;
+}
+
 /* ---- the command table -------------------------------------------------------------------------------------- */
 
 /* The game's table with the Story Creator's commands after it (Battle_Load hands it to the GSC engine). */
@@ -935,6 +1243,8 @@ s32 *PortStory_Commands(s32 *game) {
         table[n++].handler = (GscHandler)PortStoryCmd_Title;
         table[n].id = 9006;
         table[n++].handler = (GscHandler)PortStoryCmd_SceneEnd;
+        table[n].id = 9007;
+        table[n++].handler = (GscHandler)PortStoryCmd_Hub;
         table[n].id = 0;
         table[n].handler = NULL;
         made = 1;

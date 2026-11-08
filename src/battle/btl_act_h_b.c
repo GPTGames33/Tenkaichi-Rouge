@@ -2163,6 +2163,15 @@ s32 BtlDecide_Common(BtlActIChr *chr, s32 mask) {
  * The table is written out in the header.
  */
 s32 BtlDecide_Main(BtlActIChr *chr, s32 mask) {
+#ifdef PORT
+    extern s32 gPortHubMode; /* Corrupt Patrol's headquarters: walking, dashing, jumping, flying, guarding, charging ki; no
+                                technique, skill, ultimate, max power, switch, transformation, fusion, lock-on move,
+                                search or answer to a blast */
+    if (gPortHubMode) {
+        mask &= ~(0x10000000 | 0x8000000 | 0x6000 | 0x18000 | 0x20000 | 0x40000 | 0x20000000 | 0x100000 | 0x800000 |
+                  0x80 | 0x1000000 | 0x2000000 | 0x400000 | 0x100 | 0x200 | 0x200000);
+    }
+#endif
     if (!BtlChar_IsFree(chr)) {
         return 0;
     }
@@ -2375,6 +2384,13 @@ s32 BtlDecide_Main(BtlActIChr *chr, s32 mask) {
  * BtlDecide_Main: groups enabled by `mask`, the first satisfied input queues its action(s); returns the count.
  */
 s32 BtlDecide_Attack(BtlActIChr *chr, s32 mask) {
+#ifdef PORT
+    extern s32 gPortHubMode; /* (Corrupt Patrol's headquarters: no attack of any kind) */
+
+    if (gPortHubMode) {
+        return 0;
+    }
+#endif
     if (!BtlChar_IsFree(chr)) {
         return 0;
     }

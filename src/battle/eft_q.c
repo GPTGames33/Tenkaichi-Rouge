@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef PORT
+#include "port_corrupt.h"
+#endif
 #include "battle/eft_q.h"
 #include "sys/gfx_ot.h"
 
@@ -216,6 +219,15 @@ void EftGlow_SetType(EftGlow *w, s32 objId, s32 type, s32 paramFlags) {
             EftGlow_ColorFromBytes(&w->color[i], &gEftGlowCfg->color[w->type * EFT_GLOW_ROW + j + 1]);
         }
     }
+#ifdef PORT
+    if (PortCorrupt_Get(objId)) { /* Corrupt Patrol: a corrupted fighter's power-up glow in the aura's violet */
+        w->colorA.x = 0.55f; w->colorA.y = 0.12f; w->colorA.z = 0.95f;
+        w->colorB.x = 0.40f; w->colorB.y = 0.05f; w->colorB.z = 0.85f;
+        for (i = 0; i < 4; i++) {
+            w->color[i].x = 0.85f; w->color[i].y = 0.30f; w->color[i].z = 1.00f;
+        }
+    }
+#endif
 }
 
 /* Reads the fighter's aura type, parameter flags and height into the glow. */

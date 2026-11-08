@@ -959,6 +959,9 @@ bool compile(const J &saga, int number, const std::string &preview, CEp &out, st
     out.label = "EPISODE " + std::to_string(number + 1);
     const J &bt = ep["battle"];
     bool fight = preview.empty() && bt["fight"].truthy(true);
+    const J &hubDef = ep["hub"]; // (Corrupt Patrol's headquarters: a battle without a fight, people standing round: 9007)
+    bool hub = hubDef.isObj() && preview.empty();
+    if (hub) { fight = true; }
     Gsc g;
     // the setup: the rule, the sides, the members (the game's commands 10, 11, 12)
     g.action(1000);
@@ -967,7 +970,7 @@ bool compile(const J &saga, int number, const std::string &preview, CEp &out, st
     g.cmd(10, {Gsc::I(stage), Gsc::I(bgm), Gsc::I(0), Gsc::I(fight ? 3 : 0), Gsc::I(0)});
     for (int s = 0; s < 2; s++) { g.cmd(11, {Gsc::I(s), Gsc::I((int)teams[s].chara.size())}); }
     int cpu = kCpuLevels[std::max(0, std::min(4, (int)bt["cpu"].number(1)))];
-    if (bt.has("cpu_level")) { cpu = std::max(0, std::min(40, (int)bt["cpu_level"].number(cpu))); } // (Corrupt Patrol: the AI's own scale)
+    if (bt.has("cpu_level")) { cpu = std::max(hub ? -1 : 0, std::min(40, (int)bt["cpu_level"].number(cpu))); } // (Corrupt Patrol: the AI's own scale)
     for (int s = 0; s < 2; s++) {
         int hp = std::max(1, std::min(100, (int)bt[s ? "enemy_health" : "player_health"].number(100)));
         const J &items = bt[s ? "enemy_items" : "player_items"]; // (Corrupt Patrol: Z items of the side's fighters, up to 8 ids)
@@ -1000,7 +1003,8 @@ bool compile(const J &saga, int number, const std::string &preview, CEp &out, st
     g.cmd(3);
     g.cmd(9, {Gsc::I(-1)});
     g.cmd(5);
-    if (preview.empty() || preview == "intro") { scene(ep["intro"], preview.empty()); }
+    if (hub) {} // (no scene: the player is let loose at once)
+    else if (preview.empty() || preview == "intro") { scene(ep["intro"], preview.empty()); }
     else { scene(ep[preview.c_str()], false); }
     g.cmd(6);
     if (fight) {
@@ -1018,8 +1022,18 @@ bool compile(const J &saga, int number, const std::string &preview, CEp &out, st
     g.cmd(4);
     g.end();
     if (fight) {
-        g.action(2000); // the referee, a task of its own
-        g.cmd(9004);
+        g.action(2000); // the referee, a task of its own (the headquarters' own for a hub)
+        if (hub) {
+            const J &ppl = hubDef["npcs"];
+            std::vector<Gsc::Op> ops = {Gsc::I((int)std::min((size_t)6, ppl.size()))};
+            for (size_t i = 0; i < ppl.size() && i < 6; i++) {
+                ops.push_back(Gsc::I(chara_of(ppl[i]["chara"])));
+                ops.push_back(Gsc::I((int)ppl[i]["costume"].number(0)));
+            }
+            g.cmd(9007, ops);
+        } else {
+            g.cmd(9004);
+        }
         g.end();
         // after the fight: won by a knock-out / on time (10040 / 10041), lost (10030 / 10031)
         static const int kActs[4] = {10040, 10041, 10030, 10031};

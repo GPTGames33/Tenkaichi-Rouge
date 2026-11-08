@@ -1327,6 +1327,10 @@ s32 BtlSeqFight_PreUpdate(BtlSeqWaitCtx *ctx) {
     return 3;
 }
 
+#ifdef PORT
+extern s32 gPortHubMode;
+extern volatile s32 gPortHubWantMenu;
+#endif
 /* State 3 update: opens / runs the pause menu, then checks for the end of the battle (-> 4, or 6 without a finish scene). */
 s32 BtlSeqFight_Update(BtlSeqWaitCtx *ctx) {
     if (Battle_GetMode() != 8) {
@@ -1336,7 +1340,13 @@ s32 BtlSeqFight_Update(BtlSeqWaitCtx *ctx) {
             } else if (BattleReplay_IsActive() && BattleReplay_IsLoaded() && BtlPause_GetPad() == 1) {
             } else if (Battle_GetMode() == 1 && BtlScript_IsEventRunning()) {
                 BtlScript_AbortEvents();
-            } else {
+            }
+#ifdef PORT
+            else if (gPortHubMode) { /* Corrupt Patrol's headquarters: START is its own menu (src/battle/port_story_btl.c) */
+                gPortHubWantMenu = 1;
+            }
+#endif
+            else {
 #ifdef PORT
                 /* Online the pause menu does not stop the fight (a player could hold the other in a pause for as
                    long as they liked): the menu opens for the one who pressed START, the fight, its clock and its

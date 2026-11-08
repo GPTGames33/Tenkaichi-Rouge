@@ -69,9 +69,31 @@ s32 PortPatrol_AfterBattle(s32 flags, s32 reason) {
     return 1;
 }
 
-/* The mode's screens, from the main menu (or after one of its battles) until they are left. Returns 1 when a battle
-   is to be fought: it is set up and the caller starts it. */
+/* The mode's screens until they are left: 0 back to the main menu, 1 a battle is set up, 3 the creator is wanted. */
+static s32 PortPatrol_Screens(void);
+
+/* From the main menu (or after one of its battles) until the mode is left. Returns 1 when a battle is to be fought:
+   it is set up and the caller starts it. The warrior's look is made in the Custom Character screen's Patrol mode
+   (port/src/gs/creator_ui.cpp: PortCreator_PatrolBegin), run from here between two openings of the screens. */
+static s32 sWantCreator;
+
 s32 PortPatrol_Run(void) {
+    s32 r = PortPatrol_Screens();
+
+    sWantCreator = r == 3;
+    return r == 3 ? 0 : r;
+}
+
+/* (menu_g_b.c, after PortPatrol_Run) 1 once when the creator is wanted: the Duel mode is entered again for it (role 6),
+   as from the main menu, and for the screens after it */
+s32 PortPatrol_WantsCreator(void) {
+    s32 w = sWantCreator;
+
+    sWantCreator = 0;
+    return w;
+}
+
+static s32 PortPatrol_Screens(void) {
     s32 leaving = 0;
     s32 play = 0;
 
@@ -121,6 +143,10 @@ s32 PortPatrol_Run(void) {
         if (!leaving && ColorFade_IsInDone() && PortPatrolUi_Get(PG_LEAVE)) {
             leaving = PortPatrolUi_Get(PG_LEAVE);
             play = leaving == 2 && !ChrView_IsLoading() && PortPatrolUi_Prepare();
+            if (leaving == 3 && ChrView_IsLoading()) {
+                leaving = 0;
+                continue;
+            }
             if (leaving == 2 && !play) {
                 leaving = 0; /* (it could not be made, or the viewer is still loading: the screen says why / tries again) */
                 continue;
@@ -137,6 +163,9 @@ s32 PortPatrol_Run(void) {
     Port_EscQuit(1);
     PortPatrolUi_Close();
     Dma_ResetBuffers();
+    if (leaving == 3) {
+        return 3;
+    }
     if (play) {
         BattleSetup_Clear();
         BattleSetup_SetScript(PP_SCRIPT); /* (the script's setup action sets the rule, the sides and the members) */

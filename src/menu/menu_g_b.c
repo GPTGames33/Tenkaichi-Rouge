@@ -70,11 +70,34 @@ s32 Duel_Main(void) {
                                  battles (the hub, quests, training) come back here (PortPatrol_AfterBattle, menu_a_b.c) */
         extern s32 PortPatrol_Run(void);
 
+        extern s32 PortPatrol_WantsCreator(void);
+
         result = PortPatrol_Run();
         Adx_StopAll();
         gPortDuelRole = 0;
         gProgress->mode = 4;
+        if (PortPatrol_WantsCreator()) { /* (its warrior's look: the Custom Character screen, then back to the mode) */
+            gPortDuelRole = 6;
+            gProgress->mode = 38;
+            result = 0;
+        }
         done = 1;
+    }
+    if (gPortDuelRole == 6 && !done) { /* Corrupt Patrol's warrior made in the Custom Character screen's Patrol mode, then its screens */
+        extern s32 PortCharas_Reload(void);
+
+        Bgm_Play(0x10B16 + 2);
+        PortCreator_Run();
+        Adx_StopAll();
+        PortCharas_Reload(); /* (the warrior just made is on the roster: its id is known to the screens) */
+        gPortDuelRole = 5;
+        gProgress->mode = 38;
+        result = 0;
+        done = 1;
+    }
+    if (done && gProgress->mode == 38 && (gPortDuelRole == 5 || gPortDuelRole == 6)) {
+        goto port_handoff; /* (Corrupt Patrol and its creator hand over to each other: the Duel mode is entered again
+                              for the next, its own screens are not run in between) */
     }
 #endif
     do {
@@ -153,6 +176,9 @@ s32 Duel_Main(void) {
         }
         sceGsSyncPath(0, 0);
     } while (!done);
+#ifdef PORT
+port_handoff:
+#endif
     if (gMenuArc5 != NULL) {
         Heap_Free(gMenuArc5);
         gMenuArc5 = NULL;

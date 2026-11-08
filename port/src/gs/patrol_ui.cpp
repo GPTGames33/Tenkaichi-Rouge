@@ -35,6 +35,15 @@ std::string StoryKit_ShortName(int chara);
 int StoryKit_AddedId(const std::string &name);
 extern "C" {
 int PortStoryUi_PrepareDoc(const char *json, int episode);
+void PortCorrupt_SetNext(int mask); // port_corrupt.c
+void PortCreator_PatrolBegin(const char *name, const char *file, const char *allowedCsv, const char *bodyRef, int bodyCostume,
+                             const char *kitJson); // gs/creator_ui.cpp: its Patrol mode
+void PortCreator_PatrolAuto(void);
+int PortCreator_PatrolResult(char *name, int size);
+int PortCreator_PatrolFile(char *file, int size);
+extern int gPortHubMode;            // src/battle/port_story_btl.c: the headquarters' battle is up
+extern volatile int gPortHubNear;   // ... the person within talking range, -1 none
+extern volatile int gPortHubExit;   // ... how it was left: a person, or 99 the menu
 void PortStoryUi_EndDoc(void);
 int Port_NetSession(void);
 }
@@ -213,6 +222,16 @@ struct Race {
     int avatar;      // the disc fighter the warrior fights as until their own look is made (Custom Character's Patrol mode)
     int avatarCostume;
 };
+// The fighters each race's parts come from (heads, hair, bodies, outfits): ranges of roster ids, BT4's Time Patroller of
+// the race too (1000 + its BT4 id) when the BT4 disc is there
+const char *const kRaceIds[6] = {
+    "0-21,29-54,63,71-78,80,81,121,122,131-133,159,160,1242",
+    "22-24,123,124,155,1243",
+    "91-97,126-128,1244",
+    "25-28,55-57,60,64,66-69,148-150,157,158",
+    "65,112-117,1245",
+    "100-109,129,130,144",
+};
 const Race kRaces[6] = {
     {"Saiyan", "A warrior race that grows stronger after every battle. Strong melee and ki blasts, and a fighting spirit that never breaks.", 73, 0},
     {"Namekian", "Calm, wise and resilient. Long reach, quick recovery, and the patience to outlast any opponent.", 24, 0},
@@ -376,6 +395,7 @@ struct Save {
     std::string name;
     int race = 0;
     std::string fighter;        // the warrior's character package (Custom Character's Patrol mode), "" none yet
+    std::string fighterFile;    // ... its spec in custom_fighters
     int level = 1, xp = 0, zeni = 500;
     int chapter = 0;            // chapters cleared (the next is this one)
     int masterWins[16] = {0};   // trainings won with each master
@@ -425,6 +445,7 @@ void save_load(void) {
     sSave.name = d["name"].text("Patroller");
     sSave.race = std::max(0, std::min(5, (int)d["race"].number(0)));
     sSave.fighter = d["fighter"].text();
+    sSave.fighterFile = d["fighter_file"].text();
     sSave.level = std::max(1, (int)d["level"].number(1));
     sSave.xp = (int)d["xp"].number(0);
     sSave.zeni = (int)d["zeni"].number(0);
@@ -446,6 +467,7 @@ bool save_write(void) {
     d.set("race", J::num(sSave.race));
     d.set("race_name", J::str(kRaces[sSave.race].name));
     d.set("fighter", J::str(sSave.fighter));
+    d.set("fighter_file", J::str(sSave.fighterFile));
     d.set("level", J::num(sSave.level));
     d.set("xp", J::num(sSave.xp));
     d.set("zeni", J::num(sSave.zeni));
@@ -538,7 +560,7 @@ struct Shared {
 };
 Shared sSh;
 std::string sDoc;     // the battle to play (a saga of one episode)
-enum { FIGHT_NONE, FIGHT_CHAPTER, FIGHT_TRAIN, FIGHT_BOUNTY };
+enum { FIGHT_NONE, FIGHT_CHAPTER, FIGHT_TRAIN, FIGHT_BOUNTY, FIGHT_HUB };
 int sFightKind, sFightA, sFightB; // what it is: chapter n / master m lesson k / bounty of tier
 int sResultSeen;
 void sound(int id) {
@@ -819,7 +841,7 @@ int draw_rows(std::vector<Row> &rows, List &l, ImVec2 a, ImVec2 b, bool input) {
 }
 
 // =============================================================================================== screens
-enum Scr { S_TITLE, S_RACE, S_NAME, S_HQ, S_QUEST, S_MASTERS, S_MASTER, S_SHOP, S_BOARD, S_MENU, S_STATS, S_GEAR, S_SKILLS, S_LOG,
+enum Scr { S_HUB, S_TITLE, S_RACE, S_NAME, S_HQ, S_QUEST, S_MASTERS, S_MASTER, S_SHOP, S_BOARD, S_MENU, S_STATS, S_GEAR, S_SKILLS, S_LOG,
            S_TALK, S_RESULT, S_WARDROBE };
 Scr sScr = S_TITLE;
 std::vector<Scr> sStack;
@@ -929,11 +951,12 @@ void play_chapter(int m) {
     ep.set("enemy", enemy_j(ms.corruptChara, true));
     ep.set("intro", scene_j(ms.intro, 2));
     // the corrupted are stronger than they ever were: every stat raised, more so later in the story
-    int tier = std::min(3, 1 + m / 3);
-    std::vector<int> items = {tier, 3 + tier, 6 + tier, 9 + tier};
+    int tier = std::min(3, m / 2); // (the first ones beatable by a new warrior; later ones need levels, gear and lessons)
+    std::vector<int> items;
+    if (tier > 0) { items = {tier, 3 + tier, 6 + tier, 9 + tier}; }
     if (m >= 4) { items.push_back(125); }
     if (m >= 7) { items.push_back(126); }
-    ep.set("battle", battle_j(std::min(33, 13 + m * 3), items, 0));
+    ep.set("battle", battle_j(std::min(33, 6 + m * 4), items, 0));
     ep.set("win", scene_j(ms.win, 2));
     ep.set("lose", scene_j(ms.lose, 2));
     play(ep, FIGHT_CHAPTER, m, 0);
@@ -978,6 +1001,109 @@ void play_bounty(void) {
     play(ep, FIGHT_BOUNTY, t, foe);
 }
 
+// ---- the warrior's look and moves: the Custom Character screen in its Patrol mode (gs/creator_ui.cpp)
+std::string race_ids_csv(void) { // the race's ranges written out, and the masters' outfits earned
+    std::string out;
+    const char *c = kRaceIds[sSave.race];
+    while (*c) {
+        int a = atoi(c), b = a;
+        while (*c >= '0' && *c <= '9') { c++; }
+        if (*c == '-') { c++; b = atoi(c); while (*c >= '0' && *c <= '9') { c++; } }
+        for (int i = a; i <= b; i++) { out += (out.empty() ? "" : ",") + std::to_string(i); }
+        if (*c == ',') { c++; }
+    }
+    for (size_t m = 0; m < kMasters.size(); m++) {
+        if (sSave.masterWins[m] >= kLessons) { out += "," + std::to_string(kMasters[m].chara); }
+    }
+    return out;
+}
+J move_ref(int chara, int slot) { J r = J::obj(); r.set("chara", J::num(chara)); r.set("slot", J::str(kSlotKeys[std::max(0, std::min(4, slot))])); return r; }
+std::string kit_json(void) { // what the mode sets on the warrior: the techniques in their slots, the stats, the race
+    J kit = J::obj();
+    J moves = J::obj();
+    moves.set("blast1_1", move_ref(31, 0));  // Explosive Wave
+    moves.set("blast1_2", move_ref(3, 1));   // (Goku's second skill)
+    moves.set("blast2_1", move_ref(73, 2));  // Full Power Energy Wave
+    moves.set("blast2_2", move_ref(17, 3));  // Full Power Energy Blast Volley
+    moves.set("ultimate", move_ref(31, 4));  // Super Explosive Wave
+    for (int k = 0; k < 5; k++) { // (those chosen from the masters' lessons)
+        const J &l = sSave.loadout[kSlotKeys[k]];
+        if (l.isObj() && l["chara"].number(-1) >= 0) { moves.set(kSlotKeys[k], move_ref((int)l["chara"].number(), (int)l["slot"].number(k))); }
+    }
+    kit.set("moves", moves);
+    const J &style = sSave.loadout["style"]; // (a master's fighting style, once their training is complete)
+    if (style.isObj() && style["chara"].number(-1) >= 0) {
+        J m = J::obj();
+        m.set("chara", J::num(style["chara"].number()));
+        kit.set("melee", m);
+        kit.set("ki_blasts", m);
+        kit.set("stance", m);
+    }
+    kit.set("health", J::num(30000));
+    kit.set("ki", J::num(30000));
+    kit.set("blast", J::num(3));
+    kit.set("race", J::str(kRaces[sSave.race].name));
+    std::string o;
+    js_write(kit, o);
+    return o;
+}
+bool sAwaitCreator; // the creator was opened for the warrior: its result is read when the screens open again
+bool sCreatorNew;   // ... for a new warrior (the welcome follows)
+void open_creator(bool auto_) {
+    std::string kit = kit_json(), ids = race_ids_csv(), body = std::to_string(kRaces[sSave.race].avatar);
+    PortCreator_PatrolBegin(sSave.name.c_str(), sSave.fighterFile.c_str(), ids.c_str(), body.c_str(), kRaces[sSave.race].avatarCostume, kit.c_str());
+    if (auto_) { PortCreator_PatrolAuto(); }
+    sAwaitCreator = true;
+    SDL_LockMutex(sMx);
+    sSh.leave = 3;
+    SDL_UnlockMutex(sMx);
+}
+void welcome(void) {
+    const Npc &k = kNpcs[NPC_QUEST];
+    talk({{k.chara, k.name, "Welcome, " + sSave.name + ". I am the Supreme Kai. You've arrived at a dark time."},
+          {k.chara, k.name, "A purple power is spreading across the world. It finds the strongest fighters, amplifies them, and turns them evil."},
+          {k.chara, k.name, "Piccolo was the first. Free him, and he'll teach you. Every master you save makes the Patrol stronger."},
+          {k.chara, k.name, "This Lookout is the Patrol's headquarters. Walk up to anyone and press Circle to talk. START opens the Patrol Menu."}}, nullptr);
+}
+
+// ---- the headquarters: Kami's Lookout to walk on (a battle without a fight: src/battle/port_story_btl.c, 9007)
+std::vector<int> sHubNpcs; // which of kNpcs each person of the hub is
+bool sHubQueued;
+const int kHubStage = 5;   // Kami's Lookout
+int hub_master(void) { return sSave.chapter > 0 ? kMasters[(size_t)std::min(sSave.chapter, (int)kMasters.size()) - 1].chara : -1; }
+void play_hub(void) {
+    J ep = J::obj();
+    ep.set("title", J::str("Patrol HQ"));
+    ep.set("stage", J::num(kHubStage));
+    ep.set("music", J::num(1));
+    J foe = J::obj();
+    foe.set("chara", J::num(79));
+    J fl = J::arr();
+    fl.push(foe);
+    ep.set("enemy", fl);
+    J bt = J::obj();
+    bt.set("fight", J::boolean(true));
+    bt.set("time", J::num(0));
+    bt.set("cpu_level", J::num(-1));
+    bt.set("player_items", ints(player_items()));
+    ep.set("battle", bt);
+    J hub = J::obj();
+    J ppl = J::arr();
+    sHubNpcs.clear();
+    for (int i = 0; i < NPC_COUNT; i++) {
+        int chara = i == NPC_MASTERS ? hub_master() : kNpcs[i].chara;
+        if (chara < 0 || i == NPC_MENU) { continue; }
+        J n = J::obj();
+        n.set("chara", J::num(chara));
+        ppl.push(n);
+        sHubNpcs.push_back(i);
+    }
+    hub.set("npcs", ppl);
+    ep.set("hub", hub);
+    play(ep, FIGHT_HUB, 0, 0);
+}
+void open_npc(int i); // (below the screens it opens)
+
 // ---- after a battle: experience, zeni, lessons, the story
 void gain(int xp, int zeni) {
     sSave.zeni += zeni;
@@ -994,6 +1120,17 @@ void gain(int xp, int zeni) {
     }
 }
 void on_result(int result) {
+    if (sFightKind == FIGHT_HUB) { // (left the Lookout: for a person, the menu, or out of the battle's own menu)
+        int exit = gPortHubExit;
+        fprintf(stderr, "bt3: patrol: left the Lookout: %d\n", exit);
+        reset_to(S_HUB);
+        sHubQueued = false;
+        if (exit == 99) { go(S_MENU); }
+        else if (exit >= 0 && exit < (int)sHubNpcs.size()) { open_npc(sHubNpcs[(size_t)exit]); }
+        else { reset_to(S_TITLE); }
+        save_write();
+        return;
+    }
     sResultLines.clear();
     bool won = result == 1;
     if (result == 3) {
@@ -1038,7 +1175,7 @@ void on_result(int result) {
         }
     }
     save_write();
-    reset_to(S_HQ);
+    reset_to(S_HUB);
     go(S_RESULT);
 }
 
@@ -1067,7 +1204,7 @@ void scr_title(bool input) {
     r.label = "Continue";
     r.locked = !sSave.exists;
     r.sub = sSave.exists ? sSave.name + ", " + kRaces[sSave.race].name + ", level " + std::to_string(sSave.level) : "No save yet";
-    r.ok = [] { reset_to(S_HQ); };
+    r.ok = [] { reset_to(S_HUB); };
     rows.push_back(r);
     int cur = draw_rows(rows, sLists[S_TITLE], a, b, input && !sAsking);
     if (sSave.exists) {
@@ -1161,12 +1298,10 @@ void scr_name(bool input) {
         sSave.race = sRaceCur;
         sSave.exists = true;
         save_write();
-        reset_to(S_HQ);
-        const Npc &k = kNpcs[NPC_QUEST];
-        talk({{k.chara, k.name, "Welcome, " + n + ". I am the Supreme Kai. You've arrived at a dark time."},
-              {k.chara, k.name, "A purple power is spreading across the world. It finds the strongest fighters, amplifies them, and turns them evil."},
-              {k.chara, k.name, "Piccolo was the first. Free him, and he'll teach you. Every master you save makes the Patrol stronger."},
-              {k.chara, k.name, "This Lookout is the Patrol's headquarters. Speak to me when you're ready for your first mission."}}, nullptr);
+        reset_to(S_HUB);
+        if (getenv("BT3_PATROL_NOCREATOR") != NULL) { welcome(); return; } // (testing: the stand-in)
+        sCreatorNew = true;
+        open_creator(false);
     };
     if (input && sIn.ok) {
         if (sKeyCur < 36) { if (sName.size() < 16) { sName += (char)(sName.empty() || sName.back() == ' ' ? kKeys[sKeyCur] : SDL_tolower(kKeys[sKeyCur])); sound(0); } }
@@ -1200,7 +1335,7 @@ void player_card(ImVec2 a, ImVec2 b) {
     sDl->AddRectFilled(xa, ImVec2(xa.x + w * f, xb.y), kVio1, S(5));
 }
 void scr_hq(bool input) {
-    heading("Patrol HQ", "KAMI'S LOOKOUT");
+    heading("Lookout Directory", "KAMI'S LOOKOUT");
     ImVec2 a = P(40, 150), b = P(560, 520);
     panel(a, b);
     static std::vector<Row> rows;
@@ -1219,15 +1354,7 @@ void scr_hq(bool input) {
         } else if (i == NPC_BOARD) {
             r.value = std::to_string(sSave.bounties) + " done";
         }
-        r.ok = [i] {
-            const Npc &n = kNpcs[i];
-            if (i == NPC_QUEST) { go(S_QUEST); }
-            else if (i == NPC_MASTERS) { go(S_MASTERS); }
-            else if (i == NPC_SHOP) { talk({{n.chara, n.name, "Hahaha! Welcome to the shop of the World Champion! Everything here was personally tested by yours truly!"}}, [] { go(S_SHOP); }); }
-            else if (i == NPC_BOARD) { go(S_BOARD); }
-            else if (i == NPC_WARDROBE) { go(S_WARDROBE); }
-            else { go(S_MENU); }
-        };
+        r.ok = [i] { open_npc(i); };
         rows.push_back(r);
     }
     int cur = draw_rows(rows, sLists[S_HQ], a, b, input);
@@ -1235,9 +1362,32 @@ void scr_hq(bool input) {
     int who = cur == NPC_MASTERS ? (sSave.chapter > 0 ? kMasters[(size_t)std::max(0, sSave.chapter - 1)].chara : -1) : kNpcs[cur].chara;
     want_model(cur == NPC_MENU ? fighter_chara() : who, 0);
     tip_box(cur == NPC_MASTERS && sSave.chapter == 0 ? "No masters yet. Free a corrupted fighter in the Main Quest first." : kNpcs[cur].hello, who >= 0 ? who : fighter_chara());
-    prompts({{B_CROSS, "Talk"}, {B_START, "Patrol Menu"}, {B_CIRCLE, "Title"}});
-    if (input && sIn.start) { sound(1); go(S_MENU); }
-    else if (input && sIn.back) { sound(2); save_write(); reset_to(S_TITLE); }
+    prompts({{B_CROSS, "Go"}, {B_CIRCLE, "Back"}});
+    if (input && sIn.back) { sound(2); back(); }
+}
+void open_npc(int i) {
+    const Npc &n = kNpcs[i];
+    if (i == NPC_QUEST) { go(S_QUEST); }
+    else if (i == NPC_MASTERS) { if (sSave.chapter == 0) { notice("No masters yet. Free a corrupted fighter first."); } else { go(S_MASTERS); } }
+    else if (i == NPC_SHOP) { talk({{n.chara, n.name, "Hahaha! Welcome to the shop of the World Champion! Everything here was personally tested by yours truly!"}}, [] { go(S_SHOP); }); }
+    else if (i == NPC_BOARD) { go(S_BOARD); }
+    else if (i == NPC_WARDROBE) { go(S_WARDROBE); }
+    else { go(S_MENU); }
+}
+// Back on the Lookout: its battle is made again (a moment's loading), unless a question is up
+void scr_hub(bool input) {
+    heading("Kami's Lookout", "PATROL HQ");
+    ImVec2 a = P(388, 330), b = P(988, 420);
+    panel(a, b);
+    std::string t = "Heading back to the Lookout...";
+    text(sBold, S(24), ImVec2((a.x + b.x) * 0.5f - text_w(sBold, S(24), t.c_str()) * 0.5f, a.y + S(30)), kInk, t);
+    want_model(-1, 0);
+    if (!sHubQueued && !sAsking && sTalk.empty() && !sAwaitCreator) {
+        sHubQueued = true;
+        if (getenv("BT3_PATROL_NOHUB") != NULL) { go(S_HQ); sHubQueued = false; return; } // (testing: the list instead)
+        play_hub();
+    }
+    (void)input;
 }
 void scr_quest(bool input) {
     heading("Main Quest", "SUPREME KAI");
@@ -1416,10 +1566,15 @@ void scr_wardrobe(bool input) {
         o.value = "OWNED";
         rows.push_back(o);
     }
+    Row ch;
+    ch.label = sSave.fighter.empty() ? "Make your warrior's look" : "Change your look";
+    ch.sub = std::string("Heads, hair, outfits: ") + kRaces[sSave.race].name + " fighters' and your masters'";
+    ch.ok = [] { open_creator(false); };
+    rows.insert(rows.begin(), ch);
     draw_rows(rows, sLists[S_WARDROBE], a, b, input);
     want_model(fighter_chara(), 0);
-    tip_box(sSave.fighter.empty() ? "Your warrior still fights as their race's stand-in. Their own look is made in the Custom Character screen's Patrol mode."
-                                  : "Change your look in the Custom Character screen's Patrol mode.", 56);
+    tip_box(sSave.fighter.empty() ? "Your warrior still fights as their race's stand-in. Make their own look here."
+                                  : "Your race's outfits, and the outfits of masters whose training you completed.", 56);
     prompts({{B_CIRCLE, "Back"}});
     if (input && sIn.back) { sound(2); back(); }
 }
@@ -1435,6 +1590,7 @@ void scr_menu(bool input) {
     add("Techniques", "What your masters have taught you", [] { go(S_SKILLS); });
     add("Customize", "Your warrior's look", [] { go(S_WARDROBE); });
     add("Quest Log", "The story so far and your masters", [] { go(S_LOG); });
+    add("Lookout Directory", "Talk to anyone on the Lookout without walking", [] { go(S_HQ); });
     add("Save", "Write your progress", [] { if (save_write()) { notice("Saved."); } else { notice("Could not save."); } });
     add("Return to Title", "Saves first", [] { save_write(); reset_to(S_TITLE); });
     draw_rows(rows, sLists[S_MENU], a, b, input);
@@ -1556,10 +1712,34 @@ void scr_skills(bool input) {
             rows.push_back(r);
         }
     }
+    bool styles = false;
+    for (size_t m = 0; m < kMasters.size(); m++) {
+        if (sSave.masterWins[m] < kLessons) { continue; }
+        if (!styles) { Row h; h.sec = true; h.label = "FIGHTING STYLE"; rows.push_back(h); styles = true; }
+        Row r;
+        r.label = std::string(kMasters[m].name) + "'s style";
+        r.sub = "Their melee, ki blasts and stance";
+        r.face = kMasters[m].chara;
+        r.value = (int)sSave.loadout["style"]["chara"].number(-1) == kMasters[m].chara ? "SET" : "";
+        int mi = (int)m;
+        r.ok = [mi] {
+            J ref = J::obj();
+            ref.set("chara", J::num(kMasters[(size_t)mi].chara));
+            if (!sSave.loadout.isObj()) { sSave.loadout = J::obj(); }
+            sSave.loadout.set("style", ref);
+            save_write();
+            notice(std::string(kMasters[(size_t)mi].name) + "'s style set. Triangle to apply it.");
+        };
+        rows.push_back(r);
+    }
     draw_rows(rows, sLists[S_SKILLS], a, b, input);
     want_model(fighter_chara(), 0);
-    tip_box("Cross sets a technique in its slot. Your warrior fights with it once their look is rebuilt in the Custom Character screen's Patrol mode.", fighter_chara());
-    prompts({{B_CROSS, "Set"}, {B_CIRCLE, "Back"}});
+    tip_box("Cross sets a technique in its slot. Triangle trains them into your warrior (a few seconds).", fighter_chara());
+    if (input && sIn.tri) {
+        if (sSave.fighterFile.empty()) { notice("Make your warrior's look first (Wardrobe)."); }
+        else { sound(1); open_creator(true); }
+    }
+    prompts({{B_CROSS, "Set"}, {B_TRIANGLE, "Apply"}, {B_CIRCLE, "Back"}});
     if (input && sIn.back) { sound(2); back(); }
 }
 void scr_log(bool input) {
@@ -1586,7 +1766,7 @@ void scr_log(bool input) {
     if (input && sIn.back) { sound(2); back(); }
 }
 void scr_talk(bool input) {
-    if (sTalkAt >= sTalk.size()) { back(); if (sTalkThen) { auto f = sTalkThen; sTalkThen = nullptr; f(); } return; }
+    if (sTalkAt >= sTalk.size()) { sTalk.clear(); back(); if (sTalkThen) { auto f = sTalkThen; sTalkThen = nullptr; f(); } return; }
     const Say &s = sTalk[sTalkAt];
     heading(s.name, "");
     ImVec2 a = P(40, 520), b = P(1000, 650);
@@ -1655,6 +1835,22 @@ void on_open(void) {
     gen = sSh.resultGen;
     int result = sSh.result;
     SDL_UnlockMutex(sMx);
+    if (sAwaitCreator) {
+        sAwaitCreator = false;
+        char name[128] = "", file[256] = "";
+        int r = PortCreator_PatrolResult(name, sizeof(name));
+        PortCreator_PatrolFile(file, sizeof(file));
+        save_load();
+        if (r == 1 && name[0]) {
+            sSave.fighter = name;
+            sSave.fighterFile = file;
+            save_write();
+            notice(std::string("Your warrior is ready: ") + name + ".");
+        }
+        reset_to(S_HUB);
+        if (sCreatorNew) { sCreatorNew = false; welcome(); }
+        return;
+    }
     if (gen != sResultSeen) {
         sResultSeen = gen;
         if (sFightKind != FIGHT_NONE) {
@@ -1666,7 +1862,7 @@ void on_open(void) {
     save_load();
     sAsking = false;
     reset_to(S_TITLE);
-    if (sSave.exists && getenv("BT3_PATROL_CONTINUE") != NULL) { reset_to(S_HQ); } // (testing: straight to the headquarters)
+    if (sSave.exists && getenv("BT3_PATROL_CONTINUE") != NULL) { reset_to(S_HUB); } // (testing: straight to the headquarters)
 }
 
 } // namespace
@@ -1685,7 +1881,7 @@ extern "C" void PortPatrolUi_Open(void) {
     SDL_UnlockMutex(sMx);
 }
 extern "C" void PortPatrolUi_Close(void) {
-    fprintf(stderr, "bt3: patrol: screens closed\n");
+    fprintf(stderr, "bt3: patrol: screens closed (%d)\n", sSh.leave);
     if (sMx == NULL) { return; }
     SDL_LockMutex(sMx);
     sActive = 0;
@@ -1721,11 +1917,13 @@ extern "C" int PortPatrolUi_Prepare(void) {
         sFightKind = FIGHT_NONE;
         return 0;
     }
+    PortCorrupt_SetNext(sFightKind == FIGHT_CHAPTER || sFightKind == FIGHT_BOUNTY ? 2 : 0); // (the foe glows purple)
     fprintf(stderr, "bt3: patrol: battle (kind %d, %d, %d)\n", sFightKind, sFightA, sFightB);
     return 1;
 }
 extern "C" void PortPatrolUi_Result(int result) {
     PortStoryUi_EndDoc();
+    PortCorrupt_SetNext(0);
     if (sMx == NULL) { sMx = SDL_CreateMutex(); }
     SDL_LockMutex(sMx);
     sSh.result = result;
@@ -1751,6 +1949,7 @@ bool Patrol_Frame(bool input) {
     case S_RACE: scr_race(live); break;
     case S_NAME: scr_name(live); break;
     case S_HQ: scr_hq(live); break;
+    case S_HUB: scr_hub(live); break;
     case S_QUEST: scr_quest(live); break;
     case S_MASTERS: scr_masters(live); break;
     case S_MASTER: scr_master(live); break;
@@ -1773,4 +1972,30 @@ bool Patrol_Frame(bool input) {
     ask_draw(input);
     notice_draw();
     return true;
+}
+
+// Over the picture while the Lookout is walked on (ui.cpp): where the player is, who is near, the buttons
+bool Patrol_HubOverlayOn(void) { return gPortHubMode != 0 && sFightKind == FIGHT_HUB; }
+void Patrol_HubOverlay(void) {
+    if (!Patrol_HubOverlayOn()) { return; }
+    frame_setup();
+    float size = S(22);
+    outlined(sBold, size, P(40, 30), IM_COL32(236, 180, 255, 255), IM_COL32(40, 0, 60, 255), "KAMI'S LOOKOUT", S(2));
+    text(sFont, S(16), P(42, 60), kInk, "Corrupt Patrol HQ");
+    int near = gPortHubNear;
+    if (near >= 0 && near < (int)sHubNpcs.size()) {
+        const Npc &n = kNpcs[sHubNpcs[(size_t)near]];
+        int who = sHubNpcs[(size_t)near] == NPC_MASTERS ? hub_master() : n.chara;
+        std::string name = sHubNpcs[(size_t)near] == NPC_MASTERS ? StoryKit_ShortName(who) : std::string(n.name);
+        std::string line = "Talk to " + name + "  (" + n.place + ")";
+        float w = text_w(sBold, S(22), line.c_str()) + S(110);
+        ImVec2 a(P(688, 0).x - w * 0.5f, P(0, 600).y), b(a.x + w, a.y + S(56));
+        sDl->AddRectFilled(a, b, IM_COL32(24, 8, 40, 225), S(28));
+        sDl->AddRect(a, b, kVio1, S(28), 0, S(2));
+        face_at(who, ImVec2(a.x + S(8), a.y + S(6)), ImVec2(a.x + S(52), a.y + S(50)), S(22));
+        float x = a.x + S(60);
+        x += glyph(B_CIRCLE, ImVec2(x, (a.y + b.y) * 0.5f), S(13)) + S(10);
+        text(sBold, S(22), ImVec2(x, (a.y + b.y) * 0.5f - S(13)), kInk, line);
+    }
+    prompts({{B_START, "Patrol Menu"}});
 }

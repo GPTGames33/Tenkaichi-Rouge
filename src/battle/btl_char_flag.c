@@ -152,6 +152,15 @@ s32 BtlChar_IsFlagDropped(BtlFlagChr *chr, u32 n) {
 /* Lock-on: drops flag 5 on flags 0x93 / 0xB2, and raises 0x13 and 5 when the opponent is within range. */
 void BtlChar_UpdateLockOn(BtlFlagChr *chr) {
     f32 range;
+#ifdef PORT
+    extern s32 gPortHubMode; /* Corrupt Patrol's headquarters (src/battle/port_story_btl.c): never locked on */
+
+    if (gPortHubMode) {
+        BtlChar_ClearFlag(chr, 5);
+        BtlChar_ClearFlag(chr, 0x13);
+        return;
+    }
+#endif
 
     if (BtlChar_TestFlag(chr, 0x93)) {
         BtlChar_ClearFlag(chr, 5);

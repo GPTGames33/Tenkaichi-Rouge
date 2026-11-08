@@ -2266,6 +2266,12 @@ void BtlObj_CreateFace(BObj *obj) {
     }
     if (flags != 0) {
         face = BtlObjPool70_Alloc();
+#ifdef PORT
+        if (face == NULL) { /* (the pool has four: more models than that on the stage - Corrupt Patrol's people - go
+                               without a face of their own, eyes and mouth as the model has them) */
+            return;
+        }
+#endif
         memset(face, 0, sizeof(BObjFace));
         face->flags = flags;
         if (flags & BOBJ_FACE_EYES) {

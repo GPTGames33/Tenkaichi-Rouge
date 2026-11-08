@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef PORT
+#include "port_corrupt.h"
+#endif
 #include "battle/eft_n.h"
 #include "sys/gfx_ot.h"
 
@@ -535,6 +538,19 @@ void EftAura_SetType(EftAuraWork *aura, s32 objId, s32 type, s32 paramFlags) {
     }
     multi = aura->flags & 0x80;
     EftAura_LoadColors(aura, alt, multi);
+#ifdef PORT
+    if (PortCorrupt_Get(objId)) { /* Corrupt Patrol: a corrupted fighter's aura is violet, its core and sparks magenta */
+        s32 k;
+
+        aura->colorStart.x = 0.50f; aura->colorStart.y = 0.10f; aura->colorStart.z = 0.95f;
+        aura->colorEnd.x = 0.35f; aura->colorEnd.y = 0.05f; aura->colorEnd.z = 0.80f;
+        for (k = 0; k < 4; k++) {
+            aura->colorAlt[k].x = 0.85f; aura->colorAlt[k].y = 0.25f; aura->colorAlt[k].z = 1.00f;
+            aura->sparkColor[k].x = 1.00f; aura->sparkColor[k].y = 0.55f; aura->sparkColor[k].z = 1.00f;
+            aura->sparkColorAlt[k].x = 0.60f; aura->sparkColorAlt[k].y = 0.10f; aura->sparkColorAlt[k].z = 0.95f;
+        }
+    }
+#endif
 }
 
 /* Reads the fighter's aura type and height: called at creation and again every frame. */
@@ -703,6 +719,9 @@ void EftAuraMgr_Init(EftNTask *task) {
         gPool->tasks[i] = NULL;
     }
     gEftAuraTaskList = BtlTask_CreateChildList(task, gPool->count, sizeof(EftAuraWork));
+#ifdef PORT
+    PortCorrupt_BattleStart(); /* (Corrupt Patrol: which fighters are corrupted in this battle) */
+#endif
 }
 
 /* Manager term: frees everything the init allocated. */
@@ -712,6 +731,9 @@ void EftAuraMgr_Term(void) {
     BtlPool_Free(BtlPool_GetCurrent(), gPool->sparks);
     BtlPool_Free(BtlPool_GetCurrent(), gEftAuraPool);
     gEftAuraPool = NULL;
+#ifdef PORT
+    PortCorrupt_BattleEnd();
+#endif
 }
 
 /* Manager update: marks the texture sets stale, and starts or stops each character's body lightning on the first
@@ -737,6 +759,15 @@ void EftAuraMgr_Update(void) {
         }
     }
     gPool->started = 1;
+#ifdef PORT
+    /* Corrupt Patrol: a corrupted fighter's aura is always lit (EftAura_Stop keeps it), so it is started here */
+    PortCorrupt_Tick();
+    for (i = 0; i < 2 && i < gPool->count; i++) {
+        if (PortCorrupt_Get(i) && gPool->tasks[i] == NULL && BtlStage_IsReady()) {
+            EftAura_Request(i, 0);
+        }
+    }
+#endif
 }
 
 /* Empty task callback. */
@@ -781,6 +812,11 @@ s32 EftAura_Stop(s32 objId, s32 variant) {
         if (aura->fade == 3) {
             return 0;
         }
+#ifdef PORT
+        if (variant == 0 && PortCorrupt_Get(objId)) {
+            return 1; /* (Corrupt Patrol: the corrupted keep theirs) */
+        }
+#endif
         if (variant == 0) {
             if (!(aura->flags & 0x20)) {
                 aura->fade = 3;

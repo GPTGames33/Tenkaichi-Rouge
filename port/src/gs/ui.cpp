@@ -124,7 +124,9 @@ bool Story_Typing(void);
 bool Story_OverlayOn(void);                     // ... a saga's battle: its text boxes over the picture
 void Story_Overlay(void);
 extern "C" int PortStoryUi_Active(void);
-bool Patrol_Frame(bool input);                  // gs/patrol_ui.cpp: Corrupt Patrol's screens (main menu item 15)
+bool Patrol_Frame(bool input);
+bool Patrol_HubOverlayOn(void);                 // ... the prompt over Kami's Lookout while it is walked on
+void Patrol_HubOverlay(void);                  // gs/patrol_ui.cpp: Corrupt Patrol's screens (main menu item 15)
 extern "C" int PortPatrolUi_Active(void);
 static int screen_owned(void) { return PortCreator_Active() || PortStoryUi_Active() || PortPatrolUi_Active(); } // a screen of ours has the input
 static const char *spec_view_name(int view);
@@ -3080,7 +3082,7 @@ static bool frame_build(void) {
     bool watched = sReady && Port_NetWatchers() > 0 && !sOpen;  // a player's: who watches the match
     bool mods = sReady && Mods_HudActive();                      // the script mods drew over the picture (gs/mods.c)
     bool creator = sReady && screen_owned();                     // the Custom Character screen (gs/creator_ui.cpp), the Story Creator's
-    bool story = sReady && Story_OverlayOn();                    // a saga's battle (gs/story_ui.cpp)
+    bool story = sReady && (Story_OverlayOn() || Patrol_HubOverlayOn()); // a saga's battle (gs/story_ui.cpp), Corrupt Patrol's Lookout
     { // (its opening and closing: the game's input is not the game's while it is up)
         static bool was;
         if (creator != was) {
@@ -3142,6 +3144,7 @@ static bool frame_build(void) {
     ModsUi_Draw(); // (the script mods' shapes over the picture: gs/mods_ui.cpp)
     if (story) {
         Story_Overlay();
+        Patrol_HubOverlay();
     }
     if (creator) {
         Creator_Frame(!sOpen && !sQuit); // (under the settings window, which has the input while it is open)

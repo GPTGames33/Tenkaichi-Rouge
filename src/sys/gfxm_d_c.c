@@ -346,7 +346,31 @@ void ObjDraw_UploadTextures(ObjDrawObj *obj) {
             TexFile_UploadRange(obj->mdl.tex, mdl->model->clutFirst, mdl->model->clutCount, mdl->model->clutTbp, -1);
         }
     }
+#ifdef PORT
+    else if (ObjDraw_CorruptGlow(obj) > 0) { /* (the palette fresh each frame, as for the Kaioken: the glow is drawn over it) */
+        for (j = 0; j < obj->mdl.model->clutCount; j++) {
+            TexFile_UploadRange(obj->mdl.tex, mdl->model->clutFirst, mdl->model->clutCount, mdl->model->clutTbp, -1);
+        }
+    }
+#endif
 }
+
+#ifdef PORT
+/* Corrupt Patrol: the purple glow over a corrupted fighter's colours (port/src/port_corrupt.c); 0 when not */
+extern s32 PortCorrupt_Get(s32 side);
+extern s32 PortCorrupt_Glow(void);
+extern void *BtlObj_Get(s32 id);
+static s32 ObjDraw_CorruptGlow(ObjDrawObj *obj) {
+    s32 s;
+
+    for (s = 0; s < 2; s++) {
+        if (PortCorrupt_Get(s) && (void *)obj == BtlObj_Get(s)) {
+            return PortCorrupt_Glow();
+        }
+    }
+    return 0;
+}
+#endif
 
 /* Alpha of the dimming sprite: 0xF4 plus byte 3 of the character parameter block (inlined in the original). */
 static inline s32 ObjDraw_GetDimAlpha(ObjDrawMdl *mdl) {
@@ -450,6 +474,33 @@ void ObjDraw_AddClutPass(ObjDrawObj *obj, ObjDrawState *state, ObjDrawView *view
         p[1] = 0x82008200;
         p += 2;
     }
+#ifdef PORT
+    else if (ObjDraw_CorruptGlow(obj) > 0) { /* Corrupt Patrol: the Kaioken's pass in violet, pulsing */
+        s32 a = ObjDraw_CorruptGlow(obj);
+
+        p[0] = GIF_TAG(4, 0, 1);
+        p[1] = GIF_REG_AD;
+        p += 2;
+        p[0] = (((u32)mdl->model->cbp >> 5) | 0x10000) | 0xFF00000000000000;
+        p[1] = GS_FRAME_1;
+        p += 2;
+        p[0] = 0x46;
+        p[1] = GS_PRIM;
+        p += 2;
+        p[0] = 0x3F80000000FF1C9C;
+        p[1] = GS_RGBAQ;
+        p += 2;
+        p[0] = ((u64)a << 32) | 0x64;
+        p[1] = GS_ALPHA_1;
+        p += 2;
+        p[0] = OBJ_SPRITE_TAG;
+        p[1] = 0x55;
+        p += 2;
+        p[0] = 0x7E007E00;
+        p[1] = 0x82008200;
+        p += 2;
+    }
+#endif
     if (obj->state.flags & 0x400000) {
         c[0] = (u32)state->tint.x;
         c[1] = (u32)state->tint.y;

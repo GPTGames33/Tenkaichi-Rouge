@@ -1312,6 +1312,8 @@ static const J *grid_warrior(const std::string &file);
 static void open_hsl(const std::string &title, const std::string &name, bool own, float hue, float strength, float light,
                      std::function<void(bool, float, float, float)> changed, std::function<void()> more);
 
+static bool patrol_on(void);                // (Corrupt Patrol's creator, below)
+static bool patrol_allowed(const J &c);
 static std::vector<const J *> grid_items(const Overlay &o) {
     std::vector<const J *> out;
     if (o.noneCell && o.search.empty() && o.game == 0) { out.push_back(NULL); } // (the none cell first: NULL)
@@ -1320,6 +1322,7 @@ static std::vector<const J *> grid_items(const Overlay &o) {
         if (c["costumes"].size() == 0) { continue; }
         bool bt4 = c["game"].text() == "BT4";
         if ((o.bt3only && bt4) || (o.game == 1 && bt4) || (o.game == 2 && !bt4)) { continue; }
+        if (patrol_on() && o.moveKinds.empty() && !patrol_allowed(c)) { continue; } // (Corrupt Patrol: the race's own)
         if (!o.search.empty()) {
             std::string n = c["name"].text(), q = o.search;
             for (char &ch : n) { ch = (char)SDL_tolower((unsigned char)ch); }
@@ -1344,6 +1347,7 @@ static void open_grid(const std::string &title, std::function<void(const J *)> p
     o.bt3only = bt3only;
     o.game = game;
     o.moveKinds = moves;
+    if (patrol_on()) { fprintf(stderr, "bt3: creator: Corrupt Patrol: grid \"%s\": %d fighters\n", title.c_str(), (int)grid_items(o).size()); }
     // the cursor starts on the character the choice is about now, when it is shown
     ov_push(o);
     sound(1);
@@ -1400,6 +1404,111 @@ static std::string error_of(int st, const J &r) {
     return r["error"].text(("The creator answered " + std::to_string(st)).c_str());
 }
 
+static void save(std::function<void()> then = nullptr);
+// ---- Corrupt Patrol's creator (port/src/gs/patrol_ui.cpp): a warrior of a race, made from that race's fighters only,
+// with the mode's own techniques and stats; saved and put on the roster in one go, then the screen is left.
+static bool sPatrol;
+static std::vector<int> sPatrolIds;       // the roster ids its parts may come from
+static std::string sPatrolName, sPatrolFile, sPatrolBody, sPatrolOut;
+static int sPatrolBodyCostume, sPatrolResult = -1; // -1 open / never, 0 left without saving, 1 saved and packaged
+static J sPatrolKit;                      // keys set on the spec when it is saved (moves, health, ki, blast, race...)
+static bool sPatrolBusy, sPatrolAuto; // (auto: the warrior rebuilt with the kit and the screen left at once)
+static std::string sPatrolOutFile;
+extern "C" void PortCreator_PatrolBegin(const char *name, const char *file, const char *allowedCsv, const char *bodyRef, int bodyCostume,
+                                        const char *kitJson) {
+    sPatrol = true;
+    sPatrolName = name != NULL ? name : "";
+    sPatrolFile = file != NULL ? file : "";
+    sPatrolBody = bodyRef != NULL ? bodyRef : "";
+    sPatrolBodyCostume = bodyCostume;
+    sPatrolIds.clear();
+    for (const char *c = allowedCsv; c != NULL && *c; ) {
+        sPatrolIds.push_back(atoi(c));
+        c = strchr(c, ',');
+        if (c != NULL) { c++; }
+    }
+    sPatrolKit = J::obj();
+    if (kitJson != NULL) { js_read(kitJson, sPatrolKit); }
+    sPatrolResult = -1;
+    sPatrolOut.clear();
+    sPatrolBusy = false;
+    sPatrolAuto = false;
+    sKeepState = false;
+}
+extern "C" void PortCreator_PatrolAuto(void) { sPatrolAuto = true; }
+extern "C" int PortCreator_PatrolFile(char *file, int size) {
+    if (sPatrolResult == 1 && file != NULL && size > 0) { snprintf(file, (size_t)size, "%s", sPatrolOutFile.c_str()); }
+    return sPatrolResult;
+}
+extern "C" int PortCreator_PatrolResult(char *name, int size) {
+    if (sPatrolResult == 1 && name != NULL && size > 0) { snprintf(name, (size_t)size, "%s", sPatrolOut.c_str()); }
+    return sPatrolResult;
+}
+static bool patrol_on(void) { return sPatrol; }
+static bool patrol_allowed(const J &c) {
+    int id = (int)c["id"].number(-1);
+    return std::find(sPatrolIds.begin(), sPatrolIds.end(), id) != sPatrolIds.end();
+}
+static void patrol_leave(int result) {
+    sPatrolResult = result;
+    sPatrol = false;
+    SDL_LockMutex(sShare);
+    sSh.leave = 1;
+    SDL_UnlockMutex(sShare);
+}
+// The warrior to edit: the one of the save, or a new one on the race's body
+static void load_fighter(const J &f);
+static void patrol_start(void) {
+    for (size_t i = 0; !sPatrolFile.empty() && i < sFighters.size(); i++) {
+        if (sFighters[i]["file"].text() == sPatrolFile) { load_fighter(sFighters[i]); sTab = TAB_PARTS; return; }
+    }
+    std::string name = sPatrolName;
+    for (size_t i = 0; i < sFighters.size(); i++) { // (never one of the player's own warriors: theirs keeps its name)
+        if (sFighters[i]["spec"]["name"].text() == name && !sFighters[i]["spec"]["patrol"].truthy()) { name += " (Patrol)"; break; }
+    }
+    J body = J::obj();
+    if (!sPatrolBody.empty() && sPatrolBody.find_first_not_of("0123456789") == std::string::npos) { body.set("chara", J::num(atoi(sPatrolBody.c_str()))); }
+    else { body.set("chara", J::str(sPatrolBody)); }
+    if (sPatrolBodyCostume > 0) { body.set("costume", J::num(sPatrolBodyCostume)); }
+    sSpec = J::obj();
+    sSpec.set("name", J::str(name));
+    sSpec.set("title", J::str("Corrupt Patrol"));
+    J base = J::obj();
+    base.set("chara", J::num(3)); // (fights like Goku (End): the AI and the roster's tables)
+    sSpec.set("base", base);
+    sSpec.set("look", body);
+    J m = J::obj();
+    m.set("chara", body["chara"]);
+    sSpec.set("moveset", m);
+    sFile.clear();
+    sDirty = true;
+    sScreen = SC_EDIT;
+    sTab = TAB_PARTS;
+    sShownCostume = sEditCostume = 0;
+    for (int i = 1; i < 8; i++) { sCur[i] = 1; sTop[i] = 0; }
+}
+// Done: the mode's keys on the spec, saved, put on the roster; then back to Corrupt Patrol
+static void patrol_finish(void) {
+    fprintf(stderr, "bt3: creator: Corrupt Patrol: done pressed (busy %d, file %s)\n", (int)sPatrolBusy, sFile.c_str());
+    if (sPatrolBusy) { return; }
+    for (size_t i = 0; i < sPatrolKit.k.size(); i++) { sSpec.set(sPatrolKit.k[i].c_str(), sPatrolKit.a[i]); }
+    sSpec.set("patrol", J::boolean(true));
+    sPatrolBusy = true;
+    save([] {
+        J body = J::obj();
+        body.set("file", J::str(sFile));
+        toast("Building your warrior... (a few seconds)");
+        api("/api/package", &body, [](int st, const J &r) {
+            sPatrolBusy = false;
+            if (st != 200) { fprintf(stderr, "bt3: creator: Corrupt Patrol: package failed: %s\n", error_of(st, r).c_str()); toast(error_of(st, r), true); return; }
+            sPatrolOut = sSpec["name"].text();
+            sPatrolOutFile = sFile;
+            fprintf(stderr, "bt3: creator: Corrupt Patrol's warrior %s (%s) made\n", sPatrolOut.c_str(), sFile.c_str());
+            patrol_leave(1);
+        }, 600000);
+    });
+}
+
 static void begin(void) { // the creator answers: the roster, the warriors, what is on the roster
     sTipLine = "Reading the roster from your disc...";
     api("/api/roster", NULL, [](int st, const J &r) {
@@ -1412,6 +1521,14 @@ static void begin(void) { // the creator answers: the roster, the warriors, what
         sHaveBt4 = false;
         for (size_t i = 0; i < r.size(); i++) { sHaveBt4 |= r[i]["game"].text() == "BT4"; }
         refresh_fighters([] {
+            if (sPatrol) {
+                patrol_start();
+                sTipLine = "";
+                if (sPatrolAuto) {
+                    if (sFile.empty()) { patrol_leave(0); } else { patrol_finish(); } // (rebuild only a warrior that exists)
+                }
+                return;
+            }
             if (!sKeepState || sScreen != SC_EDIT) { sScreen = SC_HOME; }
             sTipLine = "";
         });
@@ -1437,7 +1554,7 @@ static void connect_start(void) {
     post_job(j);
 }
 
-static void save(std::function<void()> then = nullptr) {
+static void save(std::function<void()> then) {
     if (sSpec["name"].text().empty()) {
         toast("Give your warrior a name first!", true);
         sound(2);
@@ -1447,7 +1564,7 @@ static void save(std::function<void()> then = nullptr) {
     body.set("file", sFile.empty() ? J() : J::str(sFile));
     body.set("spec", sSpec);
     api("/api/save", &body, [then](int st, const J &r) {
-        if (st != 200) { toast(error_of(st, r), true); return; }
+        if (st != 200) { fprintf(stderr, "bt3: creator: save failed: %s\n", error_of(st, r).c_str()); sPatrolBusy = false; toast(error_of(st, r), true); return; }
         sFile = r["file"].text();
         sDirty = false;
         refresh_fighters();
@@ -5481,7 +5598,7 @@ bool Creator_Frame(bool input) {
     }
     title_and_tabs(heading);
     if (sScreen == SC_HOME) { static const char *const kHome[1] = {"MY FIGHTERS"}; draw_tabs(0, kHome, 1); }
-    else if (sScreen == SC_EDIT) { draw_tabs(sTab, kTabs, TAB_COUNT); }
+    else if (sScreen == SC_EDIT) { draw_tabs(sTab, kTabs, sPatrol ? 2 : TAB_COUNT); }
 
     // the list
     if (sScreen == SC_HOME || sScreen == SC_EDIT) {
@@ -5496,15 +5613,19 @@ bool Creator_Frame(bool input) {
             if (r != NULL && r->lr) { ps.push_back({B_LR, r->lrLabel != NULL ? r->lrLabel : "Change"}); }
             if (r != NULL && r->sq) { ps.push_back({B_SQUARE, r->sqLabel != NULL ? r->sqLabel : ""}); }
             if (r != NULL && r->tri) { ps.push_back({B_TRIANGLE, r->triLabel != NULL ? r->triLabel : ""}); }
-            if (sScreen == SC_EDIT) { ps.push_back({B_L1R1, "Tab"}); ps.push_back({B_START, "Save"}); }
+            if (sScreen == SC_EDIT) { ps.push_back({B_L1R1, "Tab"}); ps.push_back({B_START, sPatrol ? "Done" : "Save"}); }
             if (sScreen == SC_EDIT && (undo_count() || !sRedo.empty())) { ps.push_back({B_L2R2, "Undo / redo"}); }
             ps.push_back({B_CIRCLE, sScreen == SC_HOME ? "Main menu" : "Back"});
             // the screen's own buttons
             if (sScreen == SC_EDIT && (sIn.l1 || sIn.r1)) {
-                sTab = (sTab + (sIn.r1 ? 1 : TAB_COUNT - 1)) % TAB_COUNT;
+                int n = sPatrol ? 2 : TAB_COUNT;
+                sTab = (sTab + (sIn.r1 ? 1 : n - 1)) % n;
                 sound(0);
             } else if (sScreen == SC_EDIT && sIn.start) {
-                save();
+                if (sPatrol) { patrol_finish(); } else { save(); }
+            } else if (sIn.back && sPatrol) {
+                sound(2);
+                confirm(sFile.empty() ? "LEAVE WITHOUT MAKING YOUR WARRIOR?" : "LEAVE WITHOUT SAVING YOUR CHANGES?", [] { patrol_leave(0); });
             } else if (sIn.back) {
                 sound(2);
                 if (sScreen == SC_HOME) { leave(); }

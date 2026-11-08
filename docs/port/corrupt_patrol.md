@@ -32,6 +32,12 @@ for experience.
 
 ## The headquarters (Kami's Lookout)
 
+The Lookout is walked on: a battle without a fight (no lock-on, no attack, no HUD; walking, dashing, jumping, flying
+and guarding work). The people stand round the middle of it and turn to the player who comes near; Circle beside one
+talks to them, START opens the Patrol Menu. Talking (or the menu) ends the Lookout's battle and opens that person's
+screen; leaving the screen goes back to the Lookout (a moment's loading). The Patrol Menu's Lookout Directory reaches
+everyone without walking.
+
 - **Main Quest** (Supreme Kai): the next chapter, and the briefing for each.
 - **Training Grounds**: the masters.
 - **Hercule's Shop**: accessories, the game's own Z items (Attack / Defense / Ki Blast / Ki +5 / +10 / +15, extra health
@@ -54,11 +60,24 @@ for experience.
 `patrol/save.json` next to the game (`BT3_PATROL=<folder>` another one): JSON, written after every battle, on Save, and
 when leaving. The game's own save is never touched. Delete the file (or New Game) to start over.
 
-## The warrior's look
+## The warrior
 
-Until the warrior has a look of their own (the Custom Character screen's Patrol mode), they fight as their race's
-stand-in: Bardock (Saiyan), Nail (Namekian), Frieza 1st Form (Arcosian), Tien (Human), Majuub (Majin), Cell Jr
-(Bio-Android). With a package, the save's `fighter` names it (the package's name, as `added:<name>` in a saga).
+After the name, New Game opens the Custom Character screen in its Patrol mode: the race's stand-in body (Bardock for a
+Saiyan, Nail, Frieza 1st Form, Tien, Majuub, Cell Jr) to change, every grid showing only fighters of the race (and the
+masters whose training is complete): heads, hair, outfits. Only WARRIOR and PARTS are there; START is Done: the warrior
+is saved (custom_fighters/) and put on the roster as a character package (characters/), with the mode's techniques and
+stats, and the game goes back to the Lookout. A name that one of the player's own warriors already has gets
+" (Patrol)" after it: theirs is never touched. The Wardrobe opens the same screen again.
+
+The techniques chosen in the Patrol Menu (and a completed master's fighting style: melee, ki blasts, stance) are
+trained into the warrior with Triangle on the Techniques screen: the package is built again with them (a few
+seconds, without the screen). Until the warrior has a look of their own they fight as the race's stand-in.
+
+## The corrupted
+
+The corrupted (each chapter's foe, the bounties' targets) have a purple aura that never goes out, a purple power-up
+glow, and a violet pulse over their colours (port/src/port_corrupt.c; src/battle/eft_n.c, eft_q.c,
+src/sys/gfxm_d_c.c). `BT3_CORRUPT=<side mask>` shows it in any battle (1 the left side, 2 the right).
 
 ## For testing
 
@@ -67,6 +86,8 @@ stand-in: Bardock (Saiyan), Nail (Namekian), Frieza 1st Form (Arcosian), Tien (H
   start), frames counted from the screens' opening.
 - `BT3_PATROL_CONTINUE=1`: straight to the headquarters when there is a save.
 - `BT3_PATROL_DUMP=1`: the last battle's saga written to `patrol/_last_battle.json`.
+- `BT3_PATROL_NOHUB=1`: the Lookout Directory instead of the Lookout; `BT3_PATROL_NOCREATOR=1`: a new warrior without
+  the creator (the stand-in).
 - `BT3_PATROL_HP=<percent>`, `BT3_PATROL_FOE_HP=<percent>`: the player's / the foe's starting health.
 
 ## How it is made
