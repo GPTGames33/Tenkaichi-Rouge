@@ -133,8 +133,9 @@ def parse_gs_upload(d, ofs):
     raise ModelError("texture upload packet not understood at 0x%X" % ofs)
 
 
-def decode_texfile(t):
-    """Every texture of a texture file: list of dicts (index, width, height, rgba, tbpOfs, cbpOfs) or None."""
+def decode_texfile(t, only=None):
+    """Every texture of a texture file: list of dicts (index, width, height, rgba, tbpOfs, cbpOfs) or None.
+    only: the pixels of that texture alone are read (the others have no rgba)."""
     count, ent = struct.unpack_from("<II", t, 0)
     if count == 0 or count > 256 or ent * 4 + count * 0x40 > len(t):
         raise ModelError("bad texture file")
@@ -145,6 +146,8 @@ def decode_texfile(t):
         tex0 = struct.unpack_from("<Q", t, o + 0x30)[0]
         rec = {"index": i, "tbpOfs": tofs, "cbpOfs": cofs, "tex0": tex0, "rgba": None, "width": 0, "height": 0}
         out.append(rec)
+        if only is not None and i != only:
+            continue
         try:
             rec.update(decode_texture(t, pix * 4, clut * 4 if clut else 0, pblt, tex0))
         except (ModelError, struct.error, IndexError):

@@ -613,7 +613,7 @@ def skin_colour(m):
     face = face_texture(m)
     if face is None:
         return None
-    for index, cols in texture_colours(m, limit=3):
+    for index, cols in texture_colours(m, limit=3, only=face):  # (the face's picture alone is read)
         if index == face and cols:
             return bytes(hex_rgb(cols[0][0]))
     return None
@@ -630,19 +630,28 @@ def match_skin(m, to):
     return recolour_model(m, [(i, src, to, 1.0) for i in range(min(count, 255))])
 
 
-def texture_colours(model_pack, limit=8):
+_TEX_COLOURS = {}  # (texture file's hash, limit, only) -> texture_colours: the same pictures are asked about again
+# and again while a warrior is edited (every piece's skin colour, at every change), and reading one takes a second
+
+
+def texture_colours(model_pack, limit=8, only=None):
     """For the creator: [(texture index, [(#rrggbb, share of the texture's pixels)])] of a model: the main colours
-    of each texture (shades grouped, most used first), as they look in the picture."""
+    of each texture (shades grouped, most used first), as they look in the picture. only: that texture alone."""
+    import hashlib
     here = pathlib.Path(__file__).resolve().parent / "creator"
     if str(here) not in sys.path:
         sys.path.insert(0, str(here))
     import model as mdl
+    memo = (hashlib.sha1(bytes(model_pack[0xC])).digest(), limit, only)
+    if memo in _TEX_COLOURS:
+        return [(i, list(c)) for i, c in _TEX_COLOURS[memo]]
     out = []
-    for tex in mdl.decode_texfile(model_pack[0xC]):
+    for tex in mdl.decode_texfile(model_pack[0xC], only=only):
         px = tex.get("rgba")
         if not px:
             continue
         groups = []  # [reference rgb, count, sum r, sum g, sum b]
+        seen = {}  # colour -> its group (a colour goes to the same group every time: the first one near it)
         n = len(px) // 4
         step = max(1, n // 4096)
         for k in range(0, n, step):
@@ -650,13 +659,17 @@ def texture_colours(model_pack, limit=8):
             if e[3] < 128:
                 continue
             rgb = bytes(e[:3])
-            for g in groups:
-                if colour_near(rgb, g[0]):
-                    g[1] += 1
-                    g[2] += e[0]; g[3] += e[1]; g[4] += e[2]
-                    break
-            else:
-                groups.append([rgb, 1, e[0], e[1], e[2]])
+            g = seen.get(rgb)
+            if g is None:
+                for g in groups:
+                    if colour_near(rgb, g[0]):
+                        break
+                else:
+                    g = [rgb, 0, 0, 0, 0]
+                    groups.append(g)
+                seen[rgb] = g
+            g[1] += 1
+            g[2] += e[0]; g[3] += e[1]; g[4] += e[2]
         groups.sort(key=lambda g: -g[1])
         total = sum(g[1] for g in groups) or 1
         cols = []
@@ -665,6 +678,9 @@ def texture_colours(model_pack, limit=8):
                 continue
             cols.append(("#%02x%02x%02x" % (g[2] // g[1], g[3] // g[1], g[4] // g[1]), round(g[1] / total, 3)))
         out.append((tex["index"], cols))
+    if len(_TEX_COLOURS) > 256:
+        _TEX_COLOURS.clear()
+    _TEX_COLOURS[memo] = [(i, list(c)) for i, c in out]
     return out
 
 
@@ -2161,7 +2177,8 @@ def _portrait_files(disc, png, b, cache_dir):
     from the same picture by the same code is kept in cache_dir and used again."""
     import hashlib
     names = ("portrait.bin", "chip.bin", "member_1p.bin", "member_2p.bin")
-    key = hashlib.sha1(png + b"|%d|" % b + tools_hash().encode()).hexdigest()[:24]
+    code = b"".join((pathlib.Path(__file__).resolve().parent / q).read_bytes() for q in ("creator/portrait.py", "creator/creator.py", "import_chara.py"))
+    key = hashlib.sha1(png + b"|%d|" % b + hashlib.sha1(code).digest()).hexdigest()[:24]  # (made by the same code)
     slot = pathlib.Path(cache_dir) / "portraits" / key
     try:
         have = json.loads((slot / "done.json").read_text(encoding="utf-8"))
