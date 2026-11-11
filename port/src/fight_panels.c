@@ -33,7 +33,8 @@ extern void GAME_PTR gBtlChars;
 extern void GAME_PTR gBtlSeq;
 typedef struct {
     char unk0[0x30];
-    uint32_t flags; /* 0x30: HUD_SHOW_* */
+    uint32_t flags;  /* 0x30: HUD_SHOW_* */
+    int replayMode;  /* 0x34: in a replay: 0 only the captions are drawn, 1 the HUD, 2 nothing */
 } FpHud;
 extern FpHud GAME_PTR gHud; /* include/battle/hud_a.h; read only while this battle's roster and sequence are there */
 #define HUD_SHOW_GAUGES 0x01
@@ -46,6 +47,39 @@ extern int BtlChar_TestFlag(void GAME_PTR chr, unsigned n);
 extern int Port_FilePath(int ptid, int flid, const char *fname, char *out, int size); /* plat_file.c */
 #define FACE_FILE 0x2F9 /* the large portraits (the character select's): file FACE_FILE + character of partition 1 */
 #define CHARA_MAX 0xA1 /* the grid's marker cells and up are not characters */
+/* a package's added character (plat_charas.c): its portrait is file "index" of partition 2 */
+extern int Port_CharaIdx(int chara); /* (1024: the id is not an added character's) */
+extern int Port_CharaFileIndex(int idx, int kind, int k);
+#define ADDED_NONE 1024
+#define CFILE_FACE 1
+/* the names: a package's own (NULL: it has none), the disc's in English, any other */
+extern const char *Port_CharaShownName(int chara);
+extern const char *Port_DiscCharaName(int chara);
+extern void Port_ModCharaName(int chara, char *out, int size);
+
+/* What the port's own HUD (gs/hud_modern.cpp) follows the game's with. All of these only read. */
+extern int Battle_GetMode(void);
+extern int Battle_IsSplitScreen(void);
+extern int BtlGame_IsReplay(void);
+extern int BtlSide_GetSwitchGauge(int side);
+extern int BtlCtrl_IsSwitching(int side);
+extern int BtlSide_GetParamUnk2C(int side); /* (the extra ki, shown while fighter flag 0xBE is set: src/battle/hud_b.c) */
+extern int BtlSide_TestFlagBE(int side);
+extern int BtlCtrl_IsActiveDead(int side);
+extern uint8_t GAME_PTR Battle_GetWork(void);
+#define WORK_FLAGS 0x19F0 /* include/battle/battle.h: BattleWork.flags (u64) */
+#define BATTLE_FLAG_PAUSE 0x100
+#define BATTLE_FLAG_PAUSE_MENU 0x4000
+extern uint8_t GAME_PTR gHudGauge; /* src/battle/hud_b.c: the gauges' work (HudBWork) */
+#define GAUGE_SLIDE 0x210     /* slide[side].value (f32, a Ramp of 0x18 bytes each): 0 on screen .. 1 away */
+#define GAUGE_SLIDE_ALL 0x240 /* slideAll.value */
+/* include/sys/fade.h: the black (0) and white (1) fades drawn over the finished frame, the HUD included */
+extern struct {
+    float color[4]; /* (alpha 0..128) */
+    char unk10[0x48];
+    int flags;      /* 0: off */
+    int unk5C;
+} gFade[3];
 
 /* include/battle/btl_char_member.h: BtlMemberChr */
 #define CHR_ACTIVE 0x994
@@ -135,6 +169,7 @@ static int sWritten;
 /* Which portrait each slot's path is for, so the files are looked up only when a member changes. */
 static int sPathKey[2][FP_MEMBERS];
 static char sPath[2][FP_MEMBERS][FP_PATH];
+static char sName[2][FP_MEMBERS][64];
 
 static int rd(uint8_t GAME_PTR p, int off) {
     return *(int GAME_PTR)(p + off);
@@ -148,7 +183,30 @@ static void portrait_path(int side, int slot, int chara, int costume) {
     }
     sPathKey[side][slot] = key;
     sPath[side][slot][0] = '\0';
-    if (chara < 0 || chara >= CHARA_MAX) {
+    sName[side][slot][0] = '\0';
+    if (chara < 0) {
+        return;
+    }
+    {
+        const char *n = Port_CharaShownName(chara);
+        if (n == NULL && chara < CHARA_MAX) {
+            n = Port_DiscCharaName(chara);
+        }
+        if (n != NULL) {
+            snprintf(sName[side][slot], sizeof(sName[0][0]), "%s", n);
+        } else {
+            Port_ModCharaName(chara, sName[side][slot], (int)sizeof(sName[0][0]));
+            if (strcmp(sName[side][slot], "?") == 0) {
+                sName[side][slot][0] = '\0';
+            }
+        }
+    }
+    if (chara >= CHARA_MAX) {
+        /* a package's added character: its own portrait, or the one of the character it is made from */
+        id = Port_CharaIdx(chara);
+        if (id < 0 || id >= ADDED_NONE || !Port_FilePath(2, Port_CharaFileIndex(id, CFILE_FACE, 0), NULL, sPath[side][slot], FP_PATH)) {
+            sPath[side][slot][0] = '\0';
+        }
         return;
     }
     id = FACE_FILE + chara; /* (a file under mods/ wins, as for the game's own reads) */
@@ -187,6 +245,7 @@ static void read_side(FpState *st, int side) {
         if (o->present) {
             portrait_path(side, i, o->chara, o->costume);
             memcpy(o->path, sPath[side][i], FP_PATH);
+            memcpy(o->name, sName[side][i], sizeof(o->name));
         }
     }
     m = chr + CHR_MEMBERS + s->active * MEMBER_SIZE;
@@ -203,6 +262,13 @@ static void read_side(FpState *st, int side) {
     s->action = BtlAct_GetCurrent(chr);
     s->chargeHeld = BtlInput_IsHeld(chr, BTLB_CHARGE) != 0;
     s->cpu = BattleSide_IsCpu(side) != 0;
+    s->kiReserve = BtlSide_TestFlagBE(side) ? BtlSide_GetParamUnk2C(side) : 0;
+    s->switchGauge = BtlSide_GetSwitchGauge(side);
+    s->switching = BtlCtrl_IsSwitching(side) != 0;
+    s->dead = BtlCtrl_IsActiveDead(side) != 0;
+    if (gHudGauge != NULL) {
+        s->slide = (int)(*(float GAME_PTR)(gHudGauge + GAUGE_SLIDE + side * 0x18) * 1000.0f);
+    }
     {
         uint8_t GAME_PTR obj = (uint8_t GAME_PTR)BtlChar_GetObj(chr);
         uint32_t at = obj != NULL ? (uint32_t)rd(obj, OBJ_NAMES) : 0;
@@ -260,6 +326,27 @@ void PortPanels_GameTick(void) {
         st.battle = st.side[0].found && st.side[1].found;
         h = gHud;
         st.gauges = st.battle && h != NULL && (h->flags & HUD_SHOW_GAUGES) != 0;
+        if (st.battle && h != NULL) {
+            uint8_t GAME_PTR work = Battle_GetWork();
+            uint64_t flags = work != NULL ? *(uint64_t GAME_PTR)(work + WORK_FLAGS) : 0;
+            int k;
+            st.hudFlags = (int)(h->flags & 0x1F);
+            st.mode = Battle_GetMode();
+            st.replay = !BtlGame_IsReplay() ? 0 : h->replayMode == 1 ? 2 : 1;
+            st.split = Battle_IsSplitScreen() != 0;
+            st.paused = (flags & BATTLE_FLAG_PAUSE) != 0;
+            st.pauseMenu = (flags & BATTLE_FLAG_PAUSE_MENU) != 0;
+            if (gHudGauge != NULL) {
+                st.hudSlide = (int)(*(float GAME_PTR)(gHudGauge + GAUGE_SLIDE_ALL) * 1000.0f);
+            }
+            for (k = 0; k < 2; k++) {
+                if (gFade[k].flags != 0) {
+                    int a = (int)(gFade[k].color[3] * (255.0f / 128.0f));
+                    a = a < 0 ? 0 : a > 255 ? 255 : a;
+                    st.cover = a > st.cover ? a : st.cover;
+                }
+            }
+        }
     }
     if (!st.battle) {
         memset(sPathKey, 0, sizeof(sPathKey)); /* (a mod switched between fights is looked up again) */
