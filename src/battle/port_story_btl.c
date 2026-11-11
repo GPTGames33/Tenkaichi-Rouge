@@ -5,6 +5,8 @@
 #include "sys/save.h"
 #include "battle/btl_script.h"
 #include "battle/btl_seq.h"
+#include "plat_songs.h"
+#include "port_story.h" /* what the editor's half tells this one: a line, the rules, an event, an action */
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -19,21 +21,25 @@
  * scene, played during the sequence's intro state (1), where mode 1 waits for the script: the two fighters stand on
  * the real stage, under the script's camera (DemoCam's fixed pose), with their poses (scripted moves, command 901's
  * BtlFacade_PlayCharMotion), their auras and their voices, as in the game's own story scenes. Its last command (8 1)
- * lets the fight start. The scenes after the fight are event actions (10030 lost, 10040 won), started through the
- * game's own trigger list once the fight allows it (BtlScript_StartPending), and played during the winner state (5).
+ * lets the fight start. The scenes after the fight are event actions (10030 / 10031 lost, 10040 / 10041 won; the
+ * second of each when the clock decided), started through the game's own trigger list once the fight allows it
+ * (BtlScript_StartPending), and played during the winner state (5). A scene in the middle of the fight is an event
+ * action too (10001..): the fight is interrupted for it the way Dragon History interrupts its own, and goes on after.
  *
  * The commands of the game do the plumbing (BeginScene, EndScene, SetResult, SetTriggers, Battle); the Story Creator's
- * own (ids 9001..9009, added to the game's table for every battle: PortStory_Commands) do what a saga says, worked out
+ * own (ids 9001..9007, added to the game's table for every battle: PortStory_Commands) do what a saga says, worked out
  * on the stage the episode is on:
  *   9001 scene      distance flags        the two fighters face each other `distance` apart in the middle of the
  *                                          stage's start places, standing; flags: 1 / 2 hide side 0 / 1
- *   9002 line       n                     line n of the episode: camera shot (a cut or a move), poses, effects, the
- *                                          voice (lip-synced for a fighter's own line), the text box (typed out;
- *                                          Cross completes it, then goes on), or its own time
+ *   9002 line       n                     line n of the episode: where the two stand, the camera shot (a cut or a
+ *                                          move), poses, effects, sound and music, the voice (lip-synced for a
+ *                                          fighter's own line), the text (a box typed out, or a card; Cross completes
+ *                                          it, then goes on), the answers of a question, or its own time
  *   9003 end now    result                ends a battle that has no fight (a scene-only episode): result 1 won
- *   9004 watch      -                     the fight's referee (its own task, action 2000): the episode's win / lose
- *                                          conditions, the clock, and the lines said during the fight (a box with
- *                                          the speaker's portrait, the fight goes on)
+ *   9004 watch      -                     the fight's referee (its own task, action 2000): the rules at the start,
+ *                                          the win / lose conditions, the clock, and the fight's events (when
+ *                                          something happens, a list of things done in turn: a line in a box while the
+ *                                          fight goes on, a scene that stops it, health, ki, a transformation...)
  *   9005 title      -                     the episode's title card
  *   9006 scene end  -                     the letterbox goes, both fighters shown again
  * The text, the portraits and the letterbox are drawn by story_ui.cpp over the picture; what to draw is told to it
@@ -42,66 +48,14 @@
 
 #define PS_SCRIPT 900 /* the script number a saga's battle is set up with (menu/port_story.c) */
 
-/* what PortStoryUi_Line gives of a line */
-#define PL_SIDE 0      /* the speaker's side, -1 a narrator */
-#define PL_MEMBER 1    /* its team member, -1 the one fighting */
-#define PL_CHARA 2
-#define PL_VOICE 3     /* the voice: a spoken line of character PL_VCHARA (Voice_PlayChara), -1 none */
-#define PL_LIP 4       /* lip track of the speaker's own spoken line, -1 none */
-#define PL_CAMERA 5    /* PS_CAM_ */
-#define PL_MOVE 6      /* PS_MOVE_ */
-#define PL_MOVE_T 7    /* the move's time, tenths of a second */
-#define PL_POSE 8      /* the speaker's motion, -1 as it is */
-#define PL_POSE_LOOP 9
-#define PL_LPOSE 10    /* the listener's */
-#define PL_LPOSE_LOOP 11
-#define PL_FX 12       /* PS_FX_ */
-#define PL_LEN 13      /* the text's length in letters */
-#define PL_WAIT 14     /* 0: until Cross; else frames after the text is out */
-#define PL_VCHARA 15
-#define PL_COUNT 16
-
-enum { PS_CAM_KEEP, PS_CAM_AUTO, PS_CAM_CLOSE, PS_CAM_MEDIUM, PS_CAM_SHOULDER, PS_CAM_TWO, PS_CAM_WIDE, PS_CAM_LOW,
-       PS_CAM_HIGH, PS_CAM_LISTENER, PS_CAM_COUNT };
-enum { PS_MOVE_CUT, PS_MOVE_PUSH, PS_MOVE_ORBIT, PS_MOVE_PULL, PS_MOVE_FROM_WIDE, PS_MOVE_RISE };
-#define PS_FX_SHAKE 0x1
-#define PS_FX_FLASH 0x2
-#define PS_FX_AURA_ON 0x4
-#define PS_FX_AURA_OFF 0x8
-#define PS_FX_CHARGE_ON 0x10
-#define PS_FX_CHARGE_OFF 0x20
-#define PS_FX_BURST 0x40
-#define PS_FX_FADE_OUT 0x80
-#define PS_FX_FADE_IN 0x100
-#define PS_FX_BIG_SHAKE 0x200
-#define PS_FX_HIDE 0x400
-#define PS_FX_SHOW 0x800
-
-/* what PortStoryUi_Show is told */
-enum { PS_SHOW_SAY = 1, PS_SHOW_HIDE, PS_SHOW_TITLE, PS_SHOW_HUD, PS_SHOW_LETTERBOX, PS_SHOW_FLASH, PS_SHOW_FADE,
-       PS_SHOW_TIMER, PS_SHOW_END };
-
-/* the battle's conditions (PortStoryUi_Battle) */
-#define PB_WIN 0       /* 0 knock the other team out, 1 hold out for PB_SURVIVE seconds */
-#define PB_SURVIVE 1
-#define PB_TIME 2      /* the time limit, seconds (0 none) */
-#define PB_TIME_UP 3   /* at the time limit: 0 lost, 1 won, 2 by health */
-#define PB_EVENTS 4    /* how many lines are said during the fight */
-#define PB_COUNT 8
-/* a line said during the fight (PortStoryUi_Event) */
-#define PE_WHEN 0      /* PS_WHEN_ */
-#define PE_VALUE 1
-#define PE_LINE 2
-#define PE_COUNT 4
-enum { PS_WHEN_START, PS_WHEN_ENEMY_HP, PS_WHEN_PLAYER_HP, PS_WHEN_ENEMY_FORM, PS_WHEN_PLAYER_FORM, PS_WHEN_TIME,
-       PS_WHEN_ENEMY_MEMBER, PS_WHEN_PLAYER_MEMBER };
-
 extern s32 PortStoryUi_ScriptSize(void);
 extern s32 PortStoryUi_AutoWait(void);
+extern s32 PortStoryUi_AutoPick(void);
 extern void PortStoryUi_ScriptCopy(void *dst);
 extern s32 PortStoryUi_Line(s32 n, s32 *out);
 extern s32 PortStoryUi_Battle(s32 *out);
 extern s32 PortStoryUi_Event(s32 n, s32 *out);
+extern s32 PortStoryUi_Action(s32 n, s32 *out);
 extern void PortStoryUi_Show(s32 what, s32 a, s32 b);
 extern s32 PortStory_Playing(void); /* menu/port_story.c: a saga's battle is set up or running */
 
@@ -131,6 +85,33 @@ extern void BtlFacade_ClearCtrl100(s32 side);
 extern void BtlFacade_SetCtrl100(s32 side);
 extern s32 BtlFacade_GetActiveMember(s32 side);
 extern void BtlFacade_EndObjSubState3(s32 side);
+extern void BtlFacade_AddHp(s32 side, s32 member, f32 percent);
+extern void BtlFacade_RaiseHp(s32 side, s32 member, f32 percent);
+extern void BtlFacade_LowerHp(s32 side, s32 member, f32 percent);
+extern void BtlFacade_AddGaugeC(s32 side, s32 member, s32 bars);
+extern void BtlFacade_RaiseGaugeC(s32 side, s32 member, s32 bars);
+extern void BtlFacade_LowerGaugeC(s32 side, s32 member, s32 bars);
+extern void BtlFacade_AddGauge14(s32 side, s32 member, s32 stocks);
+extern void BtlFacade_RaiseGauge14(s32 side, s32 member, s32 stocks);
+extern void BtlFacade_LowerGauge14(s32 side, s32 member, s32 stocks);
+extern void BtlFacade_SetMaxPower(s32 side, s32 on);
+extern void BtlFacade_RequestStageChange(void);
+extern void BtlFacade_SetCpuParam8(s32 level);
+extern s32 BtlFacade_CanCharAct(s32 side);
+extern s32 BtlCtrl_Transform(s32 player, s32 id);
+extern s32 BtlCtrl_ChangeMember(s32 player, s32 member);
+extern s32 BtlCtrl_UseTechnique(s32 player, s32 kind);
+extern void BtlCtrl_SetCpuLevel(s32 player, s32 level);
+extern s32 BtlCtrl_IsActiveDead(s32 player);
+extern s32 BtlParam_GetSlotId(void *chr, s32 slot);
+extern s32 BtlSide_GetKi(s32 side);
+extern s32 BtlSide_GetBlast(s32 side);
+extern s32 BtlSide_IsPoweredUp(s32 side);
+extern s32 BtlSide_CountAlive(s32 side);
+extern s32 BtlSide_GetComboHits(s32 side);
+extern s32 BtlCharApi_GetMemberCount(s32 objId);
+extern s32 BtlCharApi_GetMemberHpPercent(s32 objId, s32 member);
+extern f32 BtlCharApi_GetTechniqueProgress(s32 objId);
 extern s32 BattleSide_GetObjId(s32 side);
 extern void *BtlObj_Get(s32 id);
 extern void BtlObj_SetSubState(void *obj, s32 mode, s32 arg);
@@ -147,6 +128,9 @@ extern void Voice_PlayChara(s32 voice, s32 chara, s32 line);
 extern void Voice_Stop(s32 voice);
 extern s32 Voice_IsStopped(s32 voice);
 extern s32 Adx_GetStat(s32 ch);
+extern void Bgm_Play(s32 id);
+extern void Bgm_Stop(void);
+extern s32 Snd_PlaySe(u32 mask, s32 id);
 
 #define PS_PI 3.14159265f
 
@@ -159,6 +143,15 @@ static void PortStory_PlayVoice(s32 ch, s32 chara, s32 line) {
         Voice_PlayDefault(ch, ((gSaveData->flags & SAVE_FLAG_VOICE) ? 0x47E0 : 0xD48) + line);
     } else {
         Voice_PlayChara(ch, chara, line);
+    }
+}
+
+/* The music changes: a song of the music list (the game's or an added one), or (-2) silence. */
+static void PortStory_Music(s32 song) {
+    if (song == -2) {
+        Bgm_Stop();
+    } else if (song >= 0) {
+        Bgm_Play(PORT_BGM_FILE(song));
     }
 }
 
@@ -191,6 +184,9 @@ typedef struct PsScene {
     f32 yaw[2];      /* which way they face (radians) */
     s32 hidden[2];
     s32 lines;       /* lines said in this scene so far (the automatic camera's choice) */
+    s32 how;         /* how far apart they were put (PortStory_Place) */
+    s32 stand[2];    /* 0 on the ground, 1 in the air, 2 high up */
+    s32 face[2];     /* 0 facing the other, 1 back turned, 2 side on */
 } PsScene;
 static PsScene sScene;
 
@@ -228,10 +224,13 @@ static f32 PortStory_Height(s32 side) {
     return top;
 }
 
-/* Puts the two fighters `how` far apart (0 where the stage starts them, 1 close, 2 at talking distance, 3 far; in
-   heights of the taller one), in the middle between the stage's start places, facing each other, standing. */
-static void PortStory_Place(s32 how, s32 flags) {
+/* Works out the two marks from how the scene has them (how far apart: 0 where the stage starts them, 1 close, 2 at
+   talking distance, 3 far, in heights of the taller one; each on the ground or in the air; each facing the other or
+   not), in the middle between the stage's start places, and puts the fighters on them. */
+static void PortStory_Marks(void) {
     static const f32 kApart[4] = { 0.0f, 2.6f, 4.2f, 7.5f };
+    static const f32 kLift[3] = { 0.0f, 1.6f, 4.5f };
+    static const f32 kTurn[3] = { 0.0f, PS_PI, PS_PI * 0.5f };
     Vec4 s0;
     Vec4 s1;
     Vec4 r;
@@ -241,7 +240,9 @@ static void PortStory_Place(s32 how, s32 flags) {
     f32 dist;
     f32 h0 = PortStory_Height(0);
     f32 h1 = PortStory_Height(1);
+    f32 hm = h0 > h1 ? h0 : h1;
     f32 t;
+    s32 how = sScene.how;
     s32 i;
 
     BtlStage_GetStartPlace(0, &s0, &r, 0);
@@ -256,20 +257,36 @@ static void PortStory_Place(s32 how, s32 flags) {
     }
     dx /= full;
     dz /= full;
-    dist = (how > 0 && how < 4 ? kApart[how] : 0.0f) * (h0 > h1 ? h0 : h1);
+    dist = (how > 0 && how < 4 ? kApart[how] : 0.0f) * hm;
     if (dist <= 0.0f || dist > full) {
         dist = full;
     }
     t = 0.5f * dist / full;
     for (i = 0; i < 2; i++) {
         f32 k = i == 0 ? 0.5f - t : 0.5f + t;
+        s32 st = sScene.stand[i] > 0 && sScene.stand[i] < 3 ? sScene.stand[i] : 0;
+        s32 fc = sScene.face[i] > 0 && sScene.face[i] < 3 ? sScene.face[i] : 0;
         Vec4 rot;
 
-        sScene.pos[i] = V(s0.x + (s1.x - s0.x) * k, s0.y + (s1.y - s0.y) * k, s0.z + (s1.z - s0.z) * k);
-        sScene.yaw[i] = atan2f(i == 0 ? dx : -dx, i == 0 ? dz : -dz);
+        sScene.pos[i] = V(s0.x + (s1.x - s0.x) * k, s0.y + (s1.y - s0.y) * k - kLift[st] * hm, s0.z + (s1.z - s0.z) * k);
+        sScene.yaw[i] = atan2f(i == 0 ? dx : -dx, i == 0 ? dz : -dz) + kTurn[fc];
         rot = V(0.0f, sScene.yaw[i], 0.0f);
         BtlFacade_SetCharPos(i, &sScene.pos[i]);
         BtlFacade_SetCharRot(i, &rot);
+    }
+}
+
+/* A scene's start: the two put `how` far apart, on the ground, facing each other, standing. */
+static void PortStory_Place(s32 how, s32 flags) {
+    s32 i;
+
+    sScene.how = how;
+    for (i = 0; i < 2; i++) {
+        sScene.stand[i] = 0;
+        sScene.face[i] = 0;
+    }
+    PortStory_Marks();
+    for (i = 0; i < 2; i++) {
         BtlFacade_PlayCharMotion(i, 0, 1, 0.0f);
         sScene.hidden[i] = (flags >> i) & 1;
         if (sScene.hidden[i]) {
@@ -342,6 +359,34 @@ static void PortStory_Shot(s32 kind, s32 s, s32 variant, Vec4 *eye, Vec4 *at) {
     case PS_CAM_HIGH: /* down on the speaker */
         *eye = V(S.x + dx * hs * 1.6f + px * hs * 0.5f, S.y - hs * 2.1f, S.z + dz * hs * 1.6f + pz * hs * 0.5f);
         *at = V(S.x, S.y - hs * 0.55f, S.z);
+        break;
+    case PS_CAM_FACE: /* the eyes: closer than close */
+        *eye = V(S.x + dx * hs * 0.52f + px * hs * 0.16f, S.y - hs * 0.9f, S.z + dz * hs * 0.52f + pz * hs * 0.16f);
+        *at = V(S.x, S.y - hs * 0.89f, S.z);
+        break;
+    case PS_CAM_BEHIND: /* from behind the speaker, past it at the listener */
+        *eye = V(S.x - dx * hs * 1.25f + px * hs * 0.5f, S.y - hs * 1.08f, S.z - dz * hs * 1.25f + pz * hs * 0.5f);
+        *at = V(L.x, L.y - hl * 0.7f, L.z);
+        break;
+    case PS_CAM_PROFILE: /* the speaker from the side */
+        *eye = V(S.x + px * hs * 1.7f + dx * hs * 0.15f, S.y - hs * 0.8f, S.z + pz * hs * 1.7f + dz * hs * 0.15f);
+        *at = V(S.x, S.y - hs * 0.76f, S.z);
+        break;
+    case PS_CAM_TOP: /* straight down on the two of them */
+        *eye = V(M.x + px * hm * 0.5f, M.y - (d * 1.1f + hm * 3.2f), M.z + pz * hm * 0.5f);
+        *at = V(M.x, M.y, M.z);
+        break;
+    case PS_CAM_GROUND: /* both, from down on the ground */
+        *eye = V(M.x + px * (d * 0.7f + hm * 0.9f), M.y - hm * 0.07f, M.z + pz * (d * 0.7f + hm * 0.9f));
+        *at = V(M.x, M.y - hm * 0.62f, M.z);
+        break;
+    case PS_CAM_FAR: /* two small figures in a big place */
+        *eye = V(M.x + px * (d * 2.2f + hm * 7.0f) - dx * d * 0.6f, M.y - hm * 3.2f, M.z + pz * (d * 2.2f + hm * 7.0f) - dz * d * 0.6f);
+        *at = V(M.x, M.y - hm * 0.5f, M.z);
+        break;
+    case PS_CAM_FULL: /* the speaker from head to foot */
+        *eye = V(S.x + dx * hs * 2.7f + px * hs * 1.0f, S.y - hs * 0.62f, S.z + dz * hs * 2.7f + pz * hs * 1.0f);
+        *at = V(S.x, S.y - hs * 0.5f, S.z);
         break;
     default: /* PS_CAM_CLOSE: the speaker's face, three quarters from in front */
         *eye = V(S.x + dx * hs * 0.95f + px * hs * 0.42f, S.y - hs * 0.86f, S.z + dz * hs * 0.95f + pz * hs * 0.42f);
@@ -432,16 +477,21 @@ static void PortStory_LineCamera(s32 *li) {
         e0 = V(eye.x + (eye.x - at.x) * 0.6f, eye.y, eye.z + (eye.z - at.z) * 0.6f); /* (at its height: from a low shot, further back is not under the ground) */
         PortStory_Camera(&eye, &at, &e0, &at, t);
         break;
+    case PS_MOVE_CRASH: /* the same from far and at once: a crash zoom */
+        e0 = V(eye.x + (eye.x - at.x) * 1.8f, eye.y, eye.z + (eye.z - at.z) * 1.8f);
+        PortStory_Camera(&eye, &at, &e0, &at, 0.35f);
+        break;
     case PS_MOVE_PULL: /* from close, moving back */
         e0 = V(at.x + (eye.x - at.x) * 0.55f, eye.y, at.z + (eye.z - at.z) * 0.55f);
         PortStory_Camera(&eye, &at, &e0, &at, t);
         break;
     case PS_MOVE_ORBIT: /* round the one looked at, a quarter of the way */
+    case PS_MOVE_ORBIT_BACK: /* (the other way) */
         {
             f32 rx = eye.x - at.x;
             f32 rz = eye.z - at.z;
             f32 c = cosf(0.6f);
-            f32 sn = sinf(0.6f);
+            f32 sn = li[PL_MOVE] == PS_MOVE_ORBIT ? sinf(0.6f) : -sinf(0.6f);
 
             e0 = V(at.x + rx * c - rz * sn, eye.y, at.z + rx * sn + rz * c);
             PortStory_Camera(&eye, &at, &e0, &at, t);
@@ -455,6 +505,28 @@ static void PortStory_LineCamera(s32 *li) {
         e0 = V(eye.x, eye.y + (sScene.pos[s].y - eye.y) * 0.8f, eye.z);
         PortStory_Camera(&eye, &at, &e0, &at, t);
         break;
+    case PS_MOVE_DROP: /* from above, coming down */
+        e0 = V(eye.x, eye.y - PortStory_Height(s) * 1.4f, eye.z);
+        PortStory_Camera(&eye, &at, &e0, &at, t);
+        break;
+    case PS_MOVE_SLIDE: /* sideways past them, looking the same way */
+        {
+            f32 rx = (eye.z - at.z) * 0.45f;
+            f32 rz = -(eye.x - at.x) * 0.45f;
+
+            e0 = V(eye.x + rx, eye.y, eye.z + rz);
+            a0 = V(at.x + rx, at.y, at.z + rz);
+            PortStory_Camera(&eye, &at, &e0, &a0, t);
+        }
+        break;
+    case PS_MOVE_PAN: /* from the other one over to this one, the camera standing still */
+        {
+            s32 l = s ? 0 : 1;
+
+            a0 = V(sScene.pos[l].x, sScene.pos[l].y - PortStory_Height(l) * 0.8f, sScene.pos[l].z);
+            PortStory_Camera(&eye, &at, &eye, &a0, t);
+        }
+        break;
     default:
         PortStory_Camera(&eye, &at, NULL, NULL, 0.0f);
         break;
@@ -465,6 +537,7 @@ static void PortStory_LineCamera(s32 *li) {
 static void PortStory_Effects(s32 *li) {
     s32 fx = li[PL_FX];
     s32 s = li[PL_SIDE] < 0 ? 0 : li[PL_SIDE];
+    s32 l = s ? 0 : 1;
 
     if (fx & PS_FX_SHAKE) {
         BtlFacade_ShakeCamera(0.6f);
@@ -472,11 +545,20 @@ static void PortStory_Effects(s32 *li) {
     if (fx & PS_FX_BIG_SHAKE) {
         BtlFacade_ShakeCamera(2.0f);
     }
+    if (fx & PS_FX_RUMBLE) {
+        BtlFacade_ShakeCamera(6.0f);
+    }
     if (fx & PS_FX_AURA_ON) {
         BtlFacade_SetCtrlFE(s);
     }
     if (fx & PS_FX_AURA_OFF) {
         BtlFacade_SetCtrlFF(s);
+    }
+    if (fx & PS_FX_L_AURA_ON) {
+        BtlFacade_SetCtrlFE(l);
+    }
+    if (fx & PS_FX_L_AURA_OFF) {
+        BtlFacade_SetCtrlFF(l);
     }
     if (fx & PS_FX_CHARGE_ON) {
         BtlFacade_SetCtrl101(s);
@@ -487,6 +569,9 @@ static void PortStory_Effects(s32 *li) {
     if (fx & PS_FX_BURST) {
         BtlFacade_SetCtrl102(s);
     }
+    if (fx & PS_FX_L_BURST) {
+        BtlFacade_SetCtrl102(l);
+    }
     if (fx & PS_FX_HIDE) {
         BtlFacade_SetCtrl100(s);
         sScene.hidden[s] = 1;
@@ -495,12 +580,38 @@ static void PortStory_Effects(s32 *li) {
         BtlFacade_ClearCtrl100(s);
         sScene.hidden[s] = 0;
     }
+    if (fx & PS_FX_L_HIDE) {
+        BtlFacade_SetCtrl100(l);
+        sScene.hidden[l] = 1;
+    }
+    if (fx & PS_FX_L_SHOW) {
+        BtlFacade_ClearCtrl100(l);
+        sScene.hidden[l] = 0;
+    }
     if (fx & PS_FX_FLASH) {
         PortStoryUi_Show(PS_SHOW_FLASH, 255, 0);
     }
-    if (fx & PS_FX_FADE_IN) {
-        PortStoryUi_Show(PS_SHOW_FADE, 255, -12);
+    if (fx & PS_FX_RED_FLASH) {
+        PortStoryUi_Show(PS_SHOW_FLASH, 255, 1);
     }
+    if (fx & PS_FX_FADE_IN) {
+        PortStoryUi_Show(PS_SHOW_FADE, 255, -3); /* (the slow one a saga has always had) */
+    }
+    if (fx & PS_FX_FADE_OUT) {
+        PortStoryUi_Show(PS_SHOW_FADE, -1, 12);
+    }
+    switch (li[PL_TRANS]) {
+    case PS_TRANS_FADE_IN:
+        PortStoryUi_Show(PS_SHOW_FADE, 255, -8);
+        break;
+    case PS_TRANS_FLASH:
+        PortStoryUi_Show(PS_SHOW_FLASH, 255, 0);
+        break;
+    case PS_TRANS_DIP: /* (a cut through black: black at once, then quickly back) */
+        PortStoryUi_Show(PS_SHOW_FADE, 255, -20);
+        break;
+    }
+    PortStoryUi_Show(PS_SHOW_DARK, (fx & PS_FX_DARK) != 0, 0);
 }
 
 /* ---- the commands ------------------------------------------------------------------------------------------- */
@@ -535,12 +646,14 @@ static s32 PortStoryCmd_SceneEnd(u32 phase, void *work) {
             }
         }
         PortStoryUi_Show(PS_SHOW_HIDE, 0, 0);
+        PortStoryUi_Show(PS_SHOW_DARK, 0, 0);
+        PortStoryUi_Show(PS_SHOW_FADE, -1, -12); /* (a scene that ended in black: the picture comes back) */
         PortStoryUi_Show(PS_SHOW_LETTERBOX, 0, 0);
     }
     return 1;
 }
 
-/* Task work of 9002. */
+/* Task work of 9002 (a command's work is 0x20 bytes). */
 typedef struct PsLineWork {
     s16 line;
     s16 frames;
@@ -549,10 +662,15 @@ typedef struct PsLineWork {
     s8 voice;      /* the voice's channel, -1 none */
     s8 mouth;      /* 1 talking (a loop), 2 lip-synced, 3 the lip's start waited for */
     s8 obj;        /* the speaker is on the stage (its side) + 1 */
-    s8 pressed;
+    s8 said;       /* the line has started (after its delay) */
     s16 len;
     s16 wait;
     s32 lip;
+    s16 delay;     /* frames of silence before it is said */
+    s8 choice;     /* how many answers it asks for */
+    s8 cursor;
+    s8 out;        /* frames of its fade to black done, -1 none to do */
+    s8 picked;
 } PsLineWork;
 
 static void PortStory_LineEnd(PsLineWork *w) {
@@ -563,7 +681,30 @@ static void PortStory_LineEnd(PsLineWork *w) {
         BtlObj_SetSubState(BtlObj_Get(BattleSide_GetObjId(w->obj - 1)), 0, -1);
     }
     w->mouth = 0;
+    if (w->choice > 0 && !w->picked) { /* (a question skipped: its first answer) */
+        w->picked = 1;
+        PortStoryUi_Show(PS_SHOW_CHOSEN, w->line, 0);
+    }
     PortStoryUi_Show(PS_SHOW_HIDE, 0, 0);
+}
+
+/* The line is said: its voice, its lips, its text. */
+static void PortStory_LineSay(PsLineWork *w, s32 *li) {
+    w->said = 1;
+    if (li[PL_VOICE] >= 0) {
+        w->voice = (s8)(li[PL_SIDE] > 0 ? 1 : 0);
+        Voice_Stop(w->voice);
+        PortStory_PlayVoice(w->voice, li[PL_VCHARA], li[PL_VOICE]);
+    }
+    if (w->obj > 0) {
+        if (w->voice >= 0 && w->lip >= 0) {
+            w->mouth = 3;
+        } else if (w->len > 0) {
+            BtlObj_SetSubState(BtlObj_Get(BattleSide_GetObjId(w->obj - 1)), 3, -1);
+            w->mouth = 1;
+        }
+    }
+    PortStoryUi_Show(PS_SHOW_SAY, w->line, 0);
 }
 
 /* 9002 "line": n. */
@@ -584,11 +725,35 @@ static s32 PortStoryCmd_Line(u32 phase, void *work) {
         if (!PortStoryUi_Line(w->line, li)) {
             return 1;
         }
-        for (i = 0; i < 2; i++) { /* (back on their marks: a pose before may have carried a fighter off them) */
-            Vec4 rot = V(0.0f, sScene.yaw[i], 0.0f);
+        /* where the two stand: as the line before left them, or moved by this one */
+        if (li[PL_DIST] > 0) {
+            sScene.how = li[PL_DIST];
+        }
+        if (li[PL_SIDE] >= 0 || li[PL_STAND] >= 0 || li[PL_FACE] >= 0 || li[PL_LSTAND] >= 0 || li[PL_LFACE] >= 0) {
+            s32 s = li[PL_SIDE] > 0 ? 1 : 0;
 
-            BtlFacade_SetCharPos(i, &sScene.pos[i]);
-            BtlFacade_SetCharRot(i, &rot);
+            if (li[PL_STAND] >= 0) {
+                sScene.stand[s] = li[PL_STAND];
+            }
+            if (li[PL_FACE] >= 0) {
+                sScene.face[s] = li[PL_FACE];
+            }
+            if (li[PL_LSTAND] >= 0) {
+                sScene.stand[1 - s] = li[PL_LSTAND];
+            }
+            if (li[PL_LFACE] >= 0) {
+                sScene.face[1 - s] = li[PL_LFACE];
+            }
+        }
+        if (li[PL_DIST] > 0 || li[PL_STAND] >= 0 || li[PL_FACE] >= 0 || li[PL_LSTAND] >= 0 || li[PL_LFACE] >= 0) {
+            PortStory_Marks();
+        } else {
+            for (i = 0; i < 2; i++) { /* (back on their marks: a pose before may have carried a fighter off them) */
+                Vec4 rot = V(0.0f, sScene.yaw[i], 0.0f);
+
+                BtlFacade_SetCharPos(i, &sScene.pos[i]);
+                BtlFacade_SetCharRot(i, &rot);
+            }
         }
         PortStory_LineCamera(li);
         if (li[PL_SIDE] >= 0 && li[PL_POSE] >= 0) {
@@ -598,39 +763,52 @@ static s32 PortStoryCmd_Line(u32 phase, void *work) {
             BtlFacade_PlayCharMotion(li[PL_SIDE] == 0 ? 1 : 0, li[PL_LPOSE], li[PL_LPOSE_LOOP] != 0, 0.0f);
         }
         PortStory_Effects(li);
+        if (li[PL_SOUND] >= 0) {
+            Snd_PlaySe(4, li[PL_SOUND]);
+        }
+        PortStory_Music(li[PL_MUSIC]);
         w->len = (s16)li[PL_LEN];
         w->wait = (s16)li[PL_WAIT];
         if (w->wait <= 0 && PortStoryUi_AutoWait() > 0) {
             w->wait = (s16)PortStoryUi_AutoWait();
         }
         w->lip = li[PL_LIP];
-        if (li[PL_SIDE] >= 0 && !sScene.hidden[li[PL_SIDE]] &&
+        w->delay = (s16)(li[PL_DELAY] > 0 ? li[PL_DELAY] : 0);
+        w->choice = (s8)(li[PL_CHOICE] > 0 ? li[PL_CHOICE] : 0);
+        w->out = (s8)(li[PL_TRANS] == PS_TRANS_FADE_OUT ? 0 : -1);
+        if (li[PL_SIDE] >= 0 && !sScene.hidden[li[PL_SIDE]] && li[PL_CARD] <= 0 &&
             (li[PL_MEMBER] < 0 || li[PL_MEMBER] == BtlFacade_GetActiveMember(li[PL_SIDE]))) {
             w->obj = (s8)(li[PL_SIDE] + 1);
         }
-        if (li[PL_VOICE] >= 0) {
-            w->voice = (s8)(li[PL_SIDE] > 0 ? 1 : 0);
-            Voice_Stop(w->voice);
-            PortStory_PlayVoice(w->voice, li[PL_VCHARA], li[PL_VOICE]);
-        }
-        if (w->obj > 0) {
-            if (w->voice >= 0 && w->lip >= 0) {
-                w->mouth = 3;
-            } else if (w->len > 0) {
-                BtlObj_SetSubState(BtlObj_Get(BattleSide_GetObjId(w->obj - 1)), 3, -1);
-                w->mouth = 1;
-            }
-        }
         sScene.lines++;
-        PortStoryUi_Show(PS_SHOW_SAY, w->line, 0);
+        if (w->delay <= 0) {
+            PortStory_LineSay(w, li);
+        }
         break;
     case GSC_PHASE_UPDATE:
         w->frames++;
+        if (!w->said) { /* its silence first */
+            if (w->frames < w->delay) {
+                break;
+            }
+            for (i = 0; i < PL_COUNT; i++) {
+                li[i] = -1;
+            }
+            PortStoryUi_Line(w->line, li);
+            PortStory_LineSay(w, li);
+            w->frames = 0;
+            break;
+        }
         if (w->mouth == 3 && Adx_GetStat(w->voice + 4) == 3) { /* (the voice has started: its lips with it) */
             BtlObj_SetSubState(BtlObj_Get(BattleSide_GetObjId(w->obj - 1)), 2, w->lip);
             w->mouth = 2;
         }
         if (w->frames < 6) { /* (a press that ended the line before is not this one's) */
+            break;
+        }
+        if (w->out > 0) { /* its fade to black, then on */
+            w->out++;
+            ret = w->out > 22;
             break;
         }
         if (w->shown < w->len * 16) {
@@ -646,12 +824,36 @@ static s32 PortStoryCmd_Line(u32 phase, void *work) {
             break;
         }
         w->full++;
-        if (w->full > 2 && (gPad[0].gamePressed & PADG_CROSS)) {
+        if (w->choice > 0) { /* a question: up and down, Cross picks (a test run picks by itself) */
+            if (gPad[0].gamePressed & PADG_UP) {
+                w->cursor = (s8)(w->cursor > 0 ? w->cursor - 1 : w->choice - 1);
+            }
+            if (gPad[0].gamePressed & PADG_DOWN) {
+                w->cursor = (s8)(w->cursor + 1 < w->choice ? w->cursor + 1 : 0);
+            }
+            if (PortStoryUi_AutoWait() > 0 && w->full >= PortStoryUi_AutoWait() + 30) {
+                w->cursor = (s8)(PortStoryUi_AutoPick() % w->choice);
+                ret = 1;
+            } else if (w->full > 12 && (gPad[0].gamePressed & PADG_CROSS)) {
+                ret = 1;
+            }
+            if (ret) {
+                w->picked = 1;
+                PortStoryUi_Show(PS_SHOW_CHOSEN, w->line, w->cursor);
+            } else {
+                PortStoryUi_Show(PS_SHOW_CHOICE, w->line, w->cursor);
+            }
+        } else if (w->full > 2 && (gPad[0].gamePressed & PADG_CROSS)) {
             ret = 1;
         } else if (w->wait > 0 && w->full >= w->wait && (w->voice < 0 || Voice_IsStopped(w->voice))) {
             ret = 1;
         } else if (w->len == 0 && w->voice >= 0 && Voice_IsStopped(w->voice) && w->full > 20) {
             ret = 1; /* (a voice without text: when it has been said) */
+        }
+        if (ret && w->out == 0) { /* (the line goes out into black) */
+            PortStoryUi_Show(PS_SHOW_FADE, -1, 12);
+            w->out = 1;
+            ret = 0;
         }
         break;
     case GSC_PHASE_END:
@@ -660,6 +862,14 @@ static s32 PortStoryCmd_Line(u32 phase, void *work) {
     case GSC_PHASE_BEGIN_ABORT:
         if (Gsc_IsCurrentBegun()) {
             PortStory_LineEnd(w);
+        } else { /* (a scene skipped: a question in it still gets its first answer, where the story goes depends on it) */
+            for (i = 0; i < PL_COUNT; i++) {
+                li[i] = -1;
+            }
+            i = Gsc_GetInt();
+            if (PortStoryUi_Line(i, li) && li[PL_CHOICE] > 0) {
+                PortStoryUi_Show(PS_SHOW_CHOSEN, i, 0);
+            }
         }
         ret = 1;
         break;
@@ -717,16 +927,41 @@ static s32 PortStoryCmd_Title(u32 phase, void *work) {
 
 /* ---- the referee -------------------------------------------------------------------------------------------- */
 
+#define PS_EVENTS_MAX 96
+#define PS_QUEUE 24
+
 typedef struct PsWatch {
     s32 started;
     s32 decided;
-    s32 frames;
+    s32 frames;     /* frames of fight (a scene that stops it does not count) */
     s32 chara[2];   /* who was fighting on each side (a change: a transformation) */
     s32 member[2];
-    s32 said[32];   /* which lines of the fight were said */
+    s32 alive[2];   /* how many of each team stood, the frame before */
+    s32 alive0;     /* and of the player's as the fight started */
+    s32 maxed[2];
+    s32 kiFull[2];
+    u8 fired[PS_EVENTS_MAX];  /* 0 not yet, 1 happened (its actions wait or run), 2 done */
+    s32 again[PS_EVENTS_MAX]; /* the fight frame from which an event that repeats can happen again */
     s32 hud;        /* the line in the box, -1 none */
     s32 hudFrames;
     s32 hudVoice;
+    s32 card;       /* the line put up as a message, -1 none */
+    s32 cardFrames;
+    s32 objective;  /* frames the objective has been up, -1 gone */
+    s32 queue[PS_QUEUE]; /* events whose actions wait their turn */
+    s32 queued;
+    s32 cur;        /* the event whose actions are being done, -1 none */
+    s32 act;        /* its next action */
+    s32 wait;       /* frames before the next action */
+    s32 tries;      /* frames the action of now could not be done yet */
+    s32 scene;      /* a scene that stops the fight: 0 none, 1 asked for, 2 playing */
+    s32 sceneAction;
+    s32 sceneFrom;  /* the clock when it started */
+    s32 off;        /* seconds of the clock spent in such scenes */
+    s32 bonus;      /* seconds the actions added to the limits */
+    s32 forms[2];   /* transformations still to do at the start */
+    s32 formWait;
+    s32 blastFrame; /* the fight frame the player was last seen doing a blast */
 } PsWatch;
 static PsWatch sWatch;
 
@@ -745,20 +980,40 @@ static s32 PortStory_HealthPct(s32 side) {
     return g[0] * 100 / g[1];
 }
 
-/* Starts the scene after the fight (event action 10040 won, 10030 lost) once the fight lets it: as the game's trigger
-   list would (its request was put there by the script's command 7, with a trigger nothing raises). */
-static void PortStory_Decide(s32 won) {
+/* The fight's seconds: the clock's, less what the scenes that stopped it took. */
+static s32 PortStory_Seconds(void) {
+    return BtlClock_ToSeconds(BtlSeq_GetClock()) - sWatch.off;
+}
+
+/* The trigger list's request for an event action (the list is emptied whenever an event starts: put back then). The
+   trigger is one nothing raises: the referee starts these itself (BtlScript_StartPending, once the fight allows). */
+static BtlScriptRequest *PortStory_Request(s32 action) {
     BtlScriptTalk *talk = &gBtlScript.talk;
-    s32 want = won ? 10040 : 10030;
     s32 i;
 
     for (i = 0; i < talk->requestCount; i++) {
-        if (talk->requests[i].kind == BTL_SCRIPT_REQ_EVENT && talk->requests[i].u.start.action == want) {
-            gBtlScript.pending = &talk->requests[i];
-            break;
+        if (talk->requests[i].kind == BTL_SCRIPT_REQ_EVENT && talk->requests[i].u.start.action == action) {
+            return &talk->requests[i];
         }
     }
+    if (talk->requestCount >= 48) {
+        return NULL;
+    }
+    BtlScript_AddEvent(0x7F, action);
+    return &talk->requests[talk->requestCount - 1];
+}
+
+/* Starts the scene after the fight (event action 10040 won, 10030 lost; 10041 / 10031 when the clock decided) once
+   the fight lets it: as the game's trigger list would. */
+static void PortStory_Decide(s32 won, s32 byTime) {
+    BtlScriptRequest *req = PortStory_Request((won ? 10040 : 10030) + (byTime ? 1 : 0));
+
+    if (req != NULL) {
+        gBtlScript.pending = req;
+    }
     sWatch.decided = won ? 1 : 2;
+    sWatch.scene = 0;
+    PortStoryUi_Show(PS_SHOW_FOUGHT, PortStory_Seconds(), PortStory_HealthPct(0));
 }
 
 /* A line said during the fight: in the box (story_ui.cpp), with its voice; the fight goes on. */
@@ -784,15 +1039,244 @@ static void PortStory_HudLine(s32 line) {
     if (li[PL_FX] & PS_FX_FLASH) {
         PortStoryUi_Show(PS_SHOW_FLASH, 200, 0);
     }
+    if (li[PL_FX] & PS_FX_RED_FLASH) {
+        PortStoryUi_Show(PS_SHOW_FLASH, 200, 1);
+    }
+    if (li[PL_SOUND] >= 0) {
+        Snd_PlaySe(4, li[PL_SOUND]);
+    }
+    PortStory_Music(li[PL_MUSIC]);
+}
+
+/* The side's next team member that still stands, -1 none. */
+static s32 PortStory_NextMember(s32 side) {
+    s32 obj = BattleSide_GetObjId(side);
+    s32 n = BtlCharApi_GetMemberCount(obj);
+    s32 a = BtlFacade_GetActiveMember(side);
+    s32 i;
+
+    for (i = 1; i < n; i++) {
+        s32 m = (a + i) % n;
+
+        if (BtlCharApi_GetMemberHpPercent(obj, m) > 0) {
+            return m;
+        }
+    }
+    return -1;
+}
+
+/* Does an action of an event. 1 done; 0 not yet (the fighter cannot do it this frame: tried again the next). */
+static s32 PortStory_Do(s32 *a) {
+    s32 side = a[PA_SIDE] ? 1 : 0;
+    s32 v = a[PA_VALUE];
+    s32 m = BtlFacade_GetActiveMember(side);
+    void *chr = BtlChar_Get(side);
+
+    switch (a[PA_KIND]) {
+    case PS_DO_SAY:
+        if (sWatch.hud >= 0 && sWatch.hudFrames <= 45) { /* (the line before it gets its time) */
+            return 0;
+        }
+        PortStory_HudLine(v);
+        break;
+    case PS_DO_SCENE:
+        sWatch.scene = 1;
+        sWatch.sceneAction = v;
+        break;
+    case PS_DO_HEAL:
+        BtlFacade_AddHp(side, m, (f32)v);
+        break;
+    case PS_DO_HURT: /* (the game's own scripted damage: it never takes the last of the health) */
+        BtlFacade_AddHp(side, m, -(f32)v);
+        break;
+    case PS_DO_SET_HP:
+        if (v < 1) {
+            v = 1;
+        }
+        if (PortStory_HealthPct(side) < v) {
+            BtlFacade_RaiseHp(side, m, (f32)v);
+        } else {
+            BtlFacade_LowerHp(side, m, (f32)v);
+        }
+        break;
+    case PS_DO_KI:
+        BtlFacade_AddGaugeC(side, m, v);
+        break;
+    case PS_DO_BLAST:
+        BtlFacade_AddGauge14(side, m, v);
+        break;
+    case PS_DO_MAX:
+        BtlFacade_SetMaxPower(side, 1);
+        break;
+    case PS_DO_TRANSFORM:
+        {
+            s32 id = chr != NULL ? BtlParam_GetSlotId(chr, v > 0 && v <= 4 ? v - 1 : 0) : 0xFF;
+
+            if (id < 0 || id >= 0xFF) { /* (it has no such form) */
+                break;
+            }
+            if (!BtlFacade_CanCharAct(side) || !BtlCtrl_Transform(side, id)) {
+                return 0;
+            }
+            sWatch.wait = 45;
+        }
+        break;
+    case PS_DO_SWITCH:
+        {
+            s32 to = v > 0 ? v - 1 : PortStory_NextMember(side);
+
+            if (to < 0 || to == m || to >= BtlCharApi_GetMemberCount(BattleSide_GetObjId(side)) ||
+                BtlCharApi_GetMemberHpPercent(BattleSide_GetObjId(side), to) <= 0) {
+                break; /* (nobody to bring in) */
+            }
+            if (!BtlFacade_CanCharAct(side) || !BtlCtrl_ChangeMember(side, to)) {
+                return 0;
+            }
+            sWatch.wait = 45;
+        }
+        break;
+    case PS_DO_MUSIC:
+        PortStory_Music(v);
+        break;
+    case PS_DO_SOUND:
+        if (v >= 0) {
+            Snd_PlaySe(4, v);
+        }
+        break;
+    case PS_DO_STAGE:
+        BtlFacade_RequestStageChange();
+        break;
+    case PS_DO_SHAKE:
+        BtlFacade_ShakeCamera((f32)(v > 0 ? v : 6) * 0.1f);
+        break;
+    case PS_DO_FLASH:
+        PortStoryUi_Show(PS_SHOW_FLASH, 255, v ? 1 : 0);
+        break;
+    case PS_DO_AURA:
+        if (v) {
+            BtlFacade_SetCtrlFE(side);
+        } else {
+            BtlFacade_SetCtrlFF(side);
+        }
+        break;
+    case PS_DO_WIN:
+        PortStory_Decide(1, 0);
+        break;
+    case PS_DO_LOSE:
+        PortStory_Decide(0, 0);
+        break;
+    case PS_DO_CPU:
+        BtlFacade_SetCpuParam8(v);
+        BtlCtrl_SetCpuLevel(1, v);
+        break;
+    case PS_DO_TIME:
+        sWatch.bonus += v;
+        break;
+    case PS_DO_WAIT:
+        sWatch.wait = v * 6;
+        break;
+    case PS_DO_USE_BLAST:
+        if (!BtlFacade_CanCharAct(side) || !BtlCtrl_UseTechnique(side, v == 2 ? 4 : v == 1 ? 3 : 2)) {
+            return 0;
+        }
+        sWatch.wait = 30;
+        break;
+    case PS_DO_CARD:
+        sWatch.card = v;
+        sWatch.cardFrames = 0;
+        break;
+    }
+    return 1;
+}
+
+/* Whether an event's "when" is so this frame. */
+static s32 PortStory_Happens(s32 *ev, s32 n, s32 sec, s32 left) {
+    s32 side = 0;
+    s32 v = ev[PE_VALUE];
+
+    switch (ev[PE_WHEN]) {
+    case PS_WHEN_START:
+        return sWatch.frames > 30;
+    case PS_WHEN_ENEMY_HP:
+        return PortStory_HealthPct(1) <= v;
+    case PS_WHEN_PLAYER_HP:
+        return PortStory_HealthPct(0) <= v;
+    case PS_WHEN_ENEMY_FORM:
+        side = 1;
+    case PS_WHEN_PLAYER_FORM:
+        return BtlCharApi_GetChara(BattleSide_GetObjId(side)) != sWatch.chara[side] &&
+               BtlFacade_GetActiveMember(side) == sWatch.member[side];
+    case PS_WHEN_ENEMY_MEMBER:
+        side = 1;
+    case PS_WHEN_PLAYER_MEMBER:
+        return BtlFacade_GetActiveMember(side) != sWatch.member[side];
+    case PS_WHEN_TIME:
+        return sec >= v;
+    case PS_WHEN_ENEMY_KI:
+        side = 1;
+    case PS_WHEN_PLAYER_KI:
+        {
+            s32 *g = BtlChar_Get(side) != NULL ? BtlMember_GetActiveGauge(BtlChar_Get(side)) : NULL;
+            s32 full = g != NULL && g[4] > 0 && g[3] >= g[4];
+
+            return full && !sWatch.kiFull[side];
+        }
+    case PS_WHEN_ENEMY_MAX:
+        side = 1;
+    case PS_WHEN_PLAYER_MAX:
+        return BtlSide_IsPoweredUp(side) && !sWatch.maxed[side];
+    case PS_WHEN_ENEMY_KO:
+        side = 1;
+    case PS_WHEN_PLAYER_KO:
+        return BtlSide_CountAlive(side) < sWatch.alive[side];
+    case PS_WHEN_AFTER:
+        return v >= 1 && v <= PS_EVENTS_MAX && v - 1 != n && sWatch.fired[v - 1] == 2;
+    case PS_WHEN_TIME_LEFT:
+        return left >= 0 && left <= v;
+    case PS_WHEN_ENEMY_COMBO:
+        side = 1;
+    case PS_WHEN_PLAYER_COMBO:
+        return BtlSide_GetComboHits(side) >= (v > 1 ? v : 2);
+    case PS_WHEN_ENEMY_BLAST:
+        side = 1;
+    case PS_WHEN_PLAYER_BLAST:
+        return BtlSide_GetBlast(side) >= v * 100000;
+    }
+    return 0;
+}
+
+/* The fight's first frame: what the rules give each side to start with. */
+static void PortStory_StartRules(s32 *bt) {
+    s32 s;
+
+    for (s = 0; s < 2; s++) {
+        s32 m = BtlFacade_GetActiveMember(s);
+
+        if (bt[PB_KI + s] >= 0) {
+            BtlFacade_LowerGaugeC(s, m, bt[PB_KI + s]);
+            BtlFacade_RaiseGaugeC(s, m, bt[PB_KI + s]);
+        }
+        if (bt[PB_BLAST + s] >= 0) {
+            BtlFacade_LowerGauge14(s, m, bt[PB_BLAST + s]);
+            BtlFacade_RaiseGauge14(s, m, bt[PB_BLAST + s]);
+        }
+        if (bt[PB_MAX + s] > 0) {
+            BtlFacade_SetMaxPower(s, 1);
+        }
+        sWatch.forms[s] = bt[PB_FORM + s] > 0 ? bt[PB_FORM + s] : 0;
+    }
+    sWatch.formWait = 20;
 }
 
 /* 9004 "watch": every frame of the battle until it is decided. */
 static s32 PortStoryCmd_Watch(u32 phase, void *work) {
     s32 bt[PB_COUNT];
     s32 ev[PE_COUNT];
+    s32 act[PA_COUNT];
     s32 i;
     s32 sec;
     s32 left;
+    s32 limit;
 
     static s32 serial;
 
@@ -801,6 +1285,10 @@ static s32 PortStoryCmd_Watch(u32 phase, void *work) {
         memset(&sWatch, 0, sizeof(sWatch));
         sWatch.hud = -1;
         sWatch.hudVoice = -1;
+        sWatch.card = -1;
+        sWatch.objective = -1;
+        sWatch.cur = -1;
+        sWatch.blastFrame = -100000;
         *(s32 *)work = ++serial;
         return 0;
     case GSC_PHASE_BEGIN_ABORT:
@@ -823,10 +1311,26 @@ static s32 PortStoryCmd_Watch(u32 phase, void *work) {
         }
         PortStoryUi_Show(PS_SHOW_HUD, sWatch.hud, sWatch.hudFrames);
     }
+    if (sWatch.card >= 0) { /* a message: three and a half seconds */
+        sWatch.cardFrames++;
+        if (sWatch.cardFrames > 210) {
+            sWatch.card = -1;
+        }
+        PortStoryUi_Show(PS_SHOW_CARD, sWatch.card, sWatch.cardFrames);
+    }
+    if (sWatch.objective >= 0) {
+        sWatch.objective++;
+        if (sWatch.objective > 200) {
+            sWatch.objective = -1;
+        }
+        PortStoryUi_Show(PS_SHOW_OBJECTIVE, sWatch.objective, 0);
+    }
     if (BtlSeq_GetState() != BTL_SEQ_FIGHT) {
         if (sWatch.started && BtlSeq_GetState() > BTL_SEQ_FIGHT) {
             PortStoryUi_Show(PS_SHOW_TIMER, -1, 0);
             PortStoryUi_Show(PS_SHOW_HUD, -1, 0);
+            PortStoryUi_Show(PS_SHOW_CARD, -1, 0);
+            PortStoryUi_Show(PS_SHOW_OBJECTIVE, -1, 0);
             return 1;
         }
         return 0;
@@ -834,80 +1338,159 @@ static s32 PortStoryCmd_Watch(u32 phase, void *work) {
     if (sWatch.decided) { /* (waiting for the fight to let the scene start) */
         return 0;
     }
-    sec = BtlClock_ToSeconds(BtlSeq_GetClock());
+    if (sWatch.scene == 2) { /* a scene has stopped the fight: nothing is judged until it is over */
+        if (BtlScript_IsEventRunning()) {
+            return 0;
+        }
+        sWatch.off += BtlClock_ToSeconds(BtlSeq_GetClock()) - sWatch.sceneFrom;
+        sWatch.scene = 0;
+        sWatch.wait = 30; /* (the fighters get their feet back before the next thing) */
+    }
+    sec = PortStory_Seconds();
     if (!sWatch.started) {
         sWatch.started = 1;
         for (i = 0; i < 2; i++) {
             sWatch.chara[i] = BtlCharApi_GetChara(BattleSide_GetObjId(i));
             sWatch.member[i] = BtlFacade_GetActiveMember(i);
+            sWatch.alive[i] = BtlSide_CountAlive(i);
+        }
+        sWatch.alive0 = sWatch.alive[0];
+        PortStory_StartRules(bt);
+        if (bt[PB_OBJECTIVE]) {
+            sWatch.objective = 0;
         }
     }
     sWatch.frames++;
-    /* the lines said during the fight */
-    for (i = 0; i < bt[PB_EVENTS] && i < 32; i++) {
-        s32 hit = 0;
+    /* the forms the rules start a side in: one transformation after the other, as soon as the fighter can */
+    if (sWatch.formWait > 0) {
+        sWatch.formWait--;
+    } else {
+        for (i = 0; i < 2; i++) {
+            void *chr = BtlChar_Get(i);
+            s32 id = chr != NULL ? BtlParam_GetSlotId(chr, 0) : 0xFF;
 
-        if (sWatch.said[i] || !PortStoryUi_Event(i, ev)) {
+            if (sWatch.forms[i] <= 0) {
+                continue;
+            }
+            if (id < 0 || id >= 0xFF) {
+                sWatch.forms[i] = 0;
+            } else if (BtlFacade_CanCharAct(i) && BtlCtrl_Transform(i, id)) {
+                sWatch.forms[i]--;
+                sWatch.formWait = 90;
+                break;
+            }
+        }
+    }
+    if (BtlCharApi_GetTechniqueProgress(BattleSide_GetObjId(0)) >= 0.0f) {
+        sWatch.blastFrame = sWatch.frames;
+    }
+    /* the clock */
+    limit = bt[PB_TIME] > 0 ? bt[PB_TIME] + sWatch.bonus : 0;
+    left = -1;
+    if (bt[PB_WIN] == PS_WIN_SURVIVE && bt[PB_SURVIVE] > 0) {
+        left = bt[PB_SURVIVE] + sWatch.bonus - sec;
+    }
+    if (limit > 0 && (left < 0 || limit - sec < left)) {
+        left = limit - sec;
+    }
+    if (left < 0 && (bt[PB_TIME] > 0 || (bt[PB_WIN] == PS_WIN_SURVIVE && bt[PB_SURVIVE] > 0))) {
+        left = 0;
+    }
+    /* the events: what happens this frame joins the line of those whose actions wait their turn */
+    for (i = 0; i < bt[PB_EVENTS] && i < PS_EVENTS_MAX; i++) {
+        if (sWatch.fired[i] == 1 || !PortStoryUi_Event(i, ev)) {
             continue;
         }
-        switch (ev[PE_WHEN]) {
-        case PS_WHEN_START:
-            hit = sWatch.frames > 30;
-            break;
-        case PS_WHEN_ENEMY_HP:
-            hit = PortStory_HealthPct(1) <= ev[PE_VALUE];
-            break;
-        case PS_WHEN_PLAYER_HP:
-            hit = PortStory_HealthPct(0) <= ev[PE_VALUE];
-            break;
-        case PS_WHEN_ENEMY_FORM:
-        case PS_WHEN_PLAYER_FORM:
-            {
-                s32 side = ev[PE_WHEN] == PS_WHEN_ENEMY_FORM ? 1 : 0;
-
-                hit = BtlCharApi_GetChara(BattleSide_GetObjId(side)) != sWatch.chara[side] &&
-                      BtlFacade_GetActiveMember(side) == sWatch.member[side];
-            }
-            break;
-        case PS_WHEN_ENEMY_MEMBER:
-        case PS_WHEN_PLAYER_MEMBER:
-            {
-                s32 side = ev[PE_WHEN] == PS_WHEN_ENEMY_MEMBER ? 1 : 0;
-
-                hit = BtlFacade_GetActiveMember(side) != sWatch.member[side];
-            }
-            break;
-        case PS_WHEN_TIME:
-            hit = sec >= ev[PE_VALUE];
-            break;
+        if (sWatch.fired[i] == 2 && (ev[PE_REPEAT] <= 0 || sWatch.frames < sWatch.again[i])) {
+            continue;
         }
-        if (hit && (sWatch.hud < 0 || sWatch.hudFrames > 45)) {
-            sWatch.said[i] = 1;
-            PortStory_HudLine(ev[PE_LINE]);
-            break;
+        if (sWatch.queued < PS_QUEUE && PortStory_Happens(ev, i, sec, left)) {
+            sWatch.fired[i] = 1;
+            sWatch.queue[sWatch.queued++] = i;
         }
     }
     for (i = 0; i < 2; i++) { /* (a change of form or member counted from the fighter of now on) */
+        s32 *g = BtlChar_Get(i) != NULL ? BtlMember_GetActiveGauge(BtlChar_Get(i)) : NULL;
+
         sWatch.chara[i] = BtlCharApi_GetChara(BattleSide_GetObjId(i));
         sWatch.member[i] = BtlFacade_GetActiveMember(i);
+        sWatch.alive[i] = BtlSide_CountAlive(i);
+        sWatch.maxed[i] = BtlSide_IsPoweredUp(i);
+        sWatch.kiFull[i] = g != NULL && g[4] > 0 && g[3] >= g[4];
     }
     /* the end of the fight */
-    left = -1;
-    if (bt[PB_WIN] == 1 && bt[PB_SURVIVE] > 0) {
-        left = bt[PB_SURVIVE] - sec;
-    }
-    if (bt[PB_TIME] > 0 && (left < 0 || bt[PB_TIME] - sec < left)) {
-        left = bt[PB_TIME] - sec;
-    }
-    PortStoryUi_Show(PS_SHOW_TIMER, left < 0 ? -1 : left, bt[PB_WIN] == 1);
+    PortStoryUi_Show(PS_SHOW_TIMER, left < 0 ? -1 : left, bt[PB_WIN] == PS_WIN_SURVIVE);
     if (BtlCtrl_IsTeamDead(0)) {
-        PortStory_Decide(0);
-    } else if (BtlCtrl_IsTeamDead(1)) {
-        PortStory_Decide(1);
-    } else if (bt[PB_WIN] == 1 && bt[PB_SURVIVE] > 0 && sec >= bt[PB_SURVIVE]) {
-        PortStory_Decide(1);
-    } else if (bt[PB_TIME] > 0 && sec >= bt[PB_TIME]) {
-        PortStory_Decide(bt[PB_TIME_UP] == 1 ? 1 : bt[PB_TIME_UP] == 2 ? PortStory_HealthPct(0) >= PortStory_HealthPct(1) : 0);
+        PortStory_Decide(0, 0);
+    } else if (bt[PB_FAIL_MEMBER] && sWatch.alive[0] < sWatch.alive0) {
+        PortStory_Decide(0, 0);
+    } else if (bt[PB_FAIL_HEALTH] > 0 && PortStory_HealthPct(0) <= bt[PB_FAIL_HEALTH]) {
+        PortStory_Decide(0, 0);
+    } else if (BtlCtrl_IsTeamDead(1)) { /* (PS_WIN_BLAST: the last blow has to be a blast, fired not long before) */
+        PortStory_Decide(bt[PB_WIN] != PS_WIN_BLAST || sWatch.frames - sWatch.blastFrame < 240, 0);
+    } else if (bt[PB_WIN] == PS_WIN_HEALTH && PortStory_HealthPct(1) <= bt[PB_WIN_VALUE]) {
+        PortStory_Decide(1, 0);
+    } else if (bt[PB_WIN] == PS_WIN_SURVIVE && bt[PB_SURVIVE] > 0 && sec >= bt[PB_SURVIVE] + sWatch.bonus) {
+        PortStory_Decide(1, 1);
+    } else if (limit > 0 && sec >= limit) {
+        PortStory_Decide(bt[PB_TIME_UP] == 1 ? 1 : bt[PB_TIME_UP] == 2 ? PortStory_HealthPct(0) >= PortStory_HealthPct(1) : 0, 1);
+    }
+    if (sWatch.decided) {
+        return 0;
+    }
+    /* a scene asked for: started by the game's trigger list once both fighters can be interrupted; not over a
+       fighter that is down (the team's next comes in first) */
+    if (sWatch.scene == 1) {
+        if (BtlScript_IsEventRunning()) {
+            sWatch.scene = 2;
+            sWatch.sceneFrom = BtlClock_ToSeconds(BtlSeq_GetClock());
+            sWatch.hud = -1;
+            PortStoryUi_Show(PS_SHOW_HUD, -1, 0);
+            PortStoryUi_Show(PS_SHOW_TIMER, -1, 0);
+        } else if (BtlCtrl_IsActiveDead(0) || BtlCtrl_IsActiveDead(1)) {
+            gBtlScript.pending = NULL;
+        } else if (gBtlScript.pending == NULL) {
+            gBtlScript.pending = PortStory_Request(sWatch.sceneAction);
+            if (gBtlScript.pending == NULL) {
+                sWatch.scene = 0;
+            }
+        }
+        return 0;
+    }
+    /* the actions of the events that happened, in turn */
+    if (sWatch.wait > 0) {
+        sWatch.wait--;
+        return 0;
+    }
+    for (;;) {
+        if (sWatch.cur < 0) {
+            if (sWatch.queued <= 0) {
+                break;
+            }
+            sWatch.cur = sWatch.queue[0];
+            sWatch.queued--;
+            for (i = 0; i < sWatch.queued; i++) {
+                sWatch.queue[i] = sWatch.queue[i + 1];
+            }
+            sWatch.act = 0;
+            sWatch.tries = 0;
+        }
+        if (!PortStoryUi_Event(sWatch.cur, ev) || sWatch.act >= ev[PE_ACTIONS]) {
+            sWatch.fired[sWatch.cur] = 2;
+            sWatch.again[sWatch.cur] = sWatch.frames + ev[PE_REPEAT] * 60;
+            sWatch.cur = -1;
+            continue;
+        }
+        if (PortStoryUi_Action(ev[PE_FIRST] + sWatch.act, act) && !PortStory_Do(act)) {
+            if (++sWatch.tries < 600) { /* (ten seconds: then it is let go, the others are not held up for ever) */
+                break;
+            }
+        }
+        sWatch.act++;
+        sWatch.tries = 0;
+        if (sWatch.wait > 0 || sWatch.scene || sWatch.decided) {
+            break;
+        }
     }
     return 0;
 }
