@@ -116,6 +116,9 @@ static void spec_view_next(void);               // watching a match: the next vi
 void ModsUi_Tab(void);                          // gs/mods_ui.cpp: the settings window's Mods tab
 void ModsUi_Draw(void);                         // ... the script mods' shapes over the picture
 extern "C" int Mods_HudActive(void);            // gs/mods.c: they drew something at the last blank
+bool HudModern_Active(void);                    // gs/hud_modern.cpp: "HUD look: Modern", the fight's HUD drawn by the port
+void HudModern_Draw(void);
+void HudModern_Settings(void);                  // ... and its rows of the settings window
 bool Creator_Frame(bool input);                 // gs/creator_ui.cpp: the Custom Character screen (main menu item 13)
 bool Creator_Typing(void);                      // ... it takes typed letters now
 extern "C" int PortCreator_Active(void);        // ... it is open (its keyboard and controller are its own)
@@ -1937,6 +1940,7 @@ static void ui_tab(PortVideo &v) {
     ImGui::SetItemTooltip("Where a fight's health bars and gauges sit in a picture wider than 4:3.\n"
                           "Long health bars: the bars reach from the edges to the timer.\n"
                           "In the middle: the original 4:3 arrangement, next to the timer.");
+    HudModern_Settings(); // ("HUD look" and its options: gs/hud_modern.cpp)
     {
         static const char *const kMenus[] = {"Stretched", "4:3", "Widescreen (beta)"};
         int m = Port_Menus43() ? 1 : Port_MenusWide() ? 2 : 0;
@@ -3083,6 +3087,7 @@ static bool frame_build(void) {
     bool mods = sReady && Mods_HudActive();                      // the script mods drew over the picture (gs/mods.c)
     bool creator = sReady && screen_owned();                     // the Custom Character screen (gs/creator_ui.cpp), the Story Creator's
     bool story = sReady && (Story_OverlayOn() || Patrol_HubOverlayOn()); // a saga's battle (gs/story_ui.cpp), Corrupt Patrol's Lookout
+    bool hud = sReady && HudModern_Active();                     // a fight with "HUD look: Modern" (gs/hud_modern.cpp)
     { // (its opening and closing: the game's input is not the game's while it is up)
         static bool was;
         if (creator != was) {
@@ -3094,7 +3099,7 @@ static bool frame_build(void) {
     sBuilt = false;
     bool upd = updLine[0] != '\0';
     UiA11y_Frame(sReady && sOpen && !sQuit, !sQuit); // (the screen reader in the windows: ui_a11y.cpp)
-    if (!sReady || (!sOpen && !sQuit && !notice && !overlay && !meter && !names && !bars && !chat && !banner && !saving && !watched && !upd && !mods && !creator && !story)) {
+    if (!sReady || (!sOpen && !sQuit && !notice && !overlay && !meter && !names && !bars && !chat && !banner && !saving && !watched && !upd && !mods && !creator && !story && !hud)) {
         return false;
     }
     if (sPadHold && sCapKind != 2) { // a binding was taken: the controller works the window again once nothing is held
@@ -3140,6 +3145,9 @@ static bool frame_build(void) {
     }
     if (bars) {
         bars_draw();
+    }
+    if (hud) {
+        HudModern_Draw(); // (the fight's HUD with "HUD look: Modern": gs/hud_modern.cpp)
     }
     ModsUi_Draw(); // (the script mods' shapes over the picture: gs/mods_ui.cpp)
     if (story) {

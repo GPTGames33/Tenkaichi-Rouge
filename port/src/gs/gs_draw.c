@@ -1688,15 +1688,46 @@ void GsGpu_PagesMoved(uint32_t delta) {
     }
 }
 
-/* The game's HUD pieces being drawn (markers 0x72 .. 0x77, src/battle/hud_a.c): bit 0 the gauges with the faces,
-   1 the timer, 2 the combo counter. The ones a script mod stands in for (hud.hide_game, gs/mods.c Mods_HudHidden) are
-   left out of the picture; the game builds and runs its HUD as ever. */
+/* The game's HUD pieces being drawn (markers 0x72 .. 0x79, src/battle/hud_a.c): bit 0 the gauges with the faces,
+   1 the timer, 2 the combo counter, 3 the team panel. The ones a script mod stands in for (hud.hide_game, gs/mods.c
+   Mods_HudHidden) or the port's own HUD does ("HUD look: Modern", gs/hud_modern.cpp HudModern_Hidden) are left out of
+   the picture; the game builds and runs its HUD as ever. */
 static int sHudScope;
 extern int Mods_HudHidden(void);
+extern int HudModern_Hidden(void);
+/* The frame each piece was last asked for with something to see, left out or not: a HUD that stands in for a piece
+   shows it exactly while the game would (GsDraw_HudPieces). */
+static unsigned sHudPieceFrame[4];
+static int sHudPieceSeen;
+int GsDraw_HudPieces(void) {
+    int i, mask = 0;
+    for (i = 0; i < 4; i++) {
+        if ((sHudPieceSeen >> i & 1) != 0 && gGsFrame - sHudPieceFrame[i] <= 6) {
+            mask |= 1 << i;
+        }
+    }
+    return mask;
+}
 
 void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
-    if (sHudScope != 0 && (sHudScope & Mods_HudHidden()) != 0) { /* a script mod draws this piece of the HUD instead */
-        return;
+    if (sHudScope != 0) {
+        if (!GS_NO_PICTURE && v[type == 6 ? 1 : 0].a != 0) {
+            int i;
+            for (i = 0; i < 4; i++) {
+                if ((sHudScope >> i & 1) != 0) {
+                    sHudPieceFrame[i] = gGsFrame;
+                    sHudPieceSeen |= 1 << i;
+                }
+            }
+            if ((sHudScope & 1) != 0 && (HudModern_Hidden() & 1) != 0) {
+                /* (the side panels count as shown for what the overlay draws with them: GsDraw_HudShown) */
+                sHudFrame = gGsFrame;
+                sHudSeen = 1;
+            }
+        }
+        if ((sHudScope & (Mods_HudHidden() | HudModern_Hidden())) != 0) { /* drawn by the port instead */
+            return;
+        }
     }
     if (GS_NO_PICTURE) { /* a frame that is only being re-run, or one that is skipped: nothing is drawn */
         return;
@@ -2421,7 +2452,7 @@ void GsGpu_Native(int effect) {
         grade_add();
         return;
     }
-    if (effect >= 0x72 && effect <= 0x77) {
+    if (effect >= 0x72 && effect <= 0x79) {
         int bit = 1 << ((effect - 0x72) >> 1);
         sHudScope = (effect & 1) == 0 ? sHudScope | bit : sHudScope & ~bit;
         return;

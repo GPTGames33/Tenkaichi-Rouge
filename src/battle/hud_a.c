@@ -187,6 +187,10 @@ void HudNode_Update(HudNode *node) {
 #define PORT_HUD_TIMER_END 0x75
 #define PORT_HUD_COMBO_BEGIN 0x76
 #define PORT_HUD_COMBO_END 0x77
+/* (the team panel: the stand-by member's face, its health and the switch gauge; the port's own HUD, "HUD look:
+   Modern", port/src/gs/hud_modern.cpp, stands in for it too) */
+#define PORT_HUD_TEAM_BEGIN 0x78
+#define PORT_HUD_TEAM_END 0x79
 extern void Port_GsMarker(s32 effect);
 #endif
 
@@ -217,6 +221,9 @@ void HudNode_Draw(HudNode *node, s32 mirror) {
     }
     if (node == gHud->combo) {
         Port_GsMarker(PORT_HUD_COMBO_BEGIN);
+    }
+    if (node == gHud->team) {
+        Port_GsMarker(PORT_HUD_TEAM_BEGIN);
     }
 #endif
     Vu0Cur_Push();
@@ -257,6 +264,9 @@ void HudNode_Draw(HudNode *node, s32 mirror) {
     }
     if (node == gHud->combo) {
         Port_GsMarker(PORT_HUD_COMBO_END);
+    }
+    if (node == gHud->team) {
+        Port_GsMarker(PORT_HUD_TEAM_END);
     }
 #endif
 }
