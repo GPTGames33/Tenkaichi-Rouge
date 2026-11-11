@@ -2,7 +2,17 @@
 #include "menu/menu_i.h"
 #include "sys/pad.h"
 #ifdef PORT
+#include "menu/port_boot.h"
 #include "menu/port_screen.h"
+
+/* The PC version's shorter boot pictures (Logo_ShowAllQuick): START ends the whole row, any other button ends the
+   picture that is up. A press while a picture is still fading in is kept until it is in: starting the fade out
+   at once would show the picture whole for a frame first (the fade starts again from clear). */
+#define LOGO_SKIP_PC 3
+#define LOGO_ANY_BUTTON \
+    (PADG_START | PADG_SELECT | PADG_CROSS | PADG_CIRCLE | PADG_TRIANGLE | PADG_SQUARE | PADG_L1 | PADG_L2 | PADG_R1 | PADG_R2)
+static s32 sLogoSkipRest; /* START was pressed: no more of the skippable pictures */
+static s32 sLogoPressed;  /* the buttons pressed since this picture began */
 #endif
 
 Logo *gLogo = NULL; /* 0x3B590C */
@@ -47,6 +57,9 @@ void Logo_Term(void) {
  */
 void Logo_Show(u32 *pack, s32 section, s32 frames, s32 fade, s32 skip, s32 inBlack, s32 outBlack, s32 fadeFirst) {
     Logo_Init(pack, section, frames);
+#ifdef PORT
+    sLogoPressed = 0;
+#endif
     if (fadeFirst) {
         LOGO_FADE_OUT(inBlack, fade);
         do {
@@ -105,6 +118,20 @@ void Logo_Show(u32 *pack, s32 section, s32 frames, s32 fade, s32 skip, s32 inBla
                 }
             }
             break;
+#ifdef PORT
+        case LOGO_SKIP_PC:
+            sLogoPressed |= gPad[0].gamePressed & LOGO_ANY_BUTTON;
+            if (sLogoPressed != 0 && (gLogo->flags & LOGO_FADED_IN)) {
+                if (sLogoPressed & PADG_START) {
+                    sLogoSkipRest = 1; /* (to black: what is shown next comes in from black) */
+                    ColorFade_StartOut(0, 0, 0, fade / 2);
+                } else {
+                    LOGO_FADE_OUT(outBlack, fade / 2);
+                }
+                sLogoPressed = 0;
+            }
+            break;
+#endif
         }
     }
     sceGsSyncPath(0, 0);
@@ -121,6 +148,55 @@ void Logo_ShowAll(u32 *pack) {
     Logo_Show(pack, 4, 0x78, 0x3C, LOGO_SKIP_ANY, 0, 0, 0);
     Logo_Show(pack, 5, 0x78, 0x3C, LOGO_SKIP_NONE, 0, 1, 0);
 }
+
+#ifdef PORT
+/* The same six pictures for the PC version, each for a second and a half instead of four: 20 frames in, 50 up,
+   20 out (the original's are 60, 120, 60; the six of them were 24 seconds before the title). Any button ends the
+   picture that is up and START ends the row; the last one (the middleware's notice, which the original does not
+   let the player skip) is always shown, as short as the others. */
+#define QLOGO_FRAMES 50
+#define QLOGO_FADE 20
+static void Logo_ShowAllQuick(u32 *pack) {
+    static const s32 sections[5] = {6, 7, 8, 3, 4};
+    s32 i;
+
+    sLogoSkipRest = 0;
+    for (i = 0; i < 5 && !sLogoSkipRest; i++) {
+        Logo_Show(pack, sections[i], QLOGO_FRAMES, QLOGO_FADE, LOGO_SKIP_PC, i == 0, 0, 0);
+    }
+    Logo_Show(pack, 5, QLOGO_FRAMES, QLOGO_FADE, LOGO_SKIP_NONE, sLogoSkipRest, 1, 0);
+}
+
+/* The mod's own card after the companies' pictures: nothing of the game's is drawn, the overlay draws the whole
+   picture (boot_ui.cpp, the splash) and this loop counts its frames. Two and a half seconds; a button after the
+   first third of a second starts its fade to black at once. The game's data goes on loading beside it as beside
+   the logos. No sound: none is loaded this early. */
+#define SPLASH_FRAMES 150
+#define SPLASH_FADE 15
+static void FirstRun_Splash(void) {
+    s32 n = 0;
+    s32 out = 0; /* frames into the fade to black (0: not started) */
+
+    do {
+        Gfx_BeginFrame();
+        Pad_Update();
+        File_WaitPartitionTimeout(2);
+        Port_BootScene(PORT_SCENE_SPLASH, n, out * 0x80 / SPLASH_FADE);
+        Gfx_EndFrame(1);
+        Dma_Flush();
+        File_Stub264D90();
+        n++;
+        if (out > 0) {
+            out++;
+        } else if (n >= SPLASH_FRAMES - SPLASH_FADE || (n >= 20 && (gPad[0].gamePressed & LOGO_ANY_BUTTON))) {
+            out = 1;
+        }
+    } while (out <= SPLASH_FADE + 1); /* (the last two frames are black: the next screen comes in from black) */
+    Port_BootScene(PORT_SCENE_NONE, 0, 0);
+    Dma_ResetBuffers();
+    sceGsSyncPath(0, 0);
+}
+#endif
 
 /* If partition `pt` is not loaded yet, shows the loading screen until it is. */
 void FirstRun_WaitPartition(s32 pt) {
@@ -183,6 +259,8 @@ s32 FirstRun_Main(void) {
 
 #ifdef PORT
     PortLanguage_Run(); /* first choose a language in the game window, before loading the game partition */
+    Port_BootMark(1);
+    Port_BootPreload(); /* the port screens' pictures are read on a worker while the logos and the title are up */
 #endif
     File_LoadPartitionNw(2);
     FirstRun_WaitPad(0, 0);
@@ -192,9 +270,24 @@ s32 FirstRun_Main(void) {
     }
     BootCard_Run(2);
     res = Sprite_Unpack(MPACK_AT(gMenuArc0, 3), NULL, NULL);
+#ifdef PORT
+    if (Port_NetFixedStart() || Port_BootOpt(PORT_BOOT_CLASSIC)) {
+        if (FIRSTRUN_SHOW("skip_logos")) {
+            Logo_ShowAll(res); /* (as the original: an online session's start is the same on both sides) */
+        }
+    } else if (!Port_Setting("skip_logos", 0)) {
+        Logo_ShowAllQuick(res);
+        Port_BootMark(2);
+        if (Port_BootOpt(PORT_BOOT_SPLASH)) { /* (with the logos only: "Skip logos" stays the straight way in) */
+            FirstRun_Splash();
+        }
+    }
+    Port_BootMark(3);
+#else
     if (FIRSTRUN_SHOW("skip_logos")) {
         Logo_ShowAll(res);
     }
+#endif
     if (res != NULL) {
         Heap_Free(res);
     }
@@ -203,9 +296,15 @@ s32 FirstRun_Main(void) {
         gMenuArc0 = NULL;
     }
     FirstRun_WaitPartition(2);
+#ifdef PORT
+    Port_BootMark(4);
+#endif
     if (FIRSTRUN_SHOW("skip_intro")) {
         Movie_PlayOpening();
     }
+#ifdef PORT
+    Port_BootMark(5);
+#endif
     PadWatch_SetEnabled(1);
     return 1;
 }

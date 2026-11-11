@@ -128,6 +128,8 @@ bool Patrol_Frame(bool input);
 bool Patrol_HubOverlayOn(void);                 // ... the prompt over Kami's Lookout while it is walked on
 void Patrol_HubOverlay(void);                  // gs/patrol_ui.cpp: Corrupt Patrol's screens (main menu item 15)
 extern "C" int PortPatrolUi_Active(void);
+extern "C" int BootUi_Frame(void);              // gs/boot_ui.cpp: the start-up's and the loading screens' pictures: one is up
+extern "C" void BootUi_Draw(void);              // ... and drawn
 static int screen_owned(void) { return PortCreator_Active() || PortStoryUi_Active() || PortPatrolUi_Active(); } // a screen of ours has the input
 static const char *spec_view_name(int view);
 static int sForceTab = -1;                     // BT3_UI_OPEN=<tab>: open at start on that tab (testing)
@@ -1796,7 +1798,21 @@ static void misc_tab(void) {
         Port_SettingSave("skip_copyright", sSkipCopy);
         Port_SettingsWrite();
     }
-    ImGui::SetItemTooltip("The page of legal text shown for five seconds before the title screen, every time.");
+    ImGui::SetItemTooltip("The page of legal text shown before the title screen, every time.");
+    // the mod's own pictures over the start-up and the loading screens (gs/boot_ui.cpp)
+    bool modSplash = Port_Setting("mod_splash", 1) != 0;
+    if (ImGui::Checkbox("Mod splash", &modSplash)) {
+        Port_SettingSave("mod_splash", modSplash);
+        Port_SettingsWrite();
+    }
+    ImGui::SetItemTooltip("The mod's own card after the logos at the start of the game (two and a half seconds; any\n"
+                          "button ends it). Not shown when Skip logos is on. From the next start of the game.");
+    bool loadTips = Port_Setting("loading_tips", 1) != 0;
+    if (ImGui::Checkbox("Loading tips", &loadTips)) {
+        Port_SettingSave("loading_tips", loadTips);
+        Port_SettingsWrite();
+    }
+    ImGui::SetItemTooltip("A short tip about the game or the mod on the loading screens.");
     bool hidePointer = Port_Setting("hide_pointer", 1) != 0;
     if (ImGui::Checkbox("Hide the mouse pointer during play", &hidePointer)) {
         Port_SettingSave("hide_pointer", hidePointer);
@@ -3083,6 +3099,7 @@ static bool frame_build(void) {
     bool mods = sReady && Mods_HudActive();                      // the script mods drew over the picture (gs/mods.c)
     bool creator = sReady && screen_owned();                     // the Custom Character screen (gs/creator_ui.cpp), the Story Creator's
     bool story = sReady && (Story_OverlayOn() || Patrol_HubOverlayOn()); // a saga's battle (gs/story_ui.cpp), Corrupt Patrol's Lookout
+    bool boot = sReady && BootUi_Frame() != 0;                   // the mod's splash, the title's lights, a loading picture (gs/boot_ui.cpp)
     { // (its opening and closing: the game's input is not the game's while it is up)
         static bool was;
         if (creator != was) {
@@ -3094,7 +3111,7 @@ static bool frame_build(void) {
     sBuilt = false;
     bool upd = updLine[0] != '\0';
     UiA11y_Frame(sReady && sOpen && !sQuit, !sQuit); // (the screen reader in the windows: ui_a11y.cpp)
-    if (!sReady || (!sOpen && !sQuit && !notice && !overlay && !meter && !names && !bars && !chat && !banner && !saving && !watched && !upd && !mods && !creator && !story)) {
+    if (!sReady || (!sOpen && !sQuit && !notice && !overlay && !meter && !names && !bars && !chat && !banner && !saving && !watched && !upd && !mods && !creator && !story && !boot)) {
         return false;
     }
     if (sPadHold && sCapKind != 2) { // a binding was taken: the controller works the window again once nothing is held
@@ -3137,6 +3154,9 @@ static bool frame_build(void) {
     // hide_pointer, on unless 0). The SDL back end hides it for this cursor at the next frame.
     if (!sOpen && !sQuit && !sChat && !creator && Port_Setting("hide_pointer", 1) != 0) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+    }
+    if (boot) {
+        BootUi_Draw(); // (under the side bars: it keeps to the game's picture)
     }
     if (bars) {
         bars_draw();

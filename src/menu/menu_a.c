@@ -9,6 +9,8 @@ extern void Port_NetLeave(void);
 #include "sys/pad.h"
 #include "sys/save.h"
 #ifdef PORT
+#include "menu/port_boot.h"
+#include "sys/color_fade.h"
 extern void Port_MenuPage(int screen); /* port/src/gs_marker.c: widescreen menus */
 extern void Port_MenuFill(int on);
 #endif
@@ -747,13 +749,22 @@ void MainMenu_Input(s32 *result) {
 /* The main menu's own frame loop. Returns 1 when a mode was chosen (gProgress->mode is set), 0 on cancel. */
 s32 MainMenu_Run(s32 section) {
     s32 result = 1;
-
 #ifdef PORT
+    /* Coming from the title screen, the overlay's loading picture is up (Title_Run put it there as it faded out):
+       it stays through the loading below and leaves with this screen's fade in, so there is no black in between
+       and not a frame more than before. `marks`: the log's timing lines still to write (BT3_BOOT_LOG). */
+    s32 loadScene = Port_BootSceneNow() == PORT_SCENE_MENULOAD;
+    s32 marks = 3;
+
     if (Port_NetSession()) {
         Port_NetLeave(); /* an online session lives in the versus mode: back at the main menu it is over (no return) */
     }
+    Port_BootMark(20);
 #endif
     MainMenu_Init(section);
+#ifdef PORT
+    Port_BootMark(21);
+#endif
     ColorFade_StartIn(0, 0, 0, 0x14);
     while (1) {
         Gfx_BeginFrame();
@@ -765,9 +776,33 @@ s32 MainMenu_Run(s32 section) {
         }
         MainMenu_Draw();
         ColorFade_Draw();
+#ifdef PORT
+        if (loadScene) {
+            if (gColorFade.a != 0) {
+                Port_BootScene(PORT_SCENE_MENULOAD, gColorFade.a, 0);
+            } else {
+                Port_BootScene(PORT_SCENE_NONE, 0, 0);
+                loadScene = 0;
+            }
+        }
+#endif
         Gfx_EndFrame(1);
         Dma_Flush();
         File_Stub264D90();
+#ifdef PORT
+        if (marks == 3) {
+            Port_BootMark(22);
+            marks = 2;
+        }
+        if (marks == 2 && (gMainMenu->flash[0].flags & MFLASH_PAD)) {
+            Port_BootMark(24);
+            marks = 1;
+        }
+        if (marks == 1 && ColorFade_IsInDone()) {
+            Port_BootMark(23);
+            marks = 0;
+        }
+#endif
         if (gProgress->flags & MPROG_FREEZE) {
             continue;
         }
