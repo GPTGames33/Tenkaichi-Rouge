@@ -449,19 +449,18 @@ static unsigned char sTboMissing[TBO_ART_COUNT]; /* not found or not readable: n
 static GsTex sLangTex[3];
 static unsigned char sLangMissing[3];
 
-/* Makes a texture of RGBA pixels (the GS's alpha) with its smaller copies, each half the one before, averaged by
-   2 x 2: these pictures are mostly shown smaller than they are (letters, the crest), and one sample of the full
-   picture per pixel shimmers. Takes `px`; 0 if no texture could be had. */
-static GsTex tbo_upload(uint32_t *px, uint32_t w, uint32_t h) {
-    uint32_t *lv[12];
-    uint32_t lw[12], lh[12], x, y;
+/* The smaller copies of a picture of RGBA pixels (the GS's alpha), each half the one before, averaged by 2 x 2:
+   these pictures are mostly shown smaller than they are (letters, the crest), and one sample of the full picture
+   per pixel shimmers. Fills the three lists (12 places; the first is `px` itself) and returns how many there are.
+   Memory work only, nothing of the renderer's: the read-ahead below does it on its worker. */
+static int tbo_mips(uint32_t *px, uint32_t w, uint32_t h, uint32_t **lv, uint32_t *lw, uint32_t *lh) {
+    uint32_t x, y;
     int levels = 1, k;
-    GsTex tex;
 
     lv[0] = px;
     lw[0] = w;
     lh[0] = h;
-    while (px != NULL && levels < 12 && (lw[levels - 1] > 1 || lh[levels - 1] > 1)) {
+    while (levels < 12 && (lw[levels - 1] > 1 || lh[levels - 1] > 1)) {
         uint32_t pw = lw[levels - 1], ph = lh[levels - 1], nw = pw > 1 ? pw / 2 : 1, nh = ph > 1 ? ph / 2 : 1;
         uint32_t *src = lv[levels - 1], *dst = malloc((size_t)nw * nh * 4);
         if (dst == NULL) {
@@ -491,13 +490,21 @@ static GsTex tbo_upload(uint32_t *px, uint32_t w, uint32_t h) {
         lh[levels] = nh;
         levels++;
     }
-    if (px != NULL && sBackend->texSlotsLeft() < levels) {
+    return levels;
+}
+
+/* Makes the texture of a picture and its smaller copies (tbo_mips). Takes them all; 0 if no texture could be had. */
+static GsTex tbo_upload_levels(uint32_t **lv, uint32_t *lw, uint32_t *lh, int levels) {
+    GsTex tex;
+    int k;
+
+    if (sBackend->texSlotsLeft() < levels) {
         for (k = 1; k < levels; k++) {
             free(lv[k]);
         }
         levels = 1;
     }
-    tex = px != NULL ? sBackend->texCreate(w, h, GS_TEXFMT_RGBA8, levels) : 0;
+    tex = sBackend->texCreate(lw[0], lh[0], GS_TEXFMT_RGBA8, levels);
     if (tex == 0) {
         for (k = 0; k < levels; k++) {
             free(lv[k]);
@@ -508,6 +515,198 @@ static GsTex tbo_upload(uint32_t *px, uint32_t w, uint32_t h) {
         sBackend->texUpload(tex, k, lw[k], lh[k], GS_TEXFMT_RGBA8, lv[k], lw[k] * lh[k] * 4);
     }
     return tex;
+}
+
+/* Makes a texture of RGBA pixels (the GS's alpha) with its smaller copies. Takes `px`; 0 if no texture could be
+   had. */
+static GsTex tbo_upload(uint32_t *px, uint32_t w, uint32_t h) {
+    uint32_t *lv[12], lw[12], lh[12];
+    int levels;
+
+    if (px == NULL) {
+        return 0;
+    }
+    levels = tbo_mips(px, w, h, lv, lw, lh);
+    return tbo_upload_levels(lv, lw, lh, levels);
+}
+
+/* A picture's pixels as the renderer keeps them, from `h` rows of RGBA bytes: the GS's alpha (0x80 is opaque) and
+   the two pictures that are touched up. NULL without memory. */
+static uint32_t *tbo_pixels(uint32_t id, const uint8_t *src, size_t pitch, uint32_t w, uint32_t h) {
+    int languageArt = id >= TBO_LANG_BG && id <= TBO_LANG_ARROW_RIGHT;
+    uint32_t *px = malloc((size_t)w * h * 4), x, y;
+
+    for (y = 0; px != NULL && y < h; y++) {
+        const uint8_t *row = src + (size_t)y * pitch;
+        for (x = 0; x < w; x++) {
+            const uint8_t *c = row + x * 4;
+            uint32_t imageAlpha = c[3];
+            uint32_t a;
+            /* The original arrow textures use 127 for their solid pixels. Preserve the antialiased edge while
+               bringing the chevron itself up to full opacity over the green selection bar. */
+            if (languageArt && id != TBO_LANG_BG) {
+                imageAlpha = imageAlpha * 2 > 255 ? 255 : imageAlpha * 2;
+            }
+            a = (imageAlpha * 128 + 127) / 255; /* the GS's alpha: 0x80 is opaque */
+            px[y * w + x] = (uint32_t)c[0] | ((uint32_t)c[1] << 8) | ((uint32_t)c[2] << 16) | (a << 24);
+            /* the window: its inside is bands of two teals, which fall anywhere under the lines at the sizes it is
+               drawn (src/menu/port_tbo.c, Tb_Panel). Every teal pixel is the darker one; the frame (grey, nearly
+               black) is not teal and stays, its round corners with it. */
+            if (id == TBO_KIT_WINDOW && c[3] == 255 && c[0] < 60 && c[1] >= 60 && c[1] <= 125 && c[2] + 10 >= c[1] && c[2] <= c[1] + 15) {
+                px[y * w + x] = 27u | (86u << 8) | (92u << 16) | (a << 24);
+            }
+        }
+    }
+    return px;
+}
+
+/* Reads picture `id`'s file (tbo/ui/<name>.png next to the program): 1 and its pixels (NULL without memory) and
+   size, or 0 if it cannot be read. `path` gets the name tried last. Nothing of the renderer's is touched: the
+   read-ahead calls it on its worker. */
+static int tbo_read(uint32_t id, char *path, size_t pathSize, uint32_t **px, uint32_t *w, uint32_t *h) {
+    const char *base = SDL_GetBasePath();
+    SDL_Surface *png, *rgba;
+
+    snprintf(path, pathSize, "%stbo/ui/%s.png", base != NULL ? base : "", kTboNames[id]);
+    png = SDL_LoadPNG(path);
+    if (png == NULL) {
+        snprintf(path, pathSize, "tbo/ui/%s.png", kTboNames[id]);
+        png = SDL_LoadPNG(path);
+    }
+    if (png == NULL) { /* a source checkout: the pictures where they are kept (port/tbo/ui) */
+        snprintf(path, pathSize, "port/tbo/ui/%s.png", kTboNames[id]);
+        png = SDL_LoadPNG(path);
+    }
+    rgba = png != NULL ? SDL_ConvertSurface(png, SDL_PIXELFORMAT_RGBA32) : NULL;
+    if (png != NULL) {
+        SDL_DestroySurface(png);
+    }
+    if (rgba == NULL) {
+        return 0;
+    }
+    *w = (uint32_t)rgba->w;
+    *h = (uint32_t)rgba->h;
+    *px = tbo_pixels(id, (const uint8_t *)rgba->pixels, (size_t)rgba->pitch, *w, *h);
+    SDL_DestroySurface(rgba);
+    return 1;
+}
+
+/* Reading ahead (GsGpu_ArtPreload; the start-up asks for it, boot_ui.cpp). A picture used to be read, turned into
+   pixels and given its smaller copies in the frame that first drew it, so the first time the Mod Manager or
+   another of the port's screens opened, the picture stood still while a dozen files were read. A worker now does
+   all of that for every picture but the radar (26 MB, and only the online search shows it) while the logos and the
+   title screen are up, the Mod Manager's first, and the renderer takes one finished picture a frame, which is only
+   handing its pixels to the back end. A picture asked for before the worker got to it is read on the spot as
+   before; one the worker is in the middle of is waited for, which is never longer than reading it here would be.
+   The worker stops reading while more than AHEAD_MAX_BYTES wait to be taken. */
+enum { AHEAD_NONE, AHEAD_WORKING, AHEAD_READY, AHEAD_DONE };
+#define AHEAD_MAX_BYTES (24 << 20)
+static struct {
+    SDL_AtomicInt state;
+    uint32_t *lv[12], lw[12], lh[12]; /* READY: the picture and its smaller copies */
+    int levels;
+    uint32_t ms; /* what the worker spent on it */
+} sTboAhead[TBO_ART_COUNT];
+static SDL_AtomicInt sTboAheadBytes;   /* read and not taken yet */
+static SDL_AtomicInt sTboAheadWaiting; /* pictures read and not taken yet */
+
+static int SDLCALL tbo_ahead_worker(void *arg) {
+    int pass, k;
+    uint32_t id;
+
+    (void)arg;
+    SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_LOW); /* the game's own loading comes first */
+    for (pass = 0; pass < 2; pass++) {
+        for (id = 0; id < TBO_ART_COUNT; id++) {
+            int mm = id >= MM_BG && id <= MM_BG_DUSK, waited = 0, bytes = 0;
+            char path[1024];
+            uint32_t *px = NULL, w = 0, h = 0;
+            uint64_t t0;
+
+            if (id == TBO_RADAR || mm != (pass == 0)) {
+                continue;
+            }
+            while (SDL_GetAtomicInt(&sTboAheadBytes) > AHEAD_MAX_BYTES && waited < 60000) {
+                SDL_Delay(4);
+                waited += 4;
+            }
+            if (waited >= 60000) { /* (nobody takes them: a renderer that does not draw these) */
+                return 0;
+            }
+            if (!SDL_CompareAndSwapAtomicInt(&sTboAhead[id].state, AHEAD_NONE, AHEAD_WORKING)) {
+                continue; /* (the renderer needed it already and read it itself) */
+            }
+            t0 = SDL_GetTicksNS();
+            if (!tbo_read(id, path, sizeof(path), &px, &w, &h) || px == NULL) {
+                SDL_SetAtomicInt(&sTboAhead[id].state, AHEAD_DONE); /* (the renderer finds that out itself, and says so) */
+                continue;
+            }
+            sTboAhead[id].levels = tbo_mips(px, w, h, sTboAhead[id].lv, sTboAhead[id].lw, sTboAhead[id].lh);
+            for (k = 0; k < sTboAhead[id].levels; k++) {
+                bytes += (int)(sTboAhead[id].lw[k] * sTboAhead[id].lh[k] * 4);
+            }
+            sTboAhead[id].ms = (uint32_t)((SDL_GetTicksNS() - t0) / 1000000ull);
+            SDL_AddAtomicInt(&sTboAheadBytes, bytes);
+            SDL_AddAtomicInt(&sTboAheadWaiting, 1);
+            SDL_SetAtomicInt(&sTboAhead[id].state, AHEAD_READY); /* (last: it hands the lists over) */
+        }
+    }
+    return 0;
+}
+
+/* Starts the read-ahead. Once; nothing without a back end to take the pictures. */
+void GsGpu_ArtPreload(void) {
+    static int started;
+    SDL_Thread *thread;
+
+    if (started || sBackend == NULL) {
+        return;
+    }
+    started = 1;
+    SDL_GetBasePath(); /* (found and kept by the first call: not left to the worker) */
+    thread = SDL_CreateThread(tbo_ahead_worker, "bt3-art", NULL);
+    if (thread != NULL) {
+        SDL_DetachThread(thread);
+    }
+}
+
+/* The renderer takes a picture the worker has read: its texture, or 0 (no room this frame, or none to be had). */
+static GsTex tbo_ahead_take(uint32_t id) {
+    int k, bytes = 0, levels = sTboAhead[id].levels;
+    uint32_t w = sTboAhead[id].lw[0], h = sTboAhead[id].lh[0];
+    GsTex tex;
+
+    if (sBackend->texSlotsLeft() < levels) {
+        return 0; /* (it stays READY: the next frame) */
+    }
+    for (k = 0; k < levels; k++) {
+        bytes += (int)(sTboAhead[id].lw[k] * sTboAhead[id].lh[k] * 4);
+    }
+    tex = tbo_upload_levels(sTboAhead[id].lv, sTboAhead[id].lw, sTboAhead[id].lh, levels);
+    SDL_AddAtomicInt(&sTboAheadBytes, -bytes);
+    SDL_AddAtomicInt(&sTboAheadWaiting, -1);
+    SDL_SetAtomicInt(&sTboAhead[id].state, AHEAD_DONE);
+    if (tex != 0) {
+        sTboTex[id] = tex;
+        fprintf(stderr, "bt3: artwork: tbo/ui/%s.png (%ux%u), read ahead in %u ms\n", kTboNames[id], (unsigned)w, (unsigned)h,
+                (unsigned)sTboAhead[id].ms);
+    }
+    return tex;
+}
+
+/* Once a frame (GsGpu_FrameEnd): one picture the worker has finished becomes a texture. */
+static void tbo_ahead_pump(void) {
+    uint32_t id;
+
+    if (SDL_GetAtomicInt(&sTboAheadWaiting) <= 0) {
+        return;
+    }
+    for (id = 0; id < TBO_ART_COUNT; id++) {
+        if (SDL_GetAtomicInt(&sTboAhead[id].state) == AHEAD_READY) {
+            tbo_ahead_take(id);
+            return;
+        }
+    }
 }
 
 /* The lines of letters (gs/tbo_text.c): each place's texture and what it shows; a texture drawn in this frame is
@@ -546,12 +745,11 @@ static GsTex tbo_text_texture(uint32_t id) {
 
 static GsTex tbo_texture(uint32_t id) {
     char path[1024] = {0};
-    SDL_Surface *png = NULL, *rgba = NULL;
     uint8_t *native = NULL;
-    int nativeW = 0, nativeH = 0;
-    uint32_t *px, w, h, x, y;
+    int nativeW = 0, nativeH = 0, got;
+    uint32_t *px = NULL, w = 0, h = 0;
+    uint64_t t0;
     GsTex tex;
-    const char *base;
     GsTex *cached;
     unsigned char *missing;
     int languageArt = id >= TBO_LANG_BG && id <= TBO_LANG_ARROW_RIGHT;
@@ -571,68 +769,44 @@ static GsTex tbo_texture(uint32_t id) {
     if (sBackend->texSlotsLeft() <= 0) {
         return gsWhite; /* (no room this frame: the next one tries again) */
     }
+    /* The read-ahead may have this one (see above): taken if it is finished, waited for if it is being read, and
+       marked as ours if the worker has not come to it yet. */
+    if (!languageArt && !SDL_CompareAndSwapAtomicInt(&sTboAhead[id].state, AHEAD_NONE, AHEAD_DONE)) {
+        while (SDL_GetAtomicInt(&sTboAhead[id].state) == AHEAD_WORKING) {
+            SDL_Delay(1);
+        }
+        if (SDL_GetAtomicInt(&sTboAhead[id].state) == AHEAD_READY) {
+            tex = tbo_ahead_take(id);
+            if (tex != 0 || SDL_GetAtomicInt(&sTboAhead[id].state) == AHEAD_READY) {
+                return tex != 0 ? tex : gsWhite;
+            }
+        }
+    }
+    t0 = SDL_GetTicksNS();
     if (languageArt) {
-        if (MenuLabels_LanguageArtPixels((int)id, &native, &nativeW, &nativeH)) {
+        got = MenuLabels_LanguageArtPixels((int)id, &native, &nativeW, &nativeH) && native != NULL;
+        if (got) {
             w = (uint32_t)nativeW;
             h = (uint32_t)nativeH;
             snprintf(path, sizeof(path), "EU disc PZS3EU0.AFS selector texture %u", (unsigned)id);
+            px = tbo_pixels(id, native, (size_t)w * 4, w, h);
         }
+        free(native);
     } else {
-        base = SDL_GetBasePath();
-        snprintf(path, sizeof(path), "%stbo/ui/%s.png", base != NULL ? base : "", kTboNames[id]);
-        png = SDL_LoadPNG(path);
-        if (png == NULL) {
-            snprintf(path, sizeof(path), "tbo/ui/%s.png", kTboNames[id]);
-            png = SDL_LoadPNG(path);
-        }
-        if (png == NULL) { /* a source checkout: the pictures where they are kept (port/tbo/ui) */
-            snprintf(path, sizeof(path), "port/tbo/ui/%s.png", kTboNames[id]);
-            png = SDL_LoadPNG(path);
-        }
+        got = tbo_read(id, path, sizeof(path), &px, &w, &h);
     }
-    rgba = png != NULL ? SDL_ConvertSurface(png, SDL_PIXELFORMAT_RGBA32) : NULL;
-    if (png != NULL) {
-        SDL_DestroySurface(png);
-    }
-    if (native == NULL && rgba == NULL) {
+    if (!got) {
         fprintf(stderr, "bt3: artwork: cannot read %s\n", languageArt ? "EU disc selector textures" : path);
         *missing = 1;
         return gsWhite;
     }
-    if (rgba != NULL) {
-        w = (uint32_t)rgba->w;
-        h = (uint32_t)rgba->h;
-    }
-    px = malloc((size_t)w * h * 4);
-    for (y = 0; px != NULL && y < h; y++) {
-        const uint8_t *row = native != NULL ? native + (size_t)y * w * 4 : (const uint8_t *)rgba->pixels + (size_t)y * rgba->pitch;
-        for (x = 0; x < w; x++) {
-            const uint8_t *c = row + x * 4;
-            uint32_t imageAlpha = c[3];
-            uint32_t a;
-            /* The original arrow textures use 127 for their solid pixels. Preserve the antialiased edge while
-               bringing the chevron itself up to full opacity over the green selection bar. */
-            if (languageArt && id != TBO_LANG_BG) {
-                imageAlpha = imageAlpha * 2 > 255 ? 255 : imageAlpha * 2;
-            }
-            a = (imageAlpha * 128 + 127) / 255; /* the GS's alpha: 0x80 is opaque */
-            px[y * w + x] = (uint32_t)c[0] | ((uint32_t)c[1] << 8) | ((uint32_t)c[2] << 16) | (a << 24);
-            /* the window: its inside is bands of two teals, which fall anywhere under the lines at the sizes it is
-               drawn (src/menu/port_tbo.c, Tb_Panel). Every teal pixel is the darker one; the frame (grey, nearly
-               black) is not teal and stays, its round corners with it. */
-            if (id == TBO_KIT_WINDOW && c[3] == 255 && c[0] < 60 && c[1] >= 60 && c[1] <= 125 && c[2] + 10 >= c[1] && c[2] <= c[1] + 15) {
-                px[y * w + x] = 27u | (86u << 8) | (92u << 16) | (a << 24);
-            }
-        }
-    }
-    free(native);
-    if (rgba != NULL) SDL_DestroySurface(rgba);
     tex = tbo_upload(px, w, h);
     if (tex == 0) {
         return gsWhite;
     }
     *cached = tex;
-    fprintf(stderr, "bt3: artwork: %s (%ux%u)\n", path, (unsigned)w, (unsigned)h);
+    fprintf(stderr, "bt3: artwork: %s (%ux%u), read in %u ms\n", path, (unsigned)w, (unsigned)h,
+            (unsigned)((SDL_GetTicksNS() - t0) / 1000000ull));
     return tex;
 }
 
@@ -5259,6 +5433,7 @@ void GsGpu_FrameEnd(void) {
     if (sBackend != NULL) {
         int i;
 
+        tbo_ahead_pump(); /* (a picture read ahead for the port's own screens, see tbo_texture) */
         if (sInterpNext != 0) { /* (pictures still waiting: the game did not reach its vertical blanks in between) */
             uint32_t verts = gsVertCount, vuVerts = gsVuVertCount, vuIdx = gsVuIdxCount, vuUni = gsVuUniCount, draws = gsDrawCount;
             /* cannot happen in the order the game works in (the list of the new tick is complete here); if it does,
