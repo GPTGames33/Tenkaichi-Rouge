@@ -641,6 +641,7 @@ class Mesh:
         self.ST = [struct.unpack_from("<2f", self.buf, q + 32) for q in self.offs]
         self.dirty = False
         self.log = []
+        self.Wd = set()      # vertices whose skin weight was changed (the only weights bytes() writes)
 
     def header_of(self, ic):
         """The 5 header quadwords of the batch vertex ic belongs to."""
@@ -657,10 +658,12 @@ class Mesh:
         self.log.append(("radial", (ax, s0, s1)))
         _radial(self, ax, s0, s1)
 
-    def axial(self, j, u, k, ld=None, k0=None, k2=None):
+    def axial(self, j, u, k, ld=None, k0=None, k2=None, ride=False):
         """Along the unit axis u through j: the bone (0..ld) scaled by k, what lies behind the joint by k0 (the
-        parent bone's ratio), what reaches past the far joint by k2 (the next bone's); distance from it kept."""
-        self.log.append(("axial", (j, u, k, ld, k0, k2)))
+        parent bone's ratio), what reaches past the far joint by k2 (the next bone's); distance from it kept.
+        ride: this is the mesh of the next node, and each vertex moves by the share it rides on that bone (1 - its
+        weight): its rim stays on the bone's rim, what hangs on its own joint stays there."""
+        self.log.append(("axial", (j, u, k, ld, k0, k2, ride)))
         k0 = k if k0 is None else k0
         k2 = k if k2 is None else k2
         for i, p in enumerate(self.P):
@@ -672,6 +675,8 @@ class Mesh:
             else:
                 b = ld * k + (a - ld) * k2
             d = b - a
+            if ride:
+                d *= 1.0 - self.W[i]
             self.P[i] = [p[0] + u[0] * d, p[1] + u[1] * d, p[2] + u[2] * d]
         self.dirty = True
 
@@ -744,11 +749,40 @@ class Mesh:
             self.N[i] = [n[0] / ln, n[1] / ln, n[2] / ln]
         self.dirty = True
 
+    def warp(self, pts, disps, reach):
+        """A local, smooth move (see _warp): the points `pts` go by `disps`, what lies around them follows and
+        fades out over `reach`. A function of the position alone, so replaying it on other vertices that sit at
+        the same places (the seam section, the mouth shapes) moves them the same way."""
+        self.log.append(("warp", (pts, disps, reach)))
+        return _warp(self, pts, disps, reach)
+
+    def pin(self, table):
+        """Vertices at the places listed in `table` ({_key(position): (new position, normal or None, weight or
+        None)}) take exactly those values: both sides of a closed seam hold the same numbers."""
+        self.log.append(("pin", (table,)))
+        n = 0
+        for i, p in enumerate(self.P):
+            t = table.get(_key(p))
+            if t is None:
+                continue
+            self.P[i] = list(t[0])
+            if t[1] is not None:
+                self.N[i] = list(t[1])
+            if t[2] is not None and self.W[i] != t[2]:
+                self.W[i] = t[2]
+                self.Wd.add(i)
+            n += 1
+        if n:
+            self.dirty = True
+        return n
+
     def bytes(self):
         if self.dirty:
             for i, q in enumerate(self.offs):
                 struct.pack_into("<3f", self.buf, q, *self.P[i])
                 struct.pack_into("<3f", self.buf, q + 16, *self.N[i])
+            for i in self.Wd:
+                struct.pack_into("<f", self.buf, self.offs[i] + 12, self.W[i])
         return bytes(self.buf)
 
     def bbox(self):
@@ -757,6 +791,104 @@ class Mesh:
         lo = [min(p[k] for p in self.P) for k in range(3)]
         hi = [max(p[k] for p in self.P) for k in range(3)]
         return lo, hi
+
+
+def _key(p):
+    """Where a vertex sits, to 1/2000 of a unit: vertices with the same key are one point of the surface (the
+    strips repeat them, and the meshes of two nodes share the points of the seam between them)."""
+    return (round(p[0] * 2000), round(p[1] * 2000), round(p[2] * 2000))
+
+
+def _warp(mesh, pts, disps, reach):
+    """Moves what lies around the points `pts`: each of them by its own vector of `disps`, the vertices in between
+    by a blend of the nearest ones (inverse square of the distance: right at a point its own vector, further away
+    more and more the average, so a jagged ring of moves turns into one smooth shift a little way off), fading
+    out to nothing at `reach` from the nearest moving point. Points with a zero vector are anchors: they hold
+    what is near them in place. Normals turn with the surface (the move's own local stretch and turn)."""
+    tab = [(q[0], q[1], q[2], d[0], d[1], d[2], bool(d[0] or d[1] or d[2])) for q, d in zip(pts, disps)]
+    drive = [t for t in tab if t[6]]
+    if not drive:
+        return 0
+    lo = [min(t[k] for t in drive) - reach for k in range(3)]
+    hi = [max(t[k] for t in drive) + reach for k in range(3)]
+    # anchors far from every moving point change nothing that moves
+    tab = [t for t in tab if t[6] or all(lo[k] - reach <= t[k] <= hi[k] + reach for k in range(3))]
+    r2 = reach * reach
+
+    def move(x, y, z):
+        m2, sw, sx, sy, sz = r2, 0.0, 0.0, 0.0, 0.0
+        hit = None
+        for qx, qy, qz, dx, dy, dz, dr in tab:
+            ex, ey, ez = x - qx, y - qy, z - qz
+            e = ex * ex + ey * ey + ez * ez
+            if dr and e < m2:
+                m2 = e
+            if e < 1e-10:
+                hit = (dx, dy, dz)
+                continue
+            w = 1.0 / e
+            sw += w
+            sx += w * dx
+            sy += w * dy
+            sz += w * dz
+        if m2 >= r2:
+            return None
+        t = 1.0 - math.sqrt(m2) / reach
+        f = t * t * (3.0 - 2.0 * t)
+        if hit is not None:
+            return (f * hit[0], f * hit[1], f * hit[2])
+        return (f * sx / sw, f * sy / sw, f * sz / sw)
+
+    h = 0.004
+    moved = 0
+    P, N = mesh.P, mesh.N
+    done = {}
+    for i, p in enumerate(P):
+        x, y, z = p
+        if not (lo[0] <= x <= hi[0] and lo[1] <= y <= hi[1] and lo[2] <= z <= hi[2]):
+            continue
+        k = (x, y, z)
+        r = done.get(k)
+        if r is None:
+            d = move(x, y, z)
+            if d is None or (abs(d[0]) < 1e-7 and abs(d[1]) < 1e-7 and abs(d[2]) < 1e-7):
+                done[k] = r = (None, None)
+            else:
+                # how the move stretches and turns the surface here: normals go by the inverse transpose
+                J = None
+                if max(abs(d[0]), abs(d[1]), abs(d[2])) > 0.004:
+                    cols = []
+                    for a in range(3):
+                        q = [x, y, z]
+                        q[a] += h
+                        e = move(*q) or (0.0, 0.0, 0.0)
+                        cols.append(((e[0] - d[0]) / h, (e[1] - d[1]) / h, (e[2] - d[2]) / h))
+                    # J[r][c] = d(new r) / d(old c)
+                    J = [[(1.0 if r_ == c_ else 0.0) + cols[c_][r_] for c_ in range(3)] for r_ in range(3)]
+                done[k] = r = (d, J)
+        d, J = r
+        if d is None:
+            continue
+        P[i] = [x + d[0], y + d[1], z + d[2]]
+        if J is not None:
+            n = N[i]
+            # cofactor matrix times the normal (= det * inverse transpose)
+            c = ((J[1][1] * J[2][2] - J[1][2] * J[2][1], J[1][2] * J[2][0] - J[1][0] * J[2][2],
+                  J[1][0] * J[2][1] - J[1][1] * J[2][0]),
+                 (J[0][2] * J[2][1] - J[0][1] * J[2][2], J[0][0] * J[2][2] - J[0][2] * J[2][0],
+                  J[0][1] * J[2][0] - J[0][0] * J[2][1]),
+                 (J[0][1] * J[1][2] - J[0][2] * J[1][1], J[0][2] * J[1][0] - J[0][0] * J[1][2],
+                  J[0][0] * J[1][1] - J[0][1] * J[1][0]))
+            m = (c[0][0] * n[0] + c[0][1] * n[1] + c[0][2] * n[2], c[1][0] * n[0] + c[1][1] * n[1] + c[1][2] * n[2],
+                 c[2][0] * n[0] + c[2][1] * n[1] + c[2][2] * n[2])
+            ln = math.sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2])
+            l0 = math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2])
+            if ln > 1e-9 and l0 > 1e-9 and m[0] * n[0] + m[1] * n[1] + m[2] * n[2] > 0:
+                N[i] = [m[0] / ln * l0, m[1] / ln * l0, m[2] / ln * l0]
+        moved += 1
+    if moved:
+        mesh.dirty = True
+    return moved
 
 
 def axis_of(model_nodes, node, origin_of):
@@ -1718,9 +1850,10 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
 
     # ---- (b) swapped core pieces: cross-section matched to the base's at the seams
     if declip:
+        want = {}        # node -> [bone axis, scale at the joint, scale at the far end]
         for r, L in plan:
             n = clone[r]
-            if kind.get(n) != "core" or not r.mesh or r.node in (0x2F, 0x30, 0x31, 0x32, 0x33):
+            if kind.get(n) != "core" or not r.mesh or r.node in (0x2F, 0x30, 0x31, 0x32, 0x33) or r.node in want:
                 continue
             ax = axis_of(by_node, r.node, lambda k: origin(by_node[k]))
             if ax is None:
@@ -1735,14 +1868,28 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
             soft = lambda x: 1.0 if abs(x - 1) < 0.08 else max(lo_, min(hi_, 1 + (x - 1) * 0.7))
             s0 = soft(ra0 / da0)
             s1 = soft(ra1 / da1) if (ra1 and da1) else s0
+            want[r.node] = [ax, s0, s1]
+        # two pieces cut from one character that meet end to end (forearm and hand, thigh and shin) keep one size
+        # where they meet: each matched on its own, a hand shrinks out of the wristband it used to fill and the
+        # surface they share tears
+        for nd in sorted(want):
+            par = by_node[nd].parent if nd in by_node else None
+            up = want.get(par.node) if par is not None else None
+            if up is None or _src_of(kind, layer_of, by_node[nd]) is not _src_of(kind, layer_of, par):
+                continue
+            if v_len(v_sub(up[0][1], want[nd][0][0])) > 1e-3:
+                continue                                  # the parent's bone does not end at this joint
+            up[2] = want[nd][1] = (up[2] + want[nd][1]) / 2
+        for nd in sorted(want):
+            ax, s0, s1 = want[nd]
             if abs(s0 - 1) > 0.02 or abs(s1 - 1) > 0.02:
-                for x in all_of(r.node):
+                for x in all_of(nd):
                     if x in meshes and kind.get(x) == "core":
                         radial_scale(meshes[x], ax, s0, s1)
                 stats["fit_nodes"] += 1
 
     if fit:
-        _snap(bm, by_node, kind, layer_of, meshes, all_of, origin, mesh_of, stats)
+        _seam_fit(bm, clone, by_node, kind, layer_of, donor_rec, meshes, all_of, origin, mesh_of, stats)
 
     # ---- workshop on the core pieces (mesh only: the base's joints stay where the game expects them)
     def pivot_of_core(L, node):
@@ -1971,8 +2118,7 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
                     ("head", "the donor head scaled by {:.2f} to the base's head size"),
                     ("feet", "{} foot / feet fitted to the base's ankle and ground level"),
                     ("extras", "{} hanging part(s) (capes, belts, tails) scaled with the body size"),
-                    ("hems", "{} open end(s) of swapped parts moved to where the base's own parts ended"),
-                    ("snapped", "{} seam point(s) snapped shut where pieces meet")):
+                    ("hems", "{} open end(s) of swapped parts moved to where the base's own parts ended")):
         if stats.get(k):
             notes.append("fit: " + text.format(stats[k]))
     if stats["fit_nodes"]:
@@ -1983,7 +2129,19 @@ def mix(base_pack, selections, report=None, adjust=None, force=True, declip=True
         notes.append(f"declip: {stats['pushed']} hair vertices pushed out of the head")
 
     patch = adjust.get("patch", True) is not False   # (the workshop's "Patch holes": the strips and caps)
+    zips = {} if patch else None
+    if fit:   # once more, after the workshop and the build: whatever they moved, the joins end up shut
+        _seam_fit(bm, clone, by_node, kind, layer_of, donor_rec, meshes, all_of, origin, mesh_of, stats, zips)
+        if stats.get("stitched"):
+            notes.append(f"fit: {stats['stitched']} point(s) inside swapped parts joined again where the fit had "
+                         "pulled their meshes apart")
+        if stats.get("snapped"):
+            notes.append(f"fit: {stats['snapped']} seam point(s) laid onto the base's own seams where pieces meet")
+        if stats.get("zipped"):
+            notes.append(f"fit: {stats['zipped']} sliver(s) added where one side of a seam has more points")
     bridges = _bridge(by_node, kind, layer_of, meshes, all_of, origin, mesh_of, stats, notes) if fit and patch else {}
+    for n_, bs_ in (zips or {}).items():
+        bridges.setdefault(n_, []).extend(bs_)
     if fit and patch:
         for n_, bs_ in _cap_exposed(bm, clone, kind, meshes, mesh_of, stats).items():
             bridges.setdefault(n_, []).extend(bs_)
@@ -2249,6 +2407,15 @@ def _fit(bm, plan, clone, by_node, kind, layer_of, donor_rec, meshes, all_of, or
             for n in ns:
                 if n in meshes:
                     meshes[n].axial(jb, u, k, ld, k0, k2)
+            # the next pieces of the same character (forearm -> hand, shin -> foot) were put on the base's joints
+            # by their own joint where they hang on it and by this bone's where they ride on it (their rim): the
+            # rim follows this bone's new length, or the hand comes out of the wristband
+            src = _src_of(kind, layer_of, ns[0])
+            for c in b.children:
+                for x in swapped.get(c.node, ()):
+                    if x in meshes and x.parent is not None and x.parent.node == node and \
+                            _src_of(kind, layer_of, x) is src:
+                        meshes[x].axial(jb, u, k, ld, k0, k2, True)
             stats["length"] += 1
     # head: the donor's head to the size of the base's (a child's head on an adult and the other way round)
     hl = next((layer_of[n] for n in kind if kind[n] in ("core", "adopt") and n.node == 0x2F and n.enabled), None)
@@ -2286,8 +2453,12 @@ def _fit(bm, plan, clone, by_node, kind, layer_of, donor_rec, meshes, all_of, or
         if max(abs(ky - 1), abs(kx - 1), abs(kz - 1)) > 0.03:
             S = ((kx, 0, 0), (0, ky, 0), (0, 0, kz))
             Si = ((1 / kx, 0, 0), (0, 1 / ky, 0), (0, 0, 1 / kz))
+            # a boot under the same character's shin: what rides on the shin (its top) stays with the shin's
+            # bottom, or the boot comes off the leg it was made for
             for n in ns:
-                meshes[n].apply(S, Si, (0, 0, 0), j)
+                up = n.parent if n.parent is not None and n.parent.node in swapped else None
+                meshes[n].apply(S, Si, (0, 0, 0), j,
+                                up is not None and _src_of(kind, layer_of, up) is _src_of(kind, layer_of, n))
             stats["feet"] += 1
     # capes, belt ends, tails and other hanging extras: with the body size, around where they hang
     hb = _height(bm)
@@ -2320,7 +2491,7 @@ def _hems(bm, by_node, kind, layer_of, meshes, all_of, origin, mesh_of, stats):
     character (trousers on shoes, a sleeve on a glove, a waistband under a belt), its mesh is stretched or shortened
     along the bone so that it covers what the base's piece covered (a tall boot's short trouser leg reaches a short
     shoe, a child's high waistband goes back under the base's belt). The bone's middle stays put."""
-    src_of = lambda n: layer_of.get(n) if kind.get(n) not in (None, "base") else None
+    src_of = lambda n: _src_of(kind, layer_of, n)
 
     def other(x, lay):   # x's meshes come from another source than lay
         ms = [y for y in all_of(x.node) if y.enabled and mesh_of(y) is not None]
@@ -2332,7 +2503,7 @@ def _hems(bm, by_node, kind, layer_of, meshes, all_of, origin, mesh_of, stats):
         mine = [n for n in all_of(node) if kind.get(n) == "core" and n.enabled and n in meshes]
         if not mine:
             continue
-        lay = layer_of.get(mine[0])
+        lay = src_of(mine[0])
         bp = bm.node_points(node)
         ax = axis_of(by_node, node, lambda k: origin(by_node[k]))
         if not bp or ax is None:
@@ -2379,7 +2550,7 @@ def _hems(bm, by_node, kind, layer_of, meshes, all_of, origin, mesh_of, stats):
     TOP = (0x11, 0x12, 0x20)
     tm = [n for nd in TOP for n in all_of(nd) if kind.get(n) == "core" and n.enabled and n in meshes]
     neck = by_node.get(0x2E)
-    if tm and neck is not None and 0x12 in by_node and other(neck, layer_of.get(tm[0])):
+    if tm and neck is not None and 0x12 in by_node and other(neck, src_of(tm[0])):
         bp = [p for nd in TOP for p in bm.node_points(nd)]
         dp = [p for n in tm for p in meshes[n].P]
         if len(bp) >= 8 and len(dp) >= 8:
@@ -2395,69 +2566,437 @@ def _hems(bm, by_node, kind, layer_of, meshes, all_of, origin, mesh_of, stats):
                 stats["hems"] = stats.get("hems", 0) + 1
 
 
-def _snap(bm, by_node, kind, layer_of, meshes, all_of, origin, mesh_of, stats):
-    """Closes gaps where a swapped piece meets a piece of another source: the swapped mesh's open-edge points move
-    onto the nearest open-edge point of the neighbouring mesh (parent or child node) when it is close. Skin weights
-    stay as they are (both sides of a seam are weighted to the same two bones)."""
-    border_cache = {}
+def _src_of(kind, layer_of, n):
+    """Whose geometry a record clone carries: the donor pack of a swapped core piece, None for the base's own.
+    Two layers of one donor (the arms and the hands of the same character) are one source: where they meet is
+    not a seam between characters, and nothing there is stretched, snapped or bridged."""
+    return layer_of[n].src if kind.get(n) in ("core", "adopt") and n in layer_of else None
 
-    def border(mesh):
-        if id(mesh) not in border_cache:
-            groups, b = mesh.welded()
-            border_cache[id(mesh)] = (groups, b)
-        return border_cache[id(mesh)]
-    done = set()
-    for node, b in list(by_node.items()):
-        if node not in CORE or node in (0x30, 0x31, 0x32, 0x33):
+
+# Where the body's pieces meet. The creator swaps whole pieces, so two characters only ever meet at these:
+# (nodes of the outer side, nodes of the inner side, the joint, the bone the ring goes round (from, to))
+SEAM_UNITS = (
+    ((0x2E,), (0x11, 0x12, 0x20), 0x2E, (0x2E, 0x2F)),      # neck on the chest
+    ((0x13,), (0x12,), 0x13, (0x13, 0x14)),                 # shoulders
+    ((0x21,), (0x20,), 0x21, (0x21, 0x22)),
+    ((0x15,), (0x14,), 0x15, (0x14, 0x15)),                 # wrists
+    ((0x23,), (0x22,), 0x23, (0x22, 0x23)),
+    ((0x08, 0x0C), (0x03, 0x10), None, None),               # hips on the pelvis / belly (the waist)
+    ((0x0B,), (0x0A,), 0x0B, (0x0A, 0x0B)),                 # ankles
+    ((0x0F,), (0x0E,), 0x0F, (0x0E, 0x0F)),
+)
+RIGID = (0x2F, 0x30, 0x31, 0x32, 0x33)   # the head and the face are never bent: the eyes and the mouth sit there
+
+
+def _seam_info(model, r):
+    """One mesh record of a source model as it is stored: (Mesh, key of every vertex, keys on open edges, the
+    open edges as pairs of keys)."""
+    cache = model.__dict__.setdefault("_seam_info", {})
+    v = cache.get(r)
+    if v is None:
+        m = Mesh(r.chain)
+        groups, border, edges = m.welded(edges_too=True)
+        gk = [_key(m.P[g[0]]) for g in groups]
+        v = cache[r] = (m, [_key(p) for p in m.P], {gk[g] for g in border}, [(gk[x], gk[y]) for x, y in edges])
+    return v
+
+
+def _stock_curve(model, S, T, jn, bone):
+    """Where the meshes of nodes S end against those of nodes T in a character's own model: the points both
+    sides share (the artists' seam: every stock joint is closed that way), in order along S's open edge.
+    Returns (lines, positions, normals, shared): lines = [([key, ...], closed), ...]. Where the two sides share
+    nothing (a hand that sits inside a glove's cuff), the open edge of S that goes round the joint stands in
+    (shared = False)."""
+    cache = model.__dict__.setdefault("_seam_curves", {})
+    if (S, T) in cache:
+        return cache[(S, T)]
+    srecs = [r for n in S for r in model.dups.get(n, ()) if r.mesh]
+    trecs = [r for n in T for r in model.dups.get(n, ()) if r.mesh]
+    tk = set()
+    for r in trecs:
+        tk |= _seam_info(model, r)[2]
+    pos, nrm, adj = {}, {}, {}
+    for r in srecs:
+        m, keys, border, edges = _seam_info(model, r)
+        for i, k in enumerate(keys):
+            if k in tk and k in border and k not in pos:
+                pos[k], nrm[k] = tuple(m.P[i]), tuple(m.N[i])
+        for x, y in edges:
+            if x in tk and y in tk:
+                adj.setdefault(x, set()).add(y)
+                adj.setdefault(y, set()).add(x)
+    lines, seen = [], set()
+    for start in sorted(pos, key=lambda k: (len(adj.get(k, ())) != 1, k)):   # open chains from their ends
+        if start in seen:
             continue
-        mine = [n for n in all_of(node) if kind.get(n) == "core" and n.enabled and n in meshes]
-        if not mine:
+        line, cur = [start], start
+        seen.add(start)
+        while True:
+            nx = sorted(x for x in adj.get(cur, ()) if x not in seen)
+            if not nx:
+                break
+            cur = nx[0]
+            seen.add(cur)
+            line.append(cur)
+        if len(line) >= 2:
+            lines.append((line, len(line) >= 3 and line[0] in adj.get(line[-1], ())))
+    shared = True
+    if sum(len(l) for l, _ in lines) < 4:
+        lines, shared = [], False
+        if len(S) == 1 and jn in model.by_node and bone and all(x in model.by_node for x in bone):
+            j = model.by_node[jn].ofsA
+            u = v_sub(model.by_node[bone[1]].ofsA, model.by_node[bone[0]].ofsA)
+            L = v_len(u)
+            if L > 1e-3:
+                u = tuple(x / L for x in u)
+                for r in srecs:
+                    m, keys = _seam_info(model, r)[:2]
+                    ring = _ring(m, j, u, 0.35 * L + 0.2)
+                    if ring:
+                        line = [keys[i] for i in ring[0]]
+                        for i in ring[0]:
+                            pos[keys[i]], nrm[keys[i]] = tuple(m.P[i]), tuple(m.N[i])
+                        lines = [(line, True)]
+                        break
+    out = cache[(S, T)] = (lines, pos, nrm, shared)
+    return out
+
+
+def _seam_fit(bm, clone, by_node, kind, layer_of, donor_rec, meshes, all_of, origin, mesh_of, stats, zips=None):
+    """Makes the joins between pieces look like one body. Run after the automatic fit and again after the
+    workshop and build edits, so that nothing done in between leaves a seam open.
+
+    1. Inside one character's piece: the fit stretches each bone's mesh by its own measure, which pulls apart
+       points two neighbouring meshes shared in the character's own model (elbows, knees, knuckles, the neck
+       under the head). They are put back on one point, and what lies around follows smoothly.
+    2. Where two characters meet: the swapped piece's rim (the points it shared with its own neighbour) is laid
+       onto the rim the base's own piece had there: point for point by the angle round the bone, the surface
+       behind it following with a smooth falloff, the rim itself exactly onto the base's points with the base's
+       normals and the seam's skin weights (both sides ride on one bone: the join stays shut when it bends).
+       With `zips` ({clone: [batch, ...]}, last run only): slivers that fill the last cracks where the base's rim
+       has points the piece's rim lacks.
+    The base's own vertices are never moved; a mix without swapped pieces is untouched."""
+    src_of = lambda n: _src_of(kind, layer_of, n)
+    base_rec = {n: r for r, n in clone.items()}
+
+    def live(nodes):
+        return [x for nd in nodes for x in all_of(nd)
+                if x.enabled and kind.get(x) in ("base", "core", "adopt") and mesh_of(x) is not None]
+
+    def near(mesh, lo, hi):
+        bb = mesh.bbox()
+        return bb is not None and all(bb[0][k] <= hi[k] and bb[1][k] >= lo[k] for k in range(3))
+
+    def box(pts, pad):
+        return ([min(q[k] for q in pts) - pad for k in range(3)], [max(q[k] for q in pts) + pad for k in range(3)])
+
+    # ---- 1. inside one character's piece
+    donors = {}
+    for n in kind:
+        if kind[n] in ("core", "adopt") and n.enabled and n in meshes and n.node in CORE and n in donor_rec:
+            donors.setdefault(src_of(n), []).append(n)
+    hold = {}        # source -> points that must stay where they are (the neck's rim under the head)
+    for src, ns in donors.items():
+        at = {}      # stock key -> {node: (clone, vertex)}
+        for n in ns:
+            keys, border = _seam_info(src.model, donor_rec[n])[1:3]
+            if len(keys) != len(meshes[n].P):
+                continue
+            for i, k in enumerate(keys):
+                if k in border:
+                    at.setdefault(k, {}).setdefault(n.node, (n, i))
+        todo = {}    # node -> [(current, target), ...]
+        for k, own in at.items():
+            if len(own) < 2:
+                continue
+            cur = {nd: meshes[n].P[i] for nd, (n, i) in own.items()}
+            stiff = sorted(nd for nd in cur if nd in RIGID)
+            if stiff:
+                tgt = tuple(cur[stiff[0]])
+                hold.setdefault(src, []).append(tgt)
+            else:
+                tgt = tuple(sum(cur[nd][c] for nd in cur) / len(cur) for c in range(3))
+            for nd in cur:
+                if nd not in RIGID:
+                    todo.setdefault(nd, []).append((tuple(cur[nd]), tgt))
+        for nd, pairs in todo.items():
+            far = max(v_len(v_sub(t, c)) for c, t in pairs)
+            if far < 1e-4:
+                continue
+            mine = [n for n in ns if n.node == nd]
+            pts = [c for c, t in pairs]
+            disps = [v_sub(t, c) if v_len(v_sub(t, c)) >= 1e-6 else (0.0, 0.0, 0.0) for c, t in pairs]
+            reach = min(2.0, max(0.2, 3.0 * far))
+            for n in mine:
+                meshes[n].warp(pts, disps, reach)
+            # exact: every vertex that sat on a shared point now holds the shared point's numbers
+            table = {}
+            for (c, t), d in zip(pairs, disps):
+                if d != (0.0, 0.0, 0.0):
+                    table[_key((c[0] + d[0], c[1] + d[1], c[2] + d[2]))] = (t, None, None)
+            for n in mine:
+                meshes[n].pin(table)
+            stats["stitched"] = stats.get("stitched", 0) + sum(1 for d in disps if d != (0.0, 0.0, 0.0))
+
+    # ---- 2. where two characters meet
+    closed = stats.setdefault("_closed", set())
+    pinned = {}
+    for A, B, jn, bone in SEAM_UNITS:
+        la, lb = live(A), live(B)
+        if not la or not lb:
             continue
-        lay = layer_of.get(mine[0])
-        nbr = []
-        for q in ([b.parent] if b.parent is not None else []) + [c for c in b.children if c.node in CORE]:
-            for x in all_of(q.node):
-                if not x.enabled or layer_of.get(x) is lay:
+        sa, sb = src_of(la[0]), src_of(lb[0])
+        if sa is sb:
+            continue
+        if bone and bone[0] in by_node and bone[1] in by_node:
+            u = v_sub(origin(by_node[bone[1]]), origin(by_node[bone[0]]))
+        else:
+            u = (0.0, -1.0, 0.0)
+        ul = v_len(u)
+        u = tuple(x / ul for x in u) if ul > 1e-3 else (0.0, -1.0, 0.0)
+        e1 = (1.0, 0.0, 0.0) if abs(u[0]) < 0.9 else (0.0, 1.0, 0.0)
+        e1 = v_sub(e1, tuple(u[k] * v_dot(e1, u) for k in range(3)))
+        e1 = tuple(x / v_len(e1) for x in e1)
+        e2 = (u[1] * e1[2] - u[2] * e1[1], u[2] * e1[0] - u[0] * e1[2], u[0] * e1[1] - u[1] * e1[0])
+        # the joint counts as closed (no strip) only when every swapped side of it went onto the base's seam: a
+        # boot top too far below the trouser leg still needs its strip though the trouser leg was laid down
+        sides_n = sides_ok = 0
+        for S, T, ls, lt, ss, st in ((A, B, la, lb, sa, sb), (B, A, lb, la, sb, sa)):
+            if ss is None:
+                continue                                  # the base's own side stays as it is
+            sides_n += 1
+            if sides_ok < sides_n - 1:
+                break                                     # the first side was left open: leave this one as well
+            ls = [n for n in ls if src_of(n) is ss and n in donor_rec]
+            dm = ss.model
+            lines = _stock_curve(dm, S, T, jn, bone)[0]
+            want = {k for line, _ in lines for k in line}
+            ring = {}                                     # stock key -> (clone, vertex): the piece's rim
+            for n in ls:
+                keys = _seam_info(dm, donor_rec[n])[1]
+                if len(keys) != len(meshes[n].P):
                     continue
-                mm = mesh_of(x)
-                if mm is not None:
-                    nbr.append(mm)
-        if not nbr:
-            continue
-        pts = []
-        for mm in nbr:
-            groups, bd = border(mm)
-            pts += [mm.P[groups[g][0]] for g in bd]
-        if not pts:
-            continue
-        rad = []
-        for n in mine:
-            for p in meshes[n].P[::7]:
-                rad.append(v_len(v_sub(p, origin(b))))
-        rad.sort()
-        tol = max(0.04, min(0.5, 0.12 * (rad[len(rad) // 2] if rad else 1.0)))
-        cell = {}
-        for p in pts:
-            cell.setdefault((int(p[0] // tol), int(p[1] // tol), int(p[2] // tol)), []).append(p)
-        for n in mine:
-            mesh = meshes[n]
-            groups, bd = mesh.welded()
-            for g in bd:
-                p = mesh.P[groups[g][0]]
-                cx, cy, cz = int(p[0] // tol), int(p[1] // tol), int(p[2] // tol)
-                best, bdist = None, tol
-                for dx in (-1, 0, 1):
-                    for dy in (-1, 0, 1):
-                        for dz in (-1, 0, 1):
-                            for q in cell.get((cx + dx, cy + dy, cz + dz), ()):
-                                d = v_len(v_sub(p, q))
-                                if d < bdist:
-                                    best, bdist = q, d
-                if best is not None and bdist > 1e-5:
-                    for i in groups[g]:
-                        mesh.P[i] = list(best)
-                    mesh.dirty = True
-                    stats["snapped"] += 1
+                for i, k in enumerate(keys):
+                    if k in want and k not in ring:
+                        ring[k] = (n, i)
+            if len(ring) < 4:
+                continue
+            # the rim to meet: the base's neighbour as it is now, else where the base's own piece ended
+            tl = None
+            if st is None:
+                bl, bpos, _, shared = _stock_curve(bm, T, S, jn, bone)
+                if bl and shared:
+                    cur = {}
+                    for n in lt:
+                        r = base_rec.get(n)
+                        mm = mesh_of(n)
+                        if r is None or mm is None:
+                            continue
+                        keys = _seam_info(bm, r)[1]
+                        if len(keys) != len(mm.P):
+                            continue
+                        for i, k in enumerate(keys):
+                            if k in bpos and k not in cur:
+                                cur[k] = (tuple(mm.P[i]), tuple(mm.N[i]))
+                    if all(k in cur for line, _ in bl for k in line):
+                        tl = [([cur[k] for k in line], c) for line, c in bl]
+            if tl is None:
+                bl, bpos, bnrm, _ = _stock_curve(bm, S, T, jn, bone)
+                if bl:
+                    tl = [([(bpos[k], bnrm[k]) for k in line], c) for line, c in bl]
+            if not tl:
+                continue
+            cp = {k: tuple(meshes[n].P[i]) for k, (n, i) in ring.items()}
+            tp = [q[0] for line, _ in tl for q in line]
+            cc = tuple(sum(q[c] for q in cp.values()) / len(cp) for c in range(3))
+            ct = tuple(sum(q[c] for q in tp) / len(tp) for c in range(3))
+
+            def flat(q, cen):
+                d = v_sub(q, cen)
+                a_ = v_dot(d, u)
+                return v_sub(d, tuple(u[c] * a_ for c in range(3)))
+            rc = sum(v_len(flat(q, cc)) for q in cp.values()) / len(cp)
+            rt = sum(v_len(flat(q, ct)) for q in tp) / len(tp)
+            if rc < 1e-3 or rt < 1e-3:
+                continue
+            grow = max(0.5, min(2.0, rt / rc))
+            segs = []
+            for li, (line, c) in enumerate(tl):
+                n_ = len(line)
+                for si in range(n_ if c else n_ - 1):
+                    p0, p1 = line[si][0], line[(si + 1) % n_][0]
+                    f0, f1 = flat(p0, ct), flat(p1, ct)
+                    segs.append((li, si, p0, p1, math.atan2(v_dot(f0, e2), v_dot(f0, e1)),
+                                 math.atan2(v_dot(f1, e2), v_dot(f1, e1))))
+            wrap = lambda x: (x + math.pi) % (2 * math.pi) - math.pi
+            par = {}                                      # stock key -> [line, place along it, point]
+            for k, q in cp.items():
+                fq = flat(q, cc)
+                th = math.atan2(v_dot(fq, e2), v_dot(fq, e1))
+                guess = tuple(ct[c] + fq[c] * grow for c in range(3))
+                best_a, best_c = None, None
+                for li, si, p0, p1, t0, t1 in segs:
+                    d01 = wrap(t1 - t0)
+                    if abs(d01) > 1e-6:                   # by the angle round the bone
+                        f = wrap(th - t0) / d01
+                        if 0.0 <= f <= 1.0:
+                            pt = tuple(p0[c] + (p1[c] - p0[c]) * f for c in range(3))
+                            d = v_len(v_sub(pt, guess))
+                            if best_a is None or d < best_a[0]:
+                                best_a = (d, li, si + f, pt)
+                    e = v_sub(p1, p0)                     # by the nearest place on the rim
+                    l2 = v_dot(e, e)
+                    f = max(0.0, min(1.0, v_dot(v_sub(guess, p0), e) / l2)) if l2 > 1e-12 else 0.0
+                    pt = tuple(p0[c] + e[c] * f for c in range(3))
+                    d = v_len(v_sub(pt, guess))
+                    if best_c is None or d < best_c[0]:
+                        best_c = (d, li, si + f, pt)
+                bst = best_a if best_a is not None and best_a[0] <= 1.5 * best_c[0] + 0.05 * rt else best_c
+                line, c = tl[bst[1]]
+                at_end = bst[2] < 1e-6 or bst[2] > len(line) - 1 - 1e-6
+                if not c and bst is best_c and at_end and bst[0] > 0.35 * rt + 0.05:
+                    continue     # past the end of a rim that does not go all the way round: this point just follows
+                par[k] = [bst[1], bst[2], bst[3]]
+            cp = {k: cp[k] for k in par}
+            if len(cp) < 3:
+                continue
+            # a rim point that is the nearest one to a point of the base's rim goes exactly onto it
+            take = {}
+            for k in sorted(par):
+                li, sv, _ = par[k]
+                line, c = tl[li]
+                v = int(round(sv))
+                d = abs(sv - v)
+                v = v % len(line) if c else max(0, min(len(line) - 1, v))
+                if (li, v) not in take or d < take[(li, v)][0]:
+                    take[(li, v)] = (d, k)
+            for (li, v), (_, k) in take.items():
+                par[k] = [li, float(v), tl[li][0][v][0]]
+            far = max(v_len(v_sub(par[k][2], cp[k])) for k in cp)
+            if far > 1.2 * max(rc, rt) + 0.15:
+                continue                                  # too far apart to pull together: left to the strips
+            sides_ok += 1
+            if far >= 1e-5:
+                pts = [cp[k] for k in sorted(cp)]
+                disps = [v_sub(par[k][2], cp[k]) for k in sorted(cp)]
+                disps = [d if v_len(d) >= 1e-6 else (0.0, 0.0, 0.0) for d in disps]
+                anchors = pinned.get(ss, []) + hold.get(ss, [])
+                reach = min(max(1.2 * rc + 0.1, 3.0 * far), 3.0 * rc + 0.4)
+                lo, hi = box(pts, reach)
+                apts = pts + anchors
+                adis = disps + [(0.0, 0.0, 0.0)] * len(anchors)
+                for n in donors.get(ss, ()):
+                    if n.node not in RIGID and near(meshes[n], lo, hi):
+                        meshes[n].warp(apts, adis, reach)
+            # the rim itself: the base's points, the base's normals, the seam's weights (the side whose bone the
+            # other side hangs from: 1, its own bone; else 0, the bone above: both sides ride on one bone)
+            stats["snapped"] += sum(1 for k in cp if v_len(v_sub(par[k][2], cp[k])) >= 1e-4)
+            for nd in sorted({n.node for n in ls}):
+                w = 1.0 if any(t in by_node and by_node[t].parent is not None and by_node[t].parent.node == nd
+                               for t in T) else 0.0
+                table = {}
+                for k, (n, i) in ring.items():
+                    if k not in par:
+                        continue
+                    li, sv, pt = par[k]
+                    line, c = tl[li]
+                    v0 = int(math.floor(sv)) % len(line)
+                    v1 = (v0 + 1) % len(line) if c else min(len(line) - 1, v0 + 1)
+                    f = sv - math.floor(sv)
+                    nr = tuple(line[v0][1][c_] * (1 - f) + line[v1][1][c_] * f for c_ in range(3))
+                    ln = v_len(nr)
+                    nr = tuple(x / ln for x in nr) if ln > 1e-6 else None
+                    table[_key(meshes[n].P[i])] = (pt, nr, w)
+                for n in ls:
+                    if n.node == nd:
+                        meshes[n].pin(table)
+            pinned.setdefault(ss, []).extend(par[k][2] for k in sorted(par))
+            if zips is None:
+                continue
+            # slivers: where the base's rim has points between two neighbours of the piece's rim
+            fans = {}
+            for n in ls:
+                cm = meshes[n]
+                keys, _, edges = _seam_info(dm, donor_rec[n])[1:4]
+                if len(keys) != len(cm.P):
+                    continue
+                where = {}
+                for i, k in enumerate(keys):
+                    if k in par:
+                        where.setdefault(k, []).append(i)
+                for ka, kb in edges:
+                    if ka not in par or kb not in par or par[ka][0] != par[kb][0]:
+                        continue
+                    line, c = tl[par[ka][0]]
+                    n_ = len(line)
+                    xa, xb = par[ka][1], par[kb][1]
+                    if c:
+                        span = (xb - xa) % n_
+                        if span > n_ / 2:
+                            ka, kb, xa, xb = kb, ka, xb, xa
+                            span = n_ - span
+                    else:
+                        if xb < xa:
+                            ka, kb, xa, xb = kb, ka, xb, xa
+                        span = xb - xa
+                    mid = []
+                    v = math.floor(xa + 1e-6) + 1
+                    while v < xa + span - 1e-6:
+                        mid.append(v)
+                        v += 1
+                    if not mid or len(mid) > 8:
+                        continue
+                    ia, ib = min(((x, y) for x in where[ka] for y in where[kb]),
+                                 key=lambda t_: (cm.strip[t_[0]] != cm.strip[t_[1]], abs(t_[0] - t_[1])))
+                    hdr = cm.header_of(ia)
+                    if hdr is None:
+                        continue
+                    va = (cm.P[ia], cm.W[ia], cm.N[ia], cm.ST[ia])
+                    vb = (cm.P[ib], cm.W[ib], cm.N[ib], cm.ST[ib])
+                    # the piece's own triangle on this edge: its picture goes on past the edge into the sliver
+                    # (texture coordinates on the edge's line alone would smear one row of texels across it)
+                    ic_ = None
+                    for x in range(max(0, min(ia, ib) - 2), min(ia, ib) + 1):
+                        tri = (x, x + 1, x + 2)
+                        if x + 2 < len(cm.P) and ia in tri and ib in tri and cm.strip[x] == cm.strip[x + 2]:
+                            ic_ = next(y for y in tri if y not in (ia, ib))
+                            break
+                    pa_, sa_ = cm.P[ia], cm.ST[ia]
+                    e1_, s1_ = v_sub(cm.P[ib], pa_), (cm.ST[ib][0] - sa_[0], cm.ST[ib][1] - sa_[1])
+                    e2_, s2_ = (v_sub(cm.P[ic_], pa_), (cm.ST[ic_][0] - sa_[0], cm.ST[ic_][1] - sa_[1])) \
+                        if ic_ is not None else ((0.0, 0.0, 0.0), (0.0, 0.0))
+                    g11, g12, g22 = v_dot(e1_, e1_), v_dot(e1_, e2_), v_dot(e2_, e2_)
+                    det = g11 * g22 - g12 * g12
+                    fan = []
+                    for v in mid:
+                        f = (v - xa) / span
+                        q = line[v % n_]
+                        st_ = (sa_[0] + s1_[0] * f, sa_[1] + s1_[1] * f)
+                        if det > 1e-12 * max(1e-12, g11 * g22):
+                            d_ = v_sub(q[0], pa_)
+                            r1, r2 = v_dot(d_, e1_), v_dot(d_, e2_)
+                            x_ = max(-0.25, min(1.25, (g22 * r1 - g12 * r2) / det))
+                            y_ = max(-0.5, min(0.5, (g11 * r2 - g12 * r1) / det))
+                            st_ = (sa_[0] + s1_[0] * x_ + s2_[0] * y_, sa_[1] + s1_[1] * x_ + s2_[1] * y_)
+                        fan.append((q[0], cm.W[ia], q[1], st_))
+                        fan.append(va)
+                    fan.append(vb)
+                    fans.setdefault((n, hdr), []).append(fan)
+            for (n, hdr), fl in fans.items():
+                # fans of one texture in strips of at most 37 vertices, joined by triangles without area
+                run = []
+                for fan in fl:
+                    if run and len(run) + 2 + len(fan) > 37:
+                        zips.setdefault(n, []).append(_batch_bytes(hdr, run))
+                        run = []
+                    if run:
+                        run += [run[-1], fan[0]]
+                    run += fan
+                    stats["zipped"] = stats.get("zipped", 0) + 1
+                if len(run) >= 3:
+                    zips.setdefault(n, []).append(_batch_bytes(hdr, run))
+        if sides_n and sides_ok == sides_n:
+            closed.update(A)
 
 
 def _loops(mesh):
@@ -2510,10 +3049,12 @@ def _bridge(by_node, kind, layer_of, meshes, all_of, origin, mesh_of, stats, not
     batch (the node side keeps its skin weights, the parent side is weighted fully to the parent, which is the
     node's second matrix: the bridge bends with the joint). Returns {clone: [batch bytes, ...]}."""
     out = {}
-    src_of = lambda n: layer_of.get(n) if kind.get(n) != "base" else None
+    src_of = lambda n: _src_of(kind, layer_of, n)
     for node, c in by_node.items():
         if node not in CORE or node in FIXED or node in (0x30, 0x31, 0x32, 0x33) or c.parent is None:
             continue
+        if node in stats.get("_closed", ()):
+            continue                                    # the seam fit closed this joint
         p = c.parent
         if p.node not in CORE:
             continue
@@ -2575,7 +3116,8 @@ def _bridge(by_node, kind, layer_of, meshes, all_of, origin, mesh_of, stats, not
         def ang(pt, cen):
             d = v_sub(pt, cen)
             return math.atan2(v_dot(d, e2), v_dot(d, e1))
-        K = 12
+        # as many points round as the rings have, up to 16 (2 * 17 vertices: one batch of at most 37)
+        K = max(12, min(16, len(set(rc[0])), len(set(rp[0]))))
         pick_c, pick_p = [], []
         for k in range(K):
             a = -math.pi + (k + 0.5) * 2 * math.pi / K
@@ -2712,7 +3254,7 @@ def _seam_from(L, bm, by_node, kind, layer_of, meshes, maps):
         m.P = [list(struct.unpack_from("<3f", raw, vo + i * 0x70)) for i in ids]
         m.W = [struct.unpack_from("<f", raw, vo + i * 0x70 + 12)[0] for i in ids]
         m.N = [list(struct.unpack_from("<3f", raw, vo + i * 0x70 + 0x10)) for i in ids]
-        m.log, m.dirty = [], False
+        m.log, m.dirty, m.Wd = [], False, set()
         src_mesh = next((meshes[x] for x in kind if x.node == node and kind[x] in ("core", "adopt") and
                          layer_of.get(x) is L and x in meshes), None)
         if src_mesh is not None:
@@ -2724,6 +3266,8 @@ def _seam_from(L, bm, by_node, kind, layer_of, meshes, maps):
             o = 16 + i * 0x70
             struct.pack_into("<3f", sec, o, *m.P[k])
             struct.pack_into("<3f", sec, o + 0x10, *m.N[k])
+            if k in m.Wd:
+                struct.pack_into("<f", sec, o + 12, m.W[k])
     tm, rm = maps(L.src)
     for i in range(tc):
         o = 16 + vc * 0x70 + i * 0x20 + 0x10
