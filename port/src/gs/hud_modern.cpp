@@ -258,8 +258,12 @@ static void head(const View &v, const FpMember &m, ImVec2 c, float r, bool flip,
     float hx, hy, hs, fx, fy;
     v.dl->AddCircleFilled(c, r, col(v, kPlate, 0.92f * a), 40);
     if (m.path[0] != '\0' && FightPanels_Art(m.path, m.chara, m.costume, &tex, &hx, &hy, &hs, &fx, &fy) && tex != NULL && hs > 1.0f) {
-        float u0 = hx / ART_W, u1 = (hx + hs) / ART_W;
-        float v0 = (band + hy / ART_H) / 3.0f, v1 = (band + (hy + hs) / ART_H) / 3.0f;
+        // (the art's head square, a little wider and lower: the whole face in the disc, not the top of the hair)
+        float sz = fminf(hs * 1.2f, ART_W);
+        float x = fminf(fmaxf(hx + hs * 0.5f - sz * 0.5f, 0.0f), ART_W - sz);
+        float y = fminf(fmaxf(hy + hs * 0.6f - sz * 0.5f, 0.0f), ART_H - sz);
+        float u0 = x / ART_W, u1 = (x + sz) / ART_W;
+        float v0 = (band + y / ART_H) / 3.0f, v1 = (band + (y + sz) / ART_H) / 3.0f;
         if (flip) {
             float t = u0; u0 = u1; u1 = t;
         }
@@ -291,7 +295,7 @@ struct Anim {
     int hits;
     float pop;       // seconds since the count last changed
     float comboA;    // the plate's alpha
-    float dmgFrom, dmgTo, dmgT;
+    float dmgFrom, dmgTo, dmgT, dmgDur; // (the count runs as long as the game's: 0.6 s, longer for a big step, at most 1.5 s)
     int msg;
     float msgT;      // seconds since the event message; < 0 none
 };
@@ -399,7 +403,7 @@ static void draw_gauges(const View &v, const FpSide &s, Anim &an, int side) {
             v.dl->AddCircle(c, r + 2.2f * v.u, col(v, kLost, 0.85f * lowP), 48, 3.6f * v.u);
         }
         if (an.hit > 0.0f) {
-            v.dl->AddCircleFilled(c, r, col(v, kWhite, 0.35f * an.hit), 40);
+            v.dl->AddCircleFilled(c, r, col(v, kWhite, 0.2f * an.hit), 40);
         }
     }
 
@@ -489,7 +493,6 @@ static void draw_gauges(const View &v, const FpSide &s, Anim &an, int side) {
             cell = (len - gap * 4) / 5;
             per = 6000.0f;
             show = trail = (float)s.maxPower;
-            slab_glow(v, kx - 3.0f, kx + len + 3.0f, y0 - 3.0f, y1 + 3.0f, kMp[1], an.power * (0.6f + 0.4f * pulse(0.6f)));
         }
         slab(v, kx - 4.0f, kx + len + 4.0f, y0 - 3.0f, y1 + 3.0f, col(v, kInk, 0.85f), col(v, kInk, 0.85f));
         for (int i = 0; i < cells; i++) {
@@ -515,15 +518,19 @@ static void draw_gauges(const View &v, const FpSide &s, Anim &an, int side) {
         if (fullP > 0.0f) {
             slab_glow(v, kx - 3.0f, kx + len + 3.0f, y0 - 3.0f, y1 + 3.0f, kKi[1], 0.7f * fullP);
         }
+        if (power) { // (over the cells: a blue light round the gauge, breathing)
+            slab_glow(v, kx - 3.0f, kx + len + 3.0f, y0 - 3.0f, y1 + 3.0f, kMp[1], an.power * (0.8f + 0.2f * pulse(0.6f)));
+            slab_line(v, kx - 4.0f, kx + len + 4.0f, y0 - 3.0f, y1 + 3.0f, col(v, kMp[1], an.power * 0.9f), 1.6f);
+        }
         if (an.power > 0.05f) {
             ImFont *f = face(Ui_FontBold());
-            float size = 17.0f * v.u;
+            float size = 20.0f * v.u;
             const char *t = "MAX POWER";
             ImVec2 p = pt(v, kx + len + 14.0f, y0 - 3.0f);
             if (v.dir < 0.0f) {
                 p.x -= text_w(f, size, t);
             }
-            text(v, f, size, p, t, col(v, kWhite, an.power), col(v, kMp[1], an.power), 1.3f * v.u, -0.2f * v.dir);
+            text(v, f, size, p, t, col(v, kWhite, an.power), col(v, Rgb{90, 190, 255}, an.power), 1.5f * v.u, -0.2f * v.dir);
         }
     }
 
@@ -593,7 +600,7 @@ static void draw_gauges(const View &v, const FpSide &s, Anim &an, int side) {
 // switch gauge as a ring that closes, and lights up when the switch is allowed.
 static void draw_team(const View &v, const FpSide &s, Anim &an, int side) {
     const Rgb accent = kSideCol[side];
-    float y = 174.0f;
+    float y = 180.0f;
     ImFont *f = face(Ui_FontBold());
     if (s.count < 2) {
         return;
@@ -604,8 +611,8 @@ static void draw_team(const View &v, const FpSide &s, Anim &an, int side) {
             continue;
         }
         bool out = m.hp <= 0, next = i == s.next;
-        ImVec2 c = pt_flat(v, 50.0f, y);
-        float r = 22.0f * v.u, a = out ? 0.6f : 1.0f;
+        ImVec2 c = pt_flat(v, 52.0f, y);
+        float r = 27.0f * v.u, a = out ? 0.6f : 1.0f;
         float hpMax = m.hpMax > 0 ? (float)m.hpMax : 10000.0f, frac = clamp01((float)m.hp / hpMax);
         Rgb hc = frac > 0.5f ? kBar[2][0] : frac > 0.25f ? kBar[1][0] : kBar[0][0];
         v.dl->AddCircleFilled(c, r + 4.0f * v.u, col(v, kInk, 0.88f * a), 32);
@@ -630,8 +637,8 @@ static void draw_team(const View &v, const FpSide &s, Anim &an, int side) {
             }
         }
         { // its health: a short bar beside the face, its bars left as a number
-            float bx0 = 82.0f, bx1 = 150.0f, by = y - 4.0f;
-            ImVec2 p0 = pt_flat(v, bx0, by), p1 = pt_flat(v, bx1, by + 8.0f), pf = pt_flat(v, bx0 + (bx1 - bx0) * frac, by + 8.0f);
+            float bx0 = 92.0f, bx1 = 176.0f, by = y - 5.0f;
+            ImVec2 p0 = pt_flat(v, bx0, by), p1 = pt_flat(v, bx1, by + 10.0f), pf = pt_flat(v, bx0 + (bx1 - bx0) * frac, by + 10.0f);
             v.dl->AddRectFilled(ImVec2(fminf(p0.x, p1.x) - 2.0f * v.u, p0.y - 2.0f * v.u), ImVec2(fmaxf(p0.x, p1.x) + 2.0f * v.u, p1.y + 2.0f * v.u),
                                 col(v, kInk, 0.85f * a), 3.0f * v.u);
             if (frac > 0.0f) {
@@ -639,16 +646,16 @@ static void draw_team(const View &v, const FpSide &s, Anim &an, int side) {
             }
             if (!out && m.hpMax > 10000) {
                 char num[8];
-                float size = 15.0f * v.u;
+                float size = 19.0f * v.u;
                 snprintf(num, sizeof(num), "x%d", (m.hp + 9999) / 10000);
-                ImVec2 p = pt_flat(v, bx1 + 8.0f, by - 5.0f);
+                ImVec2 p = pt_flat(v, bx1 + 8.0f, by - 5.5f);
                 if (v.dir < 0.0f) {
                     p.x -= text_w(f, size, num);
                 }
                 text(v, f, size, p, num, col(v, kWhite, 0.95f), col(v, kWhite, 0.95f), 1.0f * v.u);
             }
         }
-        y += 54.0f;
+        y += 66.0f;
     }
 }
 
@@ -676,10 +683,11 @@ static void combo_step(Anim &an, const FpSide &s, float dt, bool on) {
         an.hits = 0;
     }
     if (s.hudDamage >= 0 && (float)s.hudDamage != an.dmgTo) {
-        float shown = mixf(an.dmgFrom, an.dmgTo, ease_out(an.dmgT / 0.5f));
+        float shown = an.dmgDur > 0.0f ? mixf(an.dmgFrom, an.dmgTo, ease_out(an.dmgT / an.dmgDur)) : an.dmgTo;
         an.dmgFrom = an.comboA > 0.01f && (float)s.hudDamage > an.dmgTo ? shown : 0.0f; // (a new combo counts from 0)
         an.dmgTo = (float)s.hudDamage;
         an.dmgT = 0.0f;
+        an.dmgDur = an.dmgTo - an.dmgFrom > 6000.0f ? fminf((an.dmgTo - an.dmgFrom) / 9500.0f, 1.5f) : 0.6f;
     }
     an.dmgT += dt;
     an.pop += dt;
@@ -700,7 +708,7 @@ static void combo_step(Anim &an, const FpSide &s, float dt, bool on) {
 static void draw_combo(const View &v0, const Anim &an) {
     View v = v0;
     ImFont *f = face(Ui_FontBold());
-    const float y = 372.0f, x = 44.0f;
+    const float y = 440.0f, x = 44.0f; // (below a team of five's chips)
     float lean = -0.22f * v.dir;
     if (an.comboA > 0.01f) {
         v.a = v0.a * an.comboA;
@@ -722,7 +730,7 @@ static void draw_combo(const View &v0, const Anim &an) {
         if (sSet.damage && an.dmgTo > 0.0f) {
             char num[24];
             float size = 38.0f * v.u, small = 19.0f * v.u;
-            int dmg = (int)(mixf(an.dmgFrom, an.dmgTo, ease_out(an.dmgT / 0.5f)) + 0.5f);
+            int dmg = (int)((an.dmgDur > 0.0f ? mixf(an.dmgFrom, an.dmgTo, ease_out(an.dmgT / an.dmgDur)) : an.dmgTo) + 0.5f);
             snprintf(num, sizeof(num), "%d", dmg > 999999 ? 999999 : dmg);
             float w = text_w(f, size, num), lw = text_w(f, small, "DAMAGE");
             ImVec2 p = pt_flat(v, x + 6.0f + slide, y + 100.0f);
@@ -821,7 +829,8 @@ void HudModern_Draw(void) {
 
     ImDrawList *dl = ImGui::GetBackgroundDrawList();
     float px = (float)gUiPresentX, py = (float)gUiPresentY, pw = (float)gUiPresentW, ph = (float)gUiPresentH;
-    float u = ph / 1080.0f * (float)sSet.size / 100.0f;
+    // (in a small window it keeps a size that can still be read: the names and numbers would be a few pixels high)
+    float u = fmaxf(ph / 1080.0f, 0.46f) * (float)sSet.size / 100.0f;
     // "HUD Style: In the middle": about the middle 4:3 of a wider picture
     float rw = Port_HudLayout() == 2 && pw > ph * 4.0f / 3.0f ? ph * 4.0f / 3.0f : pw;
     float rx = px + (pw - rw) * 0.5f;
