@@ -111,7 +111,7 @@ extern s32 BtlSide_CountAlive(s32 side);
 extern s32 BtlSide_GetComboHits(s32 side);
 extern s32 BtlCharApi_GetMemberCount(s32 objId);
 extern s32 BtlCharApi_GetMemberHpPercent(s32 objId, s32 member);
-extern f32 BtlCharApi_GetTechniqueProgress(s32 objId);
+extern s32 BtlCharApi_IsInTechnique(s32 objId);
 extern s32 BattleSide_GetObjId(s32 side);
 extern void *BtlObj_Get(s32 id);
 extern void BtlObj_SetSubState(void *obj, s32 mode, s32 arg);
@@ -187,6 +187,8 @@ typedef struct PsScene {
     s32 how;         /* how far apart they were put (PortStory_Place) */
     s32 stand[2];    /* 0 on the ground, 1 in the air, 2 high up */
     s32 face[2];     /* 0 facing the other, 1 back turned, 2 side on */
+    s32 black;       /* the picture has gone to black (a line's fade-out): cards are read on it, the next spoken line
+                        brings it back */
 } PsScene;
 static PsScene sScene;
 
@@ -539,6 +541,10 @@ static void PortStory_Effects(s32 *li) {
     s32 s = li[PL_SIDE] < 0 ? 0 : li[PL_SIDE];
     s32 l = s ? 0 : 1;
 
+    if (sScene.black && li[PL_CARD] <= 0) { /* (after a fade to black the picture comes back for the next spoken line) */
+        PortStoryUi_Show(PS_SHOW_FADE, -1, -8);
+        sScene.black = 0;
+    }
     if (fx & PS_FX_SHAKE) {
         BtlFacade_ShakeCamera(0.6f);
     }
@@ -595,20 +601,24 @@ static void PortStory_Effects(s32 *li) {
         PortStoryUi_Show(PS_SHOW_FLASH, 255, 1);
     }
     if (fx & PS_FX_FADE_IN) {
-        PortStoryUi_Show(PS_SHOW_FADE, 255, -3); /* (the slow one a saga has always had) */
+        PortStoryUi_Show(PS_SHOW_FADE, 255, -3); /* (the slow one a saga has always had, over the text too) */
+        sScene.black = 0;
     }
     if (fx & PS_FX_FADE_OUT) {
         PortStoryUi_Show(PS_SHOW_FADE, -1, 12);
+        sScene.black = 1;
     }
     switch (li[PL_TRANS]) {
     case PS_TRANS_FADE_IN:
         PortStoryUi_Show(PS_SHOW_FADE, 255, -8);
+        sScene.black = 0;
         break;
     case PS_TRANS_FLASH:
         PortStoryUi_Show(PS_SHOW_FLASH, 255, 0);
         break;
     case PS_TRANS_DIP: /* (a cut through black: black at once, then quickly back) */
         PortStoryUi_Show(PS_SHOW_FADE, 255, -20);
+        sScene.black = 0;
         break;
     }
     PortStoryUi_Show(PS_SHOW_DARK, (fx & PS_FX_DARK) != 0, 0);
@@ -627,6 +637,7 @@ static s32 PortStoryCmd_Scene(u32 phase, void *work) {
         dist = Gsc_GetInt();
         flags = Gsc_GetInt();
         PortStory_Place(dist, flags);
+        sScene.black = 0;
         PortStory_Shot(PS_CAM_TWO, 0, 0, &eye, &at);
         PortStory_Camera(&eye, &at, NULL, NULL, 0.0f);
         PortStoryUi_Show(PS_SHOW_LETTERBOX, 1, 0);
@@ -648,6 +659,7 @@ static s32 PortStoryCmd_SceneEnd(u32 phase, void *work) {
         PortStoryUi_Show(PS_SHOW_HIDE, 0, 0);
         PortStoryUi_Show(PS_SHOW_DARK, 0, 0);
         PortStoryUi_Show(PS_SHOW_FADE, -1, -12); /* (a scene that ended in black: the picture comes back) */
+        sScene.black = 0;
         PortStoryUi_Show(PS_SHOW_LETTERBOX, 0, 0);
     }
     return 1;
@@ -852,6 +864,7 @@ static s32 PortStoryCmd_Line(u32 phase, void *work) {
         }
         if (ret && w->out == 0) { /* (the line goes out into black) */
             PortStoryUi_Show(PS_SHOW_FADE, -1, 12);
+            sScene.black = 1;
             w->out = 1;
             ret = 0;
         }
@@ -961,7 +974,8 @@ typedef struct PsWatch {
     s32 bonus;      /* seconds the actions added to the limits */
     s32 forms[2];   /* transformations still to do at the start */
     s32 formWait;
-    s32 blastFrame; /* the fight frame the player was last seen doing a blast */
+    s32 ticks;      /* frames of the battle, its cinematics too */
+    s32 blastTick;  /* the tick the player was last seen doing a blast (a technique: the ultimates' cinematics too) */
 } PsWatch;
 static PsWatch sWatch;
 
@@ -1013,6 +1027,8 @@ static void PortStory_Decide(s32 won, s32 byTime) {
     }
     sWatch.decided = won ? 1 : 2;
     sWatch.scene = 0;
+    fprintf(stderr, "bt3: story: the fight is decided: %s%s (second %d, health %d%% / %d%%)\n", won ? "won" : "lost",
+            byTime ? " on time" : "", PortStory_Seconds(), PortStory_HealthPct(0), PortStory_HealthPct(1));
     PortStoryUi_Show(PS_SHOW_FOUGHT, PortStory_Seconds(), PortStory_HealthPct(0));
 }
 
@@ -1288,7 +1304,7 @@ static s32 PortStoryCmd_Watch(u32 phase, void *work) {
         sWatch.card = -1;
         sWatch.objective = -1;
         sWatch.cur = -1;
-        sWatch.blastFrame = -100000;
+        sWatch.blastTick = -100000;
         *(s32 *)work = ++serial;
         return 0;
     case GSC_PHASE_BEGIN_ABORT:
@@ -1303,6 +1319,11 @@ static s32 PortStoryCmd_Watch(u32 phase, void *work) {
     }
     if (!PortStoryUi_Battle(bt)) {
         return 1;
+    }
+    sWatch.ticks++;
+    if (BtlCharApi_IsInTechnique(BattleSide_GetObjId(0))) { /* (looked at whatever the battle's state: an ultimate's
+                                                               cinematic is not the fight's state) */
+        sWatch.blastTick = sWatch.ticks;
     }
     if (sWatch.hud >= 0) { /* the box of a line said in the fight: as long as its voice, at least four seconds */
         sWatch.hudFrames++;
@@ -1344,6 +1365,7 @@ static s32 PortStoryCmd_Watch(u32 phase, void *work) {
         }
         sWatch.off += BtlClock_ToSeconds(BtlSeq_GetClock()) - sWatch.sceneFrom;
         sWatch.scene = 0;
+        fprintf(stderr, "bt3: story: the fight goes on (second %d)\n", PortStory_Seconds());
         sWatch.wait = 30; /* (the fighters get their feet back before the next thing) */
     }
     sec = PortStory_Seconds();
@@ -1381,9 +1403,6 @@ static s32 PortStoryCmd_Watch(u32 phase, void *work) {
             }
         }
     }
-    if (BtlCharApi_GetTechniqueProgress(BattleSide_GetObjId(0)) >= 0.0f) {
-        sWatch.blastFrame = sWatch.frames;
-    }
     /* the clock */
     limit = bt[PB_TIME] > 0 ? bt[PB_TIME] + sWatch.bonus : 0;
     left = -1;
@@ -1407,6 +1426,8 @@ static s32 PortStoryCmd_Watch(u32 phase, void *work) {
         if (sWatch.queued < PS_QUEUE && PortStory_Happens(ev, i, sec, left)) {
             sWatch.fired[i] = 1;
             sWatch.queue[sWatch.queued++] = i;
+            fprintf(stderr, "bt3: story: event %d happens (second %d, health %d%% / %d%%)\n", i + 1, sec,
+                    PortStory_HealthPct(0), PortStory_HealthPct(1));
         }
     }
     for (i = 0; i < 2; i++) { /* (a change of form or member counted from the fighter of now on) */
@@ -1427,7 +1448,7 @@ static s32 PortStoryCmd_Watch(u32 phase, void *work) {
     } else if (bt[PB_FAIL_HEALTH] > 0 && PortStory_HealthPct(0) <= bt[PB_FAIL_HEALTH]) {
         PortStory_Decide(0, 0);
     } else if (BtlCtrl_IsTeamDead(1)) { /* (PS_WIN_BLAST: the last blow has to be a blast, fired not long before) */
-        PortStory_Decide(bt[PB_WIN] != PS_WIN_BLAST || sWatch.frames - sWatch.blastFrame < 240, 0);
+        PortStory_Decide(bt[PB_WIN] != PS_WIN_BLAST || sWatch.ticks - sWatch.blastTick < 240, 0);
     } else if (bt[PB_WIN] == PS_WIN_HEALTH && PortStory_HealthPct(1) <= bt[PB_WIN_VALUE]) {
         PortStory_Decide(1, 0);
     } else if (bt[PB_WIN] == PS_WIN_SURVIVE && bt[PB_SURVIVE] > 0 && sec >= bt[PB_SURVIVE] + sWatch.bonus) {
@@ -1444,6 +1465,7 @@ static s32 PortStoryCmd_Watch(u32 phase, void *work) {
         if (BtlScript_IsEventRunning()) {
             sWatch.scene = 2;
             sWatch.sceneFrom = BtlClock_ToSeconds(BtlSeq_GetClock());
+            fprintf(stderr, "bt3: story: a scene stops the fight (second %d)\n", PortStory_Seconds());
             sWatch.hud = -1;
             PortStoryUi_Show(PS_SHOW_HUD, -1, 0);
             PortStoryUi_Show(PS_SHOW_TIMER, -1, 0);
@@ -1481,9 +1503,15 @@ static s32 PortStoryCmd_Watch(u32 phase, void *work) {
             sWatch.cur = -1;
             continue;
         }
-        if (PortStoryUi_Action(ev[PE_FIRST] + sWatch.act, act) && !PortStory_Do(act)) {
-            if (++sWatch.tries < 600) { /* (ten seconds: then it is let go, the others are not held up for ever) */
-                break;
+        if (PortStoryUi_Action(ev[PE_FIRST] + sWatch.act, act)) {
+            if (!PortStory_Do(act)) {
+                if (++sWatch.tries < 600) { /* (ten seconds: then it is let go, the others are not held up for ever) */
+                    break;
+                }
+                fprintf(stderr, "bt3: story: event %d, action %d (kind %d) given up\n", sWatch.cur + 1, sWatch.act + 1, act[PA_KIND]);
+            } else {
+                fprintf(stderr, "bt3: story: event %d, action %d (kind %d, value %d) done\n", sWatch.cur + 1, sWatch.act + 1,
+                        act[PA_KIND], act[PA_VALUE]);
             }
         }
         sWatch.act++;

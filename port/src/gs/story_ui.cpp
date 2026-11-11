@@ -2203,6 +2203,12 @@ bool sDirty;                  // the saga in the editor has changes not saved
 int sSeenGen, sSeenResult;
 int sResult;                  // the episode's result shown (SC_RESULT): 1 won, 2 lost, 3 left
 int sResultNext;              // what Continue does: the next episode, -1 the end of the saga, -2 again
+std::string sResultRank;      // ... the fight's rank ("" no fight won), whether it is the saga's new best,
+bool sResultBest;
+int sResultSecs = -1, sResultHealth; // ... how long the fight took (-1 none) and the health the player's side had left
+int sLivesLeft = -1;          // ... the tries left after a loss (-1: the saga does not count them)
+// a fight's rank, by the health the player's side had left at its end
+const char *rank_of(int health) { return health >= 80 ? "S" : health >= 60 ? "A" : health >= 40 ? "B" : health >= 20 ? "C" : "D"; }
 int sHomeCur = 1, sHomeTop;
 int sModel = -1, sModelCostume;
 std::string sTip;
@@ -3144,7 +3150,7 @@ float sLetter;           // the letterbox's height, 0..1
 int sLastSayGen = -1;
 double sSayStart;
 float sFlash, sFade, sFadeRate, sDark;
-bool sFlashRed;
+bool sFlashRed, sFadeOver;
 int sLastFadeGen = -1;
 void wrap_text(ImFont *f, float size, const std::string &t, int letters, float w, ImVec2 at, ImU32 c) {
     // the first `letters` letters of the text, wrapped at w (the whole text's wrapping, so no word jumps a line)
@@ -3182,12 +3188,21 @@ void overlay_draw(void) {
     if (sSh.fadeGen != sLastFadeGen) { // a fade asked for: from the black it names (or the one there is), its way
         sLastFadeGen = sSh.fadeGen;
         if (sSh.fadeSet >= 0) { sFade = sSh.fadeSet / 255.0f; }
-        sFadeRate = sSh.fadeStep * (0.8f / 3.0f); // (a step of -3 is the slow fade-in a saga has always had: 0.8 a second)
+        sFadeRate = sSh.fadeStep * (0.8f / 3.0f); // (a step of -3 is the slow fade-in a saga has always had: 0.8 a second,
+        sFadeOver = sSh.fadeStep == -3;           // over the text too; the others leave the words readable on the black)
     }
     SDL_UnlockMutex(sMx);
     frame_setup();
     float dt = ImGui::GetIO().DeltaTime;
     double now = ImGui::GetTime();
+    // the picture gone to black (it stays black once it is, until a fade the other way)
+    auto fade = [&] {
+        if (sFade <= 0.0f && sFadeRate <= 0.0f) { return; }
+        sFade = std::max(0.0f, std::min(1.0f, sFade));
+        if (sFade > 0.0f) { sDl->AddRectFilled(ImVec2(sX0, sY0), ImVec2(sX0 + sW, sY0 + sH), IM_COL32(0, 0, 0, (int)(255 * sFade))); }
+        sFade = std::max(0.0f, std::min(1.0f, sFade + sFadeRate * dt));
+    };
+    if (!sFadeOver) { fade(); }
     // the picture dimmed for a line
     sDark += ((sView.dark ? 1.0f : 0.0f) - sDark) * std::min(1.0f, dt * 5.0f);
     if (sDark > 0.01f) { sDl->AddRectFilled(ImVec2(sX0, sY0), ImVec2(sX0 + sW, sY0 + sH), IM_COL32(4, 0, 16, (int)(150 * sDark))); }
@@ -3224,6 +3239,7 @@ void overlay_draw(void) {
         }
     }
     // the fight's objective, as it starts
+    float objBottom = 0.0f; // (where its panel ends: a message shown at the same time goes under it)
     if (sView.objective >= 0 && !objective.empty() && sView.say < 0) {
         float t = (float)sView.objective;
         float k = std::min(1.0f, t / 12.0f) * (t > 180 ? std::max(0.0f, 1.0f - (t - 180) / 20.0f) : 1.0f);
@@ -3236,6 +3252,7 @@ void overlay_draw(void) {
         const char *ob = "OBJECTIVE";
         outlined(sBold, S(20), ImVec2(a.x + (bw - text_w(sBold, S(20), ob)) * 0.5f, a.y + S(10)), IM_COL32(255, 214, 70, (int)(255 * k)), IM_COL32(60, 20, 0, (int)(255 * k)), ob, S(1.5f));
         sDl->AddText(sFont, size, ImVec2(a.x + (bw - ts.x) * 0.5f, a.y + S(42)), IM_COL32(255, 255, 255, (int)(255 * k)), objective.c_str(), NULL, wrap);
+        objBottom = b.y;
     }
     // a message shown during the fight (an event's "Show a message"): a band across the picture
     if (haveCard && !card.text.empty() && sView.say < 0) {
@@ -3245,7 +3262,7 @@ void overlay_draw(void) {
         float size = big ? S(46) : S(28), wrap = sW * 0.8f;
         ImFont *f = big ? sBold : sFont;
         ImVec2 ts = f->CalcTextSizeA(size, FLT_MAX, wrap, card.text.c_str());
-        float cy = sY0 + sH * 0.36f;
+        float cy = std::max(sY0 + sH * 0.36f, objBottom + ts.y * 0.5f + S(34));
         sDl->AddRectFilled(ImVec2(sX0, cy - ts.y * 0.5f - S(18)), ImVec2(sX0 + sW, cy + ts.y * 0.5f + S(18)), IM_COL32(0, 0, 0, (int)(165 * k)));
         grad(ImVec2(sX0, cy - ts.y * 0.5f - S(20)), ImVec2(sX0 + sW, cy - ts.y * 0.5f - S(17)), IM_COL32(255, 211, 77, (int)(255 * k)), IM_COL32(243, 156, 18, (int)(255 * k)), 0);
         grad(ImVec2(sX0, cy + ts.y * 0.5f + S(17)), ImVec2(sX0 + sW, cy + ts.y * 0.5f + S(20)), IM_COL32(255, 211, 77, (int)(255 * k)), IM_COL32(243, 156, 18, (int)(255 * k)), 0);
@@ -3380,11 +3397,7 @@ void overlay_draw(void) {
         sDl->AddRectFilled(ImVec2(sX0, sY0), ImVec2(sX0 + sW, sY0 + sH), sFlashRed ? IM_COL32(255, 40, 30, (int)(200 * sFlash)) : IM_COL32(255, 255, 255, (int)(255 * sFlash)));
         sFlash -= dt * 2.5f;
     }
-    if (sFade > 0.0f || sFadeRate > 0.0f) { // (black stays once it is reached, until a fade the other way)
-        sFade = std::max(0.0f, std::min(1.0f, sFade));
-        if (sFade > 0.0f) { sDl->AddRectFilled(ImVec2(sX0, sY0), ImVec2(sX0 + sW, sY0 + sH), IM_COL32(0, 0, 0, (int)(255 * sFade))); }
-        sFade = std::max(0.0f, std::min(1.0f, sFade + sFadeRate * dt));
-    }
+    if (sFadeOver) { fade(); }
 }
 
 // =============================================================================================== a frame of the screens
@@ -3411,12 +3424,57 @@ void on_open(void) {
             const J &e = s->doc["episodes"][ep];
             bool fight = e["battle"]["fight"].truthy(true);
             bool won = result == 1 || !fight;
+            SDL_LockMutex(sMx);
+            bool picked = sSh.picked, pickLate = sSh.pickLate, fought = sSh.fought;
+            int pick = sSh.pick, secs = sSh.fightSecs, health = sSh.fightHealth;
+            SDL_UnlockMutex(sMx);
             sResultNext = next_of(e, ep, won);
+            // (an answer given to a question leads the saga: one of the opening scene only when the fight is then won,
+            // one of the scene after the fight whichever way it went)
+            if (picked && (won || pickLate) && pick != GO_NEXT) { sResultNext = pick; }
             if (sResultNext >= (int)s->doc["episodes"].size()) { sResultNext = -1; }
             J &p = progress_of(*s);
-            if (won) { p.list("cleared").push(J::num(ep)); }
+            sResultRank = "";
+            sResultBest = false;
+            sResultSecs = fight && fought ? secs : -1;
+            sResultHealth = health;
+            sLivesLeft = -1;
+            if (won) {
+                J &cl = p.list("cleared");
+                bool there = false;
+                for (size_t i = 0; i < cl.size(); i++) { there = there || (int)cl[i].number(-1) == ep; }
+                if (!there) { cl.push(J::num(ep)); }
+                if (fight && fought) { // the best fight of this episode: by the health left, then by the time
+                    sResultRank = rank_of(health);
+                    J &b = p.at("best").at(std::to_string(ep + 1).c_str());
+                    bool better = !b.has("health") || health > (int)b["health"].number(0) ||
+                                  (health == (int)b["health"].number(0) && secs < (int)b["time"].number(1 << 30));
+                    if (better) {
+                        sResultBest = b.has("health");
+                        b.set("time", J::num(secs));
+                        b.set("health", J::num(health));
+                        b.set("rank", J::str(sResultRank));
+                    }
+                }
+                p.erase("lives");
+            } else if (sResultNext == -2) {
+                // lives: a saga may allow so many tries of an episode, then the story goes back to its beginning
+                int lives = (int)s->doc["settings"]["lives"].number(0);
+                if (lives > 0) {
+                    int left = (int)p["lives"].number(lives) - 1;
+                    sLivesLeft = left;
+                    if (left <= 0) {
+                        p.erase("lives");
+                        sResultNext = s->doc["settings"]["continue"].truthy(false) ? -2 : 0;
+                        sLivesLeft = 0;
+                    } else {
+                        p.set("lives", J::num(left));
+                    }
+                }
+            }
             if (sResultNext == -1 && won) { p.set("done", J::boolean(true)); }
             else if (sResultNext >= 0) { p.set("episode", J::num(sResultNext)); }
+            else if (sResultNext == -2) { p.set("episode", J::num(ep)); } // (Continue from My Sagas: this one again)
             progress_save();
             sPages.clear();
             push_page(SC_RESULT, ep);
@@ -3444,11 +3502,31 @@ void result_frame(std::vector<Prompt> &ps, std::string &tip) {
     outlined(sBold, bs, ImVec2(c.x - bw * 0.5f, c.y - bs * 0.5f), won ? IM_COL32(255, 214, 70, 255) : IM_COL32(200, 200, 230, 255), won ? IM_COL32(110, 40, 0, 255) : IM_COL32(30, 20, 60, 255), big, S(4));
     std::string sub = "Episode " + std::to_string(ep + 1) + ": " + e["title"].text();
     outlined(sFont, S(26), ImVec2(c.x - text_w(sFont, S(26), sub.c_str()) * 0.5f, c.y + S(60)), kInk, IM_COL32(20, 8, 40, 255), sub, S(1.5f));
+    // the fight in a line: what was asked, how long it took, the health left, the rank
+    float y = c.y + S(96);
+    if (fight) {
+        std::string goal = objective_text(e["battle"]);
+        auto line = [&](const std::string &t) { // (centred; a long one made smaller to fit the width of the page)
+            float sz = S(19), w = text_w(sFont, sz, t.c_str()), room = P(1300, 0).x - P(76, 0).x;
+            if (w > room) { sz *= room / w; w = room; }
+            outlined(sFont, sz, ImVec2(c.x - w * 0.5f, y), IM_COL32(220, 214, 255, 255), IM_COL32(20, 8, 40, 255), t, S(1.2f));
+            y += S(26);
+        };
+        if (!goal.empty()) { line("Objective: " + goal); }
+        if (sResultSecs >= 0) { line("Time " + clock_text(sResultSecs) + "     Health left " + std::to_string(sResultHealth) + "%"); }
+    }
+    if (won && !sResultRank.empty()) {
+        std::string rk = "RANK " + sResultRank + (sResultBest ? "   NEW BEST!" : "");
+        outlined(sBold, S(30), ImVec2(c.x - text_w(sBold, S(30), rk.c_str()) * 0.5f, y + S(4)), IM_COL32(255, 214, 70, 255), IM_COL32(110, 40, 0, 255), rk, S(2));
+    } else if (!won && sLivesLeft >= 0) {
+        std::string lv = sLivesLeft == 0 ? "No tries left" : sLivesLeft == 1 ? "1 try left" : std::to_string(sLivesLeft) + " tries left";
+        outlined(sBold, S(24), ImVec2(c.x - text_w(sBold, S(24), lv.c_str()) * 0.5f, y + S(4)), IM_COL32(255, 150, 130, 255), IM_COL32(60, 10, 10, 255), lv, S(2));
+    }
     std::vector<Row> rows;
     if (sResultNext >= 0 || sResultNext == -2) {
         int nx = sResultNext == -2 ? ep : sResultNext;
         Row r;
-        r.label = sResultNext == -2 ? "Try again" : "Continue";
+        r.label = sResultNext == -2 ? "Try again" : !won && sLivesLeft == 0 ? "Start the saga again" : "Continue";
         r.value = "Episode " + std::to_string(nx + 1) + ": " + s->doc["episodes"][nx]["title"].text();
         r.ok = [nx] { leave_for(sSaga, nx, ""); };
         rows.push_back(r);
@@ -3457,7 +3535,7 @@ void result_frame(std::vector<Prompt> &ps, std::string &tip) {
     b.label = "Back to My Sagas";
     b.ok = [] { sPages.clear(); sSaga = -1; };
     rows.push_back(b);
-    ImVec2 a = P(388, 420), bb = P(988, 420 + 50.0f * rows.size() + 24);
+    ImVec2 a = P(388, 450), bb = P(988, 450 + 50.0f * rows.size() + 24);
     panel(a, bb);
     int clicked = draw_rows(a, bb, rows, page().cur, page().top, true);
     list_input(rows, page().cur, clicked);
