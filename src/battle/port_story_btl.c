@@ -1405,6 +1405,11 @@ static s32 PortStoryCmd_Hub(u32 phase, void *work) {
             PortStory_Camera(&sHub.eye, &at, &from, &fromAt, (f32)(HUB_LAND_SETTLE - 12) / 30.0f);
         } else if (f >= HUB_LAND_FRAMES + HUB_LAND_SETTLE) {
             BtlFacade_StopCharMotion(0); /* (out of the scripted pose: the player's again) */
+            /* The camera back to the game. The move round behind them is stopped first: it runs a few frames past
+               the landing, and if left going it sets the fixed camera again and the camera stays put. */
+            gBtlScript.cam.active = 0;
+            gBtlScript.cam.time = 0;
+            gBtlScript.cam.index = 0;
             BtlFacade_ClearFixedCamera();
             gPortHubFade = 0;
             PortHub_Phase(0);

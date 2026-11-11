@@ -4,6 +4,7 @@
 #include "sys/save.h"
 #ifdef PORT
 #include "menu/port_mods.h"
+#include "battle/btl_cam.h"
 #endif
 
 #ifdef PORT
@@ -557,8 +558,40 @@ extern void StgAmb_SetSeScale(f32 scale);
 extern void MapBgm_Stop(void);
 extern s32 MapBgm_IsStopped(void);
 
+/* The battle camera block while the viewer's scene runs. Outside a fight there is none (gBtlCam is NULL), but some
+   stages' own effects read it as they update (Kame House's water bubbles: where the camera is, under the water or
+   not; others: the selected view's index and matrices). Those got a null camera and crashed the screens standing a
+   warrior on such a stage (Corrupt Patrol's title, at the place of the save). So while the scene runs, a block of
+   the viewer's own stands in, its views copies of the viewer's camera, and is taken away again after. */
+static BtlCam sMvCam __attribute__((aligned(32)));
+static s32 sMvCamOwn;
+
+static void Mm_SceneCamOn(void) {
+    sMvCamOwn = 0;
+    if (gBtlCam != NULL) {
+        return;
+    }
+    memset(&sMvCam, 0, sizeof(sMvCam));
+    gBtlCam = &sMvCam;
+    BtlCam_InitViews();
+    sMvCam.cur = &sMvCam.views[0];
+    if (gBtlCamView != NULL) {
+        sMvCam.views[0].view = *gBtlCamView;
+        sMvCam.views[1].view = *gBtlCamView;
+    }
+    sMvCamOwn = 1;
+}
+
+static void Mm_SceneCamOff(void) {
+    if (sMvCamOwn) {
+        gBtlCam = NULL;
+        sMvCamOwn = 0;
+    }
+}
+
 static void Mm_Scene(void) {
     OrbitCam_Update(0);
+    Mm_SceneCamOn();
     gChrView->stageOn = 0;
     gBtlStage->flags |= 1;
     BtlObj_UpdateAll();
@@ -581,6 +614,7 @@ static void Mm_Scene(void) {
         Ot_Draw();
         Gfx_MarkPass(0);
     }
+    Mm_SceneCamOff();
 }
 
 /* The model on the platform: what the screen that is up wants (sMm->want*), once the cursor has rested, standing where
@@ -1418,9 +1452,8 @@ static void Mm_ViewLineUpdate(f32 dist, f32 mainH) {
 /* One frame of the 3D scene with the stage: what the viewer's own frame function draws (ChrView_Update), without
    the pad and the stage's sounds. */
 static void Mm_SceneStage(void) {
-    extern void *gBtlCamView;
-
     OrbitCam_Update(0);
+    Mm_SceneCamOn();
     gChrView->stageOn = 1;
     gBtlStage->flags &= ~1;
     BtlObj_UpdateAll();
@@ -1448,6 +1481,7 @@ static void Mm_SceneStage(void) {
         Ot_Draw();
         Gfx_MarkPass(0);
     }
+    Mm_SceneCamOff();
 }
 
 /* The model, with its feet at (cx, feet) and `height` tall (mockup pixels; the feet may be below the screen: a close
