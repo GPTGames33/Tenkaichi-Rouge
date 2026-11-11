@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """3D mesh of a fighter's model pack (a character costume file, 252 entries), for a WebGL preview. Standard library only.
 
-    python port/tools/creator/model.py <pack.bin> [-o out_prefix] [--pose rest|relaxed] [--hide-optional]
+    python port/tools/creator/model.py <pack.bin> [-o out_prefix] [--pose rest|relaxed|action] [--hide-optional]
                                        [--render front.png] [--size 512] [--json mesh.json]
 
 writes <out_prefix>.obj / .mtl and one PNG per texture used (<out_prefix>_tex<N>.png); --render draws an orthographic,
@@ -339,6 +339,18 @@ def rot_z(deg):
     return ((c, -s, 0.0), (s, c, 0.0), (0.0, 0.0, 1.0))
 
 
+def rot_x(deg):
+    """Rotation about X by `deg` degrees (from +Y towards +Z)."""
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    return ((1.0, 0.0, 0.0), (0.0, c, -s), (0.0, s, c))
+
+
+def rot_y(deg):
+    """Rotation about Y by `deg` degrees (from +Z towards +X)."""
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    return ((c, 0.0, s), (0.0, 1.0, 0.0), (-s, 0.0, c))
+
+
 def mat_mul(a, b):
     return tuple(tuple(sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)) for i in range(3))
 
@@ -397,6 +409,32 @@ def relaxed_pose(bones, down=20.0):
     return rot
 
 
+def action_pose(bones, elbow=70.0, knee=60.0, head=35.0, down=35.0):
+    """A pose that bends every joint a fight bends, to look at the seams between body parts the way the game shows
+    them: arms lowered and bent forward at the elbows, wrists turned, thighs lifted and knees bent back, the waist
+    and the head turned. Game axes (Y down, the face towards -Z); nodes a model lacks are left out."""
+    rot = dict(relaxed_pose(bones, down))
+    for side, (upper, fore, hand) in ((-1.0, (0x13, 0x14, 0x15)), (1.0, (0x21, 0x22, 0x23))):
+        if fore in bones:
+            rot[fore] = rot_y(side * elbow)            # the forearm swings forward (towards -Z)
+        if hand in bones:
+            rot[hand] = rot_z(side * 25.0)
+    for side, (thigh, shin, foot) in ((-1.0, (0x09, 0x0A, 0x0B)), (1.0, (0x0D, 0x0E, 0x0F))):
+        if thigh in bones:
+            rot[thigh] = mat_mul(rot_x(0.5 * knee), rot_z(side * -8.0))    # knee forward, a little apart
+        if shin in bones:
+            rot[shin] = rot_x(-knee)
+        if foot in bones:
+            rot[foot] = rot_x(15.0)
+    if 0x10 in bones:
+        rot[0x10] = rot_y(12.0)
+    if 0x2E in bones:
+        rot[0x2E] = rot_x(-10.0)
+    if 0x2F in bones:
+        rot[0x2F] = rot_y(head)
+    return rot
+
+
 # ----------------------------------------------------------------------------------------------- extract
 def extract(pack_bytes, pose="rest", hide_optional=False, textures=True):
     """Mesh of a model pack. Returns a dict:
@@ -406,7 +444,8 @@ def extract(pack_bytes, pose="rest", hide_optional=False, textures=True):
     most), parts [{node, texture, start, count, optional}], bones [{node, parent, head, parentHead}] (joint positions
     in the output axes and pose), joints (per vertex: the node of matrix A and its parent, matrix B), weights (per
     vertex: weight of A; p = mix(B (pos - jointB), A (pos - jointA), w)), bbox {min, max}, header, stats.
-    pose: "rest" (the bind T-pose, as stored) or "relaxed" (arms lowered, skinned as VU1 program 0 does).
+    pose: "rest" (the bind T-pose, as stored), "relaxed" (arms lowered, skinned as VU1 program 0 does), "action"
+    (action_pose: every joint bent) or a dict {node: 3x3 rotation about that node's joint} of your own.
     hide_optional: leave out the parts of OPTIONAL_NODES (halo, small extras)."""
     parts = split_pack(pack_bytes)
     model = None
@@ -435,12 +474,16 @@ def extract(pack_bytes, pose="rest", hide_optional=False, textures=True):
                 return t["index"]
         return -1
 
-    if pose == "relaxed":
+    if isinstance(pose, dict):
+        mats, pose = world_matrices(bones, pose), "custom"
+    elif pose == "relaxed":
         mats = world_matrices(bones, relaxed_pose(bones))
+    elif pose == "action":
+        mats = world_matrices(bones, action_pose(bones))
     elif pose == "rest":
         mats = None
     else:
-        raise ModelError("pose must be rest or relaxed")
+        raise ModelError("pose must be rest, relaxed, action or a dict of rotations")
 
     def skin(pos, w, nrm, node):
         if mats is None:
@@ -593,14 +636,37 @@ def write_obj(m, prefix):
     return prefix.with_suffix(".obj")
 
 
-def render(m, size=512, view="front", textured=True):
+def render(m, size=512, view="front", textured=True, focus=None, yaw=None, pitch=0.0):
     """Orthographic view (front: looking along -Z, back: along +Z, side: along -X) with a z-buffer, texture and a
-    little shading. Returns PNG bytes."""
+    little shading. Returns PNG bytes. focus / yaw / pitch: see render_rgba."""
+    w, h, img = render_rgba(m, size, view, textured, focus, yaw, pitch)
+    return png(w, h, img)
+
+
+def render_rgba(m, size=512, view="front", textured=True, focus=None, yaw=None, pitch=0.0):
+    """The picture of render() as (width, height, RGBA bytearray).
+    focus: ((x, y, z), span) frames a cube of that edge around that point of the model (extract()'s axes) in place
+    of the whole figure: a close-up of a joint. yaw (degrees; replaces `view`): the camera walks around the figure,
+    0 = front, 90 = seen from the figure's left (+X), 180 = back; pitch: degrees the camera is raised."""
     p, uv, idx, nr = m["positions"], m["uvs"], m["indices"], m["normals"]
     lo, hi = m["bbox"]["min"], m["bbox"]["max"]
-    ax = 2 if view == "side" else 0
-    span = max(hi[ax] - lo[ax], hi[1] - lo[1]) * 1.05
-    cx, cy = (hi[ax] + lo[ax]) / 2, (hi[1] + lo[1]) / 2
+    if yaw is None:
+        yaw = {"front": 0.0, "back": 180.0, "side": 90.0}[view]
+    cyw, syw = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+    cp, sp = math.cos(math.radians(pitch)), math.sin(math.radians(pitch))
+
+    def cam(x, y, z):
+        """Model point -> (right, up, towards the camera)."""
+        x1, z1 = x * cyw - z * syw, x * syw + z * cyw
+        return x1, y * cp - z1 * sp, y * sp + z1 * cp
+
+    if focus is not None:
+        (cx, cy, _), span = cam(*focus[0]), focus[1]
+    else:
+        cs = [cam(x, y, z) for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])]
+        xs, ys = [c[0] for c in cs], [c[1] for c in cs]
+        span = max(max(xs) - min(xs), max(ys) - min(ys)) * 1.05
+        cx, cy = (max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2
     sc = size / span
     texs = {}
     if textured:
@@ -614,26 +680,28 @@ def render(m, size=512, view="front", textured=True):
     zb = [-1e30] * (W * H)
     img = bytearray(b"\x30\x30\x38\xff" * (W * H))
 
-    def proj(i):
-        if view == "side":
-            x, depth = -p[i * 3 + 2], p[i * 3]
-        elif view == "back":
-            x, depth = -p[i * 3], -p[i * 3 + 2]
-        else:
-            x, depth = p[i * 3], p[i * 3 + 2]
-        return ((x - (cx if view != "back" else -cx)) * sc + W / 2, (cy - p[i * 3 + 1]) * sc + H / 2, depth)
+    pts = {}
 
-    L = (0.3, 0.5, 0.8)
+    def proj(i):
+        v = pts.get(i)
+        if v is None:
+            x, y, depth = cam(p[i * 3], p[i * 3 + 1], p[i * 3 + 2])
+            v = pts[i] = ((x - cx) * sc + W / 2, (cy - y) * sc + H / 2, depth)
+        return v
+
+    L = (0.3, 0.5, 0.8)      # the light, in the camera's frame: it walks around with the camera
     ln = math.sqrt(sum(c * c for c in L))
     L = tuple(c / ln for c in L)
     for t in range(len(idx) // 3):
         a, b, c = idx[t * 3:t * 3 + 3]
         (x0, y0, z0), (x1, y1, z1), (x2, y2, z2) = proj(a), proj(b), proj(c)
+        if (max(x0, x1, x2) < 0 or min(x0, x1, x2) > W or max(y0, y1, y2) < 0 or min(y0, y1, y2) > H):
+            continue
         den = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)
         if abs(den) < 1e-9:
             continue
         tex = texs.get(tri_tex[t])
-        nsum = [nr[a * 3 + k] + nr[b * 3 + k] + nr[c * 3 + k] for k in range(3)]
+        nsum = cam(*[nr[a * 3 + k] + nr[b * 3 + k] + nr[c * 3 + k] for k in range(3)])
         nl = math.sqrt(sum(v * v for v in nsum)) or 1
         shade = 0.55 + 0.45 * max(0.0, sum(nsum[k] / nl * L[k] for k in range(3)))
         minx, maxx = max(0, int(min(x0, x1, x2))), min(W - 1, int(max(x0, x1, x2)) + 1)
@@ -664,7 +732,7 @@ def render(m, size=512, view="front", textured=True):
                 zb[k] = z
                 img[k * 4:k * 4 + 4] = bytes((min(255, int(col[0] * shade)), min(255, int(col[1] * shade)),
                                               min(255, int(col[2] * shade)), 255))
-    return png(W, H, img)
+    return W, H, img
 
 
 def decode_png_rgba(d):
@@ -684,7 +752,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("pack", help="a character model pack (gamedata/pzs3us1/NNNNN.bin, e.g. 01453.bin = Goku (End))")
     ap.add_argument("-o", "--out", help="output prefix (default: the pack's name, next to it)")
-    ap.add_argument("--pose", default="rest", choices=("rest", "relaxed"))
+    ap.add_argument("--pose", default="rest", choices=("rest", "relaxed", "action"))
     ap.add_argument("--hide-optional", action="store_true", help="leave out costume extras (halo and the like)")
     ap.add_argument("--render", help="write an orthographic front view PNG here")
     ap.add_argument("--side", help="write an orthographic side view PNG here")
