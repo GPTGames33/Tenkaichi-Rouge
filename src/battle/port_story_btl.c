@@ -9,6 +9,8 @@
 #include "port_story.h" /* what the editor's half tells this one: a line, the rules, an event, an action */
 #include <stdio.h>
 #include <stdlib.h>
+/* the referee's lines in the log, written at once (a test that ends by a timeout keeps them) */
+#define PS_LOG(...) do { fprintf(stderr, __VA_ARGS__); fflush(stderr); } while (0)
 
 /*
  * PC only: the battle half of the Story Creator (main menu item 14; menu/port_story.c is its menu half, and
@@ -975,6 +977,7 @@ typedef struct PsWatch {
     s32 forms[2];   /* transformations still to do at the start */
     s32 formWait;
     s32 ticks;      /* frames of the battle, its cinematics too */
+    s32 down[2];    /* frames the side's fighter has been knocked out with team mates still standing */
     s32 blastTick;  /* the tick the player was last seen doing a blast (a technique: the ultimates' cinematics too) */
 } PsWatch;
 static PsWatch sWatch;
@@ -1027,7 +1030,7 @@ static void PortStory_Decide(s32 won, s32 byTime) {
     }
     sWatch.decided = won ? 1 : 2;
     sWatch.scene = 0;
-    fprintf(stderr, "bt3: story: the fight is decided: %s%s (second %d, health %d%% / %d%%)\n", won ? "won" : "lost",
+    PS_LOG("bt3: story: the fight is decided: %s%s (second %d, health %d%% / %d%%)\n", won ? "won" : "lost",
             byTime ? " on time" : "", PortStory_Seconds(), PortStory_HealthPct(0), PortStory_HealthPct(1));
     PortStoryUi_Show(PS_SHOW_FOUGHT, PortStory_Seconds(), PortStory_HealthPct(0));
 }
@@ -1365,7 +1368,7 @@ static s32 PortStoryCmd_Watch(u32 phase, void *work) {
         }
         sWatch.off += BtlClock_ToSeconds(BtlSeq_GetClock()) - sWatch.sceneFrom;
         sWatch.scene = 0;
-        fprintf(stderr, "bt3: story: the fight goes on (second %d)\n", PortStory_Seconds());
+        PS_LOG("bt3: story: the fight goes on (second %d)\n", PortStory_Seconds());
         sWatch.wait = 30; /* (the fighters get their feet back before the next thing) */
     }
     sec = PortStory_Seconds();
@@ -1426,7 +1429,7 @@ static s32 PortStoryCmd_Watch(u32 phase, void *work) {
         if (sWatch.queued < PS_QUEUE && PortStory_Happens(ev, i, sec, left)) {
             sWatch.fired[i] = 1;
             sWatch.queue[sWatch.queued++] = i;
-            fprintf(stderr, "bt3: story: event %d happens (second %d, health %d%% / %d%%)\n", i + 1, sec,
+            PS_LOG("bt3: story: event %d happens (second %d, health %d%% / %d%%)\n", i + 1, sec,
                     PortStory_HealthPct(0), PortStory_HealthPct(1));
         }
     }
@@ -1459,13 +1462,29 @@ static s32 PortStoryCmd_Watch(u32 phase, void *work) {
     if (sWatch.decided) {
         return 0;
     }
+    /* a fighter knocked out with team mates still standing: the next one comes in once the fall is over. (In a story
+       battle the game leaves that to the script: Dragon History's bring the next member in with a command. Without
+       this a team's fight stood still at its first knock-out.) */
+    for (i = 0; i < 2; i++) {
+        if (!BtlCtrl_IsActiveDead(i) || BtlCtrl_IsTeamDead(i)) {
+            sWatch.down[i] = 0;
+            continue;
+        }
+        if (++sWatch.down[i] % 120 == 90) { /* (and again every two seconds, should the first not take) */
+            s32 to = PortStory_NextMember(i);
+
+            if (to >= 0 && BtlCtrl_ChangeMember(i, to)) {
+                PS_LOG("bt3: story: side %d's member %d comes in\n", i, to + 1);
+            }
+        }
+    }
     /* a scene asked for: started by the game's trigger list once both fighters can be interrupted; not over a
        fighter that is down (the team's next comes in first) */
     if (sWatch.scene == 1) {
         if (BtlScript_IsEventRunning()) {
             sWatch.scene = 2;
             sWatch.sceneFrom = BtlClock_ToSeconds(BtlSeq_GetClock());
-            fprintf(stderr, "bt3: story: a scene stops the fight (second %d)\n", PortStory_Seconds());
+            PS_LOG("bt3: story: a scene stops the fight (second %d)\n", PortStory_Seconds());
             sWatch.hud = -1;
             PortStoryUi_Show(PS_SHOW_HUD, -1, 0);
             PortStoryUi_Show(PS_SHOW_TIMER, -1, 0);
@@ -1508,9 +1527,9 @@ static s32 PortStoryCmd_Watch(u32 phase, void *work) {
                 if (++sWatch.tries < 600) { /* (ten seconds: then it is let go, the others are not held up for ever) */
                     break;
                 }
-                fprintf(stderr, "bt3: story: event %d, action %d (kind %d) given up\n", sWatch.cur + 1, sWatch.act + 1, act[PA_KIND]);
+                PS_LOG("bt3: story: event %d, action %d (kind %d) given up\n", sWatch.cur + 1, sWatch.act + 1, act[PA_KIND]);
             } else {
-                fprintf(stderr, "bt3: story: event %d, action %d (kind %d, value %d) done\n", sWatch.cur + 1, sWatch.act + 1,
+                PS_LOG("bt3: story: event %d, action %d (kind %d, value %d) done\n", sWatch.cur + 1, sWatch.act + 1,
                         act[PA_KIND], act[PA_VALUE]);
             }
         }

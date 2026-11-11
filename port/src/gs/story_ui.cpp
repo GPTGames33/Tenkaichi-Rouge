@@ -3023,6 +3023,7 @@ void rows_line(std::vector<Row> &rows, int ep, const std::string &key, int idx) 
         Row nm;
         nm.label = "Name in the box";
         nm.value = l.has("name") ? l["name"].text() : "(" + speaker_label(l, ep) + ")";
+        nm.tip = "Another name over the box (\"???\" for a mystery voice); empty: the character's own.";
         nm.ok = [ep, key, idx] {
             open_keys("THE NAME SHOWN (EMPTY: THE CHARACTER'S)", line_ref(ep, key, idx)["name"].text(), 30, [ep, key, idx](const std::string &t) {
                 J &x = line_ref(ep, key, idx);
@@ -3209,29 +3210,6 @@ void rows_line(std::vector<Row> &rows, int ep, const std::string &key, int idx) 
         mu.tip = "Another song from this line on, or silence.";
         rows.push_back(mu);
     }
-    rows.push_back(sec("EFFECTS"));
-    for (int k = 0; k < kFxCount; k++) {
-        if (fightLine && !(kFx[k].bit & (PS_FX_SHAKE | PS_FX_BIG_SHAKE | PS_FX_FLASH | PS_FX_RED_FLASH))) { continue; }
-        Row f;
-        bool on = false;
-        const J &e = l["effects"];
-        for (size_t i = 0; i < e.size(); i++) { on |= e[i].text() == kFx[k].key; }
-        f.label = kFx[k].name;
-        f.value = on ? "On" : "Off";
-        std::string fk = kFx[k].key;
-        auto toggle = [ep, key, idx, fk](int) {
-            J &x = line_ref(ep, key, idx);
-            J &e2 = x.list("effects");
-            bool was = false;
-            for (size_t i = 0; i < e2.a.size(); i++) { if (e2.a[i].text() == fk) { e2.a.erase(e2.a.begin() + (long)i); was = true; break; } }
-            if (!was) { e2.push(J::str(fk)); }
-            if (e2.a.empty()) { x.erase("effects"); }
-            touch();
-        };
-        f.lr = toggle;
-        f.ok = [toggle] { toggle(1); };
-        rows.push_back(f);
-    }
     if (!fightLine) {
         rows.push_back(sec("TIMING"));
         Row dl;
@@ -3307,6 +3285,30 @@ void rows_line(std::vector<Row> &rows, int ep, const std::string &key, int idx) 
             };
             rows.push_back(add);
         }
+    }
+    rows.push_back(sec("EFFECTS"));
+    for (int k = 0; k < kFxCount; k++) {
+        if (fightLine && !(kFx[k].bit & (PS_FX_SHAKE | PS_FX_BIG_SHAKE | PS_FX_FLASH | PS_FX_RED_FLASH))) { continue; }
+        Row f;
+        bool on = false;
+        const J &e = l["effects"];
+        for (size_t i = 0; i < e.size(); i++) { on |= e[i].text() == kFx[k].key; }
+        f.label = kFx[k].name;
+        f.value = on ? "On" : "Off";
+        std::string fk = kFx[k].key;
+        auto toggle = [ep, key, idx, fk](int) {
+            J &x = line_ref(ep, key, idx);
+            J &e2 = x.list("effects");
+            bool was = false;
+            for (size_t i = 0; i < e2.a.size(); i++) { if (e2.a[i].text() == fk) { e2.a.erase(e2.a.begin() + (long)i); was = true; break; } }
+            if (!was) { e2.push(J::str(fk)); }
+            if (e2.a.empty()) { x.erase("effects"); }
+            touch();
+        };
+        f.tip = "An effect as the line starts (left / right or Cross: on or off).";
+        f.lr = toggle;
+        f.ok = [toggle] { toggle(1); };
+        rows.push_back(f);
     }
 }
 
