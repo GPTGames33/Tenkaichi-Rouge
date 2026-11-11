@@ -2,8 +2,17 @@
 #include "menu/menu_a.h"
 #include "sys/pad.h"
 #ifdef PORT
+#include "menu/port_boot.h"
+#include "sys/color_fade.h"
 extern void Port_MenuPage(int screen); /* port/src/gs_marker.c: widescreen menus */
 extern void Port_MenuFill(int on);
+
+/* The PC version's touches to this screen are on (not in an online session's fixed start, and not when the
+   original timings are asked for): set by Title_Run. */
+static s32 sTitlePolish;
+static s32 sTitleBreath; /* frames the "press start" plate has been up, for its breathing */
+#define TITLE_ANY_BUTTON \
+    (PADG_START | PADG_SELECT | PADG_CROSS | PADG_CIRCLE | PADG_TRIANGLE | PADG_SQUARE | PADG_L1 | PADG_L2 | PADG_R1 | PADG_R2)
 #endif
 
 /* The screen's work (overlay .data, 0x3B0EB8). */
@@ -171,6 +180,32 @@ void Title_Draw(void) {
         Flash_FindLabel(flash, name, "mc_menu_text_on", &ref);
         Flash_ClipSetUv(flash, &ref, &uv);
     }
+#ifdef PORT
+    /* The "Press START button" plate breathes while it waits: its alpha goes down to a little over half and back
+       every second and a half (a smooth step both ways), and is whole again once the menu is open. */
+    if (sTitlePolish) {
+        f32 k = 1.0f;
+
+        if (gTitle->state == 1 && (gTitle->flags & TITLE_STARTED) && !(gTitle->flags & TITLE_LEAVING)) {
+            s32 ph = sTitleBreath++ % 90;
+
+            k = (f32)(ph < 45 ? ph : 90 - ph) / 45.0f;
+            k = 1.0f - 0.45f * (k * k * (3.0f - 2.0f * k));
+        } else {
+            sTitleBreath = 0;
+        }
+        Flash_FindLabel(flash, NULL, "mc_press_start_plate", &ref);
+        Flash_ClipSetAlpha(flash, &ref, k);
+        /* (the plate's alpha is its band's own: the words are a clip inside it, which takes its own. The movie's
+           list has no name of its own for them; looked up under the plate by the names the menu plates' words
+           have, and checked on screenshots: the words breathe with the band. A name not found does nothing.
+           Outside the "press start" state k is 1, which leaves every clip as the movie draws it.) */
+        for (i = 0; i < 2; i++) {
+            Flash_FindLabel(flash, "mc_press_start_plate", i == 0 ? "mc_menu_text_on" : "mc_menu_text_off", &ref);
+            Flash_ClipSetAlpha(flash, &ref, k);
+        }
+    }
+#endif
     for (i = 0; i < TITLE_FLASH_NUM; i++) {
         Flash_Draw(&gTitle->flash[i]);
     }
@@ -327,7 +362,16 @@ s32 Title_Run(s32 section) {
     s32 result = 1;
     s32 wait = 0;
 
+#ifdef PORT
+    sTitlePolish = !Port_NetFixedStart() && !Port_BootOpt(PORT_BOOT_CLASSIC);
+    sTitleBreath = 0;
+    Port_BootMark(10);
+#endif
     Title_Init(section);
+#ifdef PORT
+    Port_BootMark(11);
+    Port_BootPreload(); /* (again here for a start with "Skip logos": it only ever starts once) */
+#endif
     ColorFade_StartIn(0, 0, 0, 0x14);
 #ifdef PORT
     /* A setting of the PC version (F1, UI): the copyright page, a still held for 300 frames that no button
@@ -366,11 +410,21 @@ s32 Title_Run(s32 section) {
         }
         if (gTitle->flags & TITLE_FADED_IN) {
             wait++;
+#ifdef PORT
+            /* PC: the page is up for half as long (two and a half seconds), and once it has been readable for
+               three quarters of a second any button ends it. */
+            if (sTitlePolish && (wait > 150 || (wait > 45 && (gPad[0].gamePressed & TITLE_ANY_BUTTON)))) {
+                wait = 301;
+            }
+#endif
             if (wait > 300) {
                 ColorFade_StartOut(0, 0, 0, 0x14);
             }
         }
     }
+#ifdef PORT
+    Port_BootMark(12);
+#endif
     ColorFade_StartIn(0, 0, 0, 0x14);
     for (;;) {
         Gfx_BeginFrame();
@@ -383,6 +437,18 @@ s32 Title_Run(s32 section) {
         Title_Draw();
         gTitle->mcState = McFlow_Update();
         ColorFade_Draw();
+#ifdef PORT
+        /* The overlay's part of this screen (boot_ui.cpp): the drifting lights and the version line, fading with
+           the screen. On the way out to the main menu the loading picture comes up as the screen goes dark
+           instead of plain black, and stays through the menu's loading (MainMenu_Run takes it away). */
+        if (sTitlePolish) {
+            if (result == 0 && (ColorFade_IsFadingOut() || ColorFade_IsOutDone())) {
+                Port_BootScene(PORT_SCENE_MENULOAD, gColorFade.a, 0);
+            } else {
+                Port_BootScene(PORT_SCENE_TITLE, gColorFade.a, gTitle->state);
+            }
+        }
+#endif
         Gfx_EndFrame(1);
         Dma_Flush();
         File_Stub264D90();
@@ -399,6 +465,9 @@ s32 Title_Run(s32 section) {
         }
         if (gTitle->flags & TITLE_LEAVING) {
             if (--gTitle->timer == -1) {
+#ifdef PORT
+                Port_BootMark(14);
+#endif
                 ColorFade_StartOut(0, 0, 0, 0x14);
             }
         } else if (gTitle->mcState == 0) {
@@ -408,8 +477,17 @@ s32 Title_Run(s32 section) {
     if (result == 0) {
         gProgress->flags |= MPROG_SAVE_LOADED;
     }
+#ifdef PORT
+    Port_BootMark(15);
+    if (sTitlePolish && result != 0) {
+        Port_BootScene(PORT_SCENE_NONE, 0, 0); /* (to the demo or the movie: nothing of the overlay's goes along) */
+    }
+#endif
     sceGsSyncPath(0, 0);
     Title_Term();
     Dma_ResetBuffers();
+#ifdef PORT
+    Port_BootMark(16);
+#endif
     return result;
 }
