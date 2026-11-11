@@ -79,6 +79,33 @@ import sys
 import zlib
 
 
+def _bpe_expand(left, right):
+    """What each of the 256 codes of a block's pair table stands for (None: the table loops, which no real file
+    does)."""
+    exp = [None] * 256
+    for c in range(256):
+        if left[c] == c:
+            exp[c] = bytes((c,))
+    for c in range(256):
+        if exp[c] is not None:
+            continue
+        todo = [c]
+        while todo:
+            if len(todo) > 300:
+                return None
+            x = todo[-1]
+            a, b = exp[left[x]], exp[right[x]]
+            if a is not None and b is not None:
+                exp[x] = a + b
+                todo.pop()
+            else:
+                if a is None:
+                    todo.append(left[x])
+                if b is None:
+                    todo.append(right[x])
+    return exp
+
+
 def bpe(src):
     """Bpe_Decode (src/sys/bpe.c): size, packed size, blocks of a pair table and literal bytes."""
     size, packed = struct.unpack_from("<ii", src, 0)
@@ -106,6 +133,11 @@ def bpe(src):
             p += 1
         n = (src[p] << 8) + src[p + 1]
         p += 2
+        exp = _bpe_expand(left, right)
+        if exp is not None:  # (a block at once: each code's bytes are worked out one time, not per use)
+            out += b"".join(map(exp.__getitem__, src[p:p + n]))
+            p += n
+            continue
         stack = []
         while True:
             if stack:

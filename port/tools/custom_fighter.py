@@ -132,7 +132,7 @@ Mixed moves (decompilation: src/battle/btl_act_f.c, btl_tech_b.c, eft_h.c .. eft
   EftShotTech / EftRushShot), so a beam keeps the battle's camera whatever is chosen.
 Standard library only.
 """
-import argparse, json, pathlib, re, struct, sys
+import argparse, json, os, pathlib, re, struct, sys
 
 ALIGN = 64
 COSTUME_MAX = 16  # the costumes a package may have (the game: PORT_COSTUME_MAX, include/port_chara.h); the disc has 4
@@ -1005,6 +1005,7 @@ class IsoDisc:
     """The two archives of the disc image (ISO 9660), by file id."""
 
     def __init__(self, iso):
+        self.iso = str(iso)
         self.f = open(iso, "rb")
         root = self._rd(16 * 2048, 2048)[156:190]
         lba, size = struct.unpack("<II", root[2:6] + root[10:14])
@@ -1274,15 +1275,15 @@ class Disc:
             if str(here) not in sys.path:
                 sys.path.insert(0, str(here))
             import import_chara as ic
-            if is_bt4(c):
-                arc = bt4().raw(0x1C1)
+            key = ("chips", is_bt4(c))  # (the archive is unpacked once, not for every chip asked for)
+            if key not in self.cache:
+                arc = bt4().raw(0x1C1) if is_bt4(c) else self.raw(0x1C1)
                 res = ic.bpe(ic.section(arc, ic.table(arc), 2))
-                chips = ic.section(res, ic.table(res), 45)
+                self.cache[key] = ic.section(res, ic.table(res), 45)
+            chips = self.cache[key]
+            if is_bt4(c):
                 e = ic.section(chips, ic.table(chips), c - BT4_BASE + 1)
                 return e if len(e) == 5504 else None
-            arc = self.raw(0x1C1)
-            res = ic.bpe(ic.section(arc, ic.table(arc), 2))
-            chips = ic.section(res, ic.table(res), 45)
             return ic.section(chips, ic.table(chips), c + 1)
         except Exception:
             return None
@@ -2034,6 +2035,73 @@ def form_lines(spec):
     return out
 
 
+_TOOLS_HASH = []
+
+
+def tools_hash():
+    """A hash of this tool's own code (a package made by other code is made again)."""
+    if not _TOOLS_HASH:
+        import hashlib
+        h = hashlib.sha1()
+        here = pathlib.Path(__file__).resolve().parent
+        for d in (here, here / "creator", here / "bt4"):
+            for q in sorted(d.glob("*.py")) + sorted(d.glob("*.json")):
+                try:
+                    h.update(q.name.encode() + b"\0" + q.read_bytes())
+                except OSError:
+                    pass
+        _TOOLS_HASH.append(h.hexdigest())
+    return _TOOLS_HASH[0]
+
+
+def _disc_mark(path):
+    try:
+        st = pathlib.Path(path).stat()
+        return f"{path}|{st.st_size}|{int(st.st_mtime)}"
+    except OSError:
+        return f"{path}|none"
+
+
+def package_stamp(disc, spec, spec_path):
+    """What a package is made from, as one hash: the fighter file (with what a form inherits), its portrait picture,
+    this tool's code and the discs. A package whose stamp is the same is not made again (write_package)."""
+    import hashlib
+    h = hashlib.sha1()
+    h.update(json.dumps(spec, sort_keys=True, default=str).encode("utf-8"))
+    shot = spec.get("portrait_image")
+    if shot:
+        try:
+            h.update(hashlib.sha1((pathlib.Path(spec_path).parent / shot).read_bytes()).digest())
+        except OSError:
+            h.update(b"no picture")
+    h.update(tools_hash().encode())
+    src = disc.src
+    for attr in ("iso", "path", "dir", "game"):
+        if isinstance(getattr(src, attr, None), (str, pathlib.Path)):
+            h.update(_disc_mark(getattr(src, attr)).encode())
+    h.update(_disc_mark(bt4_iso()).encode())
+    return h.hexdigest()
+
+
+STAMP_FILE = ".build.json"
+
+
+def _stamp_fresh(out, stamp):
+    """The notes of the package in `out` if it was made from exactly `stamp` and all its files are there, else None."""
+    if os.environ.get("BT3_BUILD_ALL"):
+        return None
+    try:
+        old = json.loads((out / STAMP_FILE).read_text(encoding="utf-8"))
+        if old.get("stamp") != stamp or not old.get("files"):
+            return None
+        for rel, size in old["files"].items():
+            if (out / rel).stat().st_size != size:
+                return None
+        return list(old.get("notes", []))
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None
+
+
 _PUT_WRITTEN = {}  # folder -> the files _put has written to it (write_package: which old .pak files are stale)
 
 
@@ -2076,6 +2144,57 @@ def write_package(disc, spec_path, chars_dir, done, inherit=None):
     done[spec_path] = folder
     out = chars_dir / folder
     out.mkdir(parents=True, exist_ok=True)
+    stamp = package_stamp(disc, spec, spec_path)
+    kept = _stamp_fresh(out, stamp)  # (not None: nothing it is made from has changed, so its files stay)
+    if kept is None:
+        try:
+            (out / STAMP_FILE).unlink()
+        except OSError:
+            pass
+        _write_package_files(disc, spec, spec_path, f, out)
+    return _write_package_end(disc, spec, spec_path, chars_dir, done, f, folder, out, stamp, kept)
+
+
+def _portrait_files(disc, png, b, cache_dir):
+    """[(file name, bytes)]: the portrait, roster chip and team pictures made from picture `png` over character b's
+    own. Making them takes seconds (the picture is cut down to the game's palettes and packed), so what was made
+    from the same picture by the same code is kept in cache_dir and used again."""
+    import hashlib
+    names = ("portrait.bin", "chip.bin", "member_1p.bin", "member_2p.bin")
+    key = hashlib.sha1(png + b"|%d|" % b + tools_hash().encode()).hexdigest()[:24]
+    slot = pathlib.Path(cache_dir) / "portraits" / key
+    try:
+        have = json.loads((slot / "done.json").read_text(encoding="utf-8"))
+        got = [(n, (slot / n).read_bytes()) for n in have["files"]]
+        if all(len(d) == have["files"][n] for n, d in got):
+            return got
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    P = portrait_module()
+    stored = P.portrait_rgba(png)
+    got = [("portrait.bin", P.portrait_bin(None, disc.portrait(b), stored=stored))]
+    chip = disc.chip(b)
+    if chip:
+        got.append(("chip.bin", P.chip_bin(None, chip, stored=stored)))
+    m1, m2 = P.member_bins(None, disc.member(b, 0), disc.member(b, 1), stored=stored)
+    got += [("member_1p.bin", m1), ("member_2p.bin", m2)]
+    try:  # (a cache that cannot be written is only a slower build next time)
+        slot.mkdir(parents=True, exist_ok=True)
+        for n, d in got:
+            (slot / n).write_bytes(d)
+        (slot / "done.json").write_text(json.dumps({"files": {n: len(d) for n, d in got}}), encoding="utf-8")
+        olds = sorted((q for q in slot.parent.iterdir() if q.is_dir()), key=lambda q: q.stat().st_mtime)
+        for q in olds[:-64]:  # (the last 64 pictures' are kept)
+            for r in q.iterdir():
+                r.unlink()
+            q.rmdir()
+    except OSError:
+        pass
+    return got
+
+
+def _write_package_files(disc, spec, spec_path, f, out):
+    """The package's models, animations, effects, voice and pictures (the slow part of write_package)."""
     stale = set(out.glob("*.pak"))  # (taken away once the new ones are written: _put)
     stem = re.sub(r"[^A-Za-z0-9]+", "_", spec["name"]).strip("_")[:24] or "fighter"
     for i, costume in enumerate(f.costumes):
@@ -2092,6 +2211,7 @@ def write_package(disc, spec_path, chars_dir, done, inherit=None):
         for line, data in enumerate(lines):
             if len(data) >= 16:
                 _put(out / lang / f"{line:03d}.adx", data)
+        _PUT_WRITTEN.pop(out / lang, None)
     p = f.portrait[0]
     shot = spec.get("portrait_image")
     for old in ("chip.bin",):
@@ -2099,17 +2219,10 @@ def write_package(disc, spec_path, chars_dir, done, inherit=None):
             (out / old).unlink()
     if shot and (spec_path.parent / shot).is_file():
         # a picture of the creator's 3D view: the portrait, the roster chip and the team pictures made from it
-        P = portrait_module()
         png = (spec_path.parent / shot).read_bytes()
-        stored = P.portrait_rgba(png)
         b = f.base[0]
-        _put(out / "portrait.bin", P.portrait_bin(None, disc.portrait(b), stored=stored))
-        chip = disc.chip(b)
-        if chip:
-            _put(out / "chip.bin", P.chip_bin(None, chip, stored=stored))
-        m1, m2 = P.member_bins(None, disc.member(b, 0), disc.member(b, 1), stored=stored)
-        _put(out / "member_1p.bin", m1)
-        _put(out / "member_2p.bin", m2)
+        for name, data in _portrait_files(disc, png, b, spec_path.parent / ".cache"):
+            _put(out / name, data)
     else:
         _put(out / "portrait.bin", disc.portrait(p))
         for side in (0, 1):
@@ -2123,6 +2236,13 @@ def write_package(disc, spec_path, chars_dir, done, inherit=None):
         chip = disc.chip(f.chip[0])
         if chip:
             _put(out / "chip.bin", chip)
+    for old in stale - _PUT_WRITTEN.get(out, set()):
+        _retry(old.unlink)
+    _PUT_WRITTEN.pop(out, None)
+
+
+def _write_package_end(disc, spec, spec_path, chars_dir, done, f, folder, out, stamp, kept):
+    """character.txt and the forms the warrior leads to (always done: quick, and a form may have changed)."""
     manifest = ["# made by port/tools/custom_fighter.py from " + spec_path.name, "format=1",
                 f"name={spec['name'][:63]}", f"form={spec.get('title', '')[:95]}", f"base={f.base[0]}",
                 "author=Custom Character", "about=" + " / ".join(
@@ -2167,13 +2287,19 @@ def write_package(disc, spec_path, chars_dir, done, inherit=None):
             t = txt.read_bytes().decode("utf-8")
             if re.search(r"^down=none$", t, re.M):
                 _put(txt, re.sub(r"^down=none$", lambda _m: f"down={folder}", t, count=1, flags=re.M).encode("utf-8"))
-    for n in f.notes + f.mix_notes:
+    notes = list(f.notes + f.mix_notes) if kept is None else kept
+    for n in notes:
         BUILD_NOTES.append(f"{spec['name']}: {n}")
     print(f.describe())
-    print(f"  -> characters/{folder}/")
-    for old in stale - _PUT_WRITTEN.get(out, set()):
-        _retry(old.unlink)
+    print(f"  -> characters/{folder}/" + ("  (no change: kept)" if kept is not None else ""))
     _PUT_WRITTEN.pop(out, None)
+    if kept is None:  # the stamp last: a build that stopped half way leaves none, and is made again
+        files = {}
+        for q in out.rglob("*"):
+            if q.is_file() and q.name not in (STAMP_FILE, "character.txt"):
+                files[q.relative_to(out).as_posix()] = q.stat().st_size
+        _retry(lambda: (out / STAMP_FILE).write_text(
+            json.dumps({"stamp": stamp, "notes": notes, "files": files}), encoding="utf-8"))
     return folder
 
 
