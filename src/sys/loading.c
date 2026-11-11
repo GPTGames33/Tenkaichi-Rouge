@@ -9,6 +9,19 @@ extern void Port_GsMarker(s32 effect);
 extern int Port_PageAspectMilli(void);
 #define PORT_2D_LOADING 0x17
 #define PORT_2D_END 0x13
+
+/* The PC version's panel over this screen (port/src/gs/boot_ui.cpp): the two teams, a progress row, a tip. */
+#include "menu/port_boot.h"
+extern int Port_NetSession(void);     /* port/src/gs/net.c: 1 in an online session */
+extern s32 BtlJob_GetFreeCount(void); /* battle/battle_load.c: the fight loader's jobs not in use, of 8 */
+extern s32 BattleSide_GetMemberCount(s32 side);
+extern s32 BattleSide_GetMemberChara(s32 side, s32 idx);
+extern s32 BattleSide_GetMemberCostume(s32 side, s32 idx);
+extern s32 PortPatrol_StoryPlaying(void); /* menu/port_patrol.c: the battle is one of Corrupt Patrol's */
+/* How black slot 0 of the float fades is, 0..128 (sys/fade.h: a slot starts with its current colour, four
+   floats; this file declares what it uses itself, as below). */
+extern f32 gFade[];
+#define LOAD_FADE_ALPHA() ((s32)gFade[3])
 #endif
 
 /* libc */
@@ -63,17 +76,59 @@ extern void Pad_Update(void);
 
 #define SPRITE_END(p) SPRITE(p, LOAD_SPR_END, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
+#ifdef PORT
+/* Tells the overlay who is about to fight, when this is a fight's loading: the fight loader has a job in use then
+   (the model viewers and Shenron's scene come through here with none), and both sides have their members. Not
+   for Corrupt Patrol's battles: who waits there is the mode's to tell. */
+static void Load_PortTeams(void) {
+    s32 side, i, n, chara;
+    s32 freeJobs = BtlJob_GetFreeCount();
+
+    Port_BootTeamClear();
+    if (freeJobs < 1 || freeJobs > 7 || PortPatrol_StoryPlaying()) {
+        return;
+    }
+    for (side = 0; side < 2; side++) {
+        n = BattleSide_GetMemberCount(side);
+        for (i = 0; i < n && i < 5; i++) {
+            chara = BattleSide_GetMemberChara(side, i);
+            if (chara >= 0) {
+                Port_BootTeamAdd(side, chara, BattleSide_GetMemberCostume(side, i));
+            }
+        }
+    }
+}
+#endif
+
 /* Shows the loading screen and runs the queued jobs until they are done and the fade-out has finished. */
 void Load_RunBlocking(void) {
     s32 busy = 1;
     s32 done = 0;
     s32 prev;
+#ifdef PORT
+    /* The PC version: the screen comes in over 0.4 s and leaves over 0.5 s (the original's are a second each, and
+       the second one is pure waiting after the loading is done), and it does not start to leave before it is
+       fully in: the fade out starts from a clear picture, so a loading that ended sooner made the screen jump to
+       full for a frame. Never slower than the original: 0.9 s at the least against a second. An online session
+       keeps the original's (both copies count the same frames), and so does BT3_BOOT_CLASSIC. */
+    s32 quick = !Port_NetSession() && !Port_BootOpt(PORT_BOOT_CLASSIC);
+    s32 leaving = 0;
+
+    Port_BootMark(30);
+    if (quick) {
+        Load_PortTeams();
+    }
+#endif
 
     PadWatch_SetEnabled(0);
     Dma_ResetBuffers();
     Load_InitScreen();
     Fade_ResetAll();
+#ifdef PORT
+    Fade_Start(0, 1, quick ? 0.4f : 1.0f);
+#else
     Fade_Start(0, 1, 1.0f);
+#endif
     gProgress->flags |= PROGRESS_FLAG_LOADING;
     for (;;) {
         Snd_Update();
@@ -81,6 +136,25 @@ void Load_RunBlocking(void) {
         Gfx_BeginFrame();
         Pad_Update();
         busy = Job_Run();
+#ifdef PORT
+        if (prev != busy) {
+            Port_BootMark(31);
+        }
+        if (quick) {
+            if (!busy && !leaving && Fade_IsDone(0)) {
+                leaving = 1;
+                Fade_Start(0, 0, 0.5f);
+            }
+        } else if (prev != busy) {
+            leaving = 1;
+            Fade_Start(0, 0, 1.0f);
+        }
+        if (!busy && leaving) {
+            if (Fade_IsDone(0)) {
+                done = 1;
+            }
+        }
+#else
         if (prev != busy) {
             Fade_Start(0, 0, 1.0f);
         }
@@ -89,8 +163,14 @@ void Load_RunBlocking(void) {
                 done = 1;
             }
         }
+#endif
         Load_UpdateScreen();
         Load_DrawScreen();
+#ifdef PORT
+        if (quick) {
+            Port_BootScene(PORT_SCENE_BATTLE, LOAD_FADE_ALPHA(), busy);
+        }
+#endif
         Gfx_EndFrame(2);
         Dma_Flush();
         if (done) {
@@ -98,6 +178,12 @@ void Load_RunBlocking(void) {
         }
         Load_ReadInput();
     }
+#ifdef PORT
+    if (quick) {
+        Port_BootScene(PORT_SCENE_NONE, 0, 0);
+    }
+    Port_BootMark(32);
+#endif
     Dma_ResetBuffers();
     gProgress->flags &= ~PROGRESS_FLAG_LOADING;
     PadWatch_SetEnabled(1);
