@@ -21,6 +21,7 @@ typedef struct FpMember {
     int costume;  /* costume code (8 and up: a skin of the mod grid) */
     int hp, hpMax; /* 10000 per bar */
     char path[FP_PATH]; /* host path of its large portrait ("" = none found) */
+    char name[64];      /* its name in English, form included ("Goku (End) Super Saiyan"; "" = not known) */
 } FpMember;
 
 typedef struct FpSide {
@@ -44,6 +45,12 @@ typedef struct FpSide {
     unsigned hitSeq;      /* counts each new hit count given */
     int msg;              /* the last event message (0..4) */
     unsigned msgSeq;      /* counts the messages given */
+    /* for the port's own HUD (gs/hud_modern.cpp): */
+    int kiReserve;    /* the extra ki a few fighters hold over their gauge (the HUD's pulsing red layer), 0 none */
+    int switchGauge;  /* 0..100000: full = a member switch is allowed */
+    int switching;    /* a member switch is running (the game slides this side's gauges away for it) */
+    int slide;        /* 0..1000: how far the game has slid this side's gauges off the screen */
+    int dead;         /* the active member has no health left */
     FpMember m[FP_MEMBERS];
 } FpSide;
 
@@ -53,6 +60,15 @@ typedef struct FpState {
     int timer;      /* what the timer shows: seconds left (-1: no limit), or a count */
     int timerClock; /* 1 = seconds, 0 = a count */
     int timerSet;   /* the HUD was given a timer this fight */
+    /* for the port's own HUD (gs/hud_modern.cpp): */
+    int hudFlags;   /* the game's HUD_SHOW_* bits: 1 gauges, 2 timer, 4 notice, 8 combo, 0x10 prompts */
+    int hudSlide;   /* 0..1000: how far the game has slid the whole HUD off the screen (a story battle's event) */
+    int mode;       /* Battle_GetMode: 7 = the attract demo (no HUD) */
+    int replay;     /* a replay is shown: 0 none, 1 without the HUD, 2 with it */
+    int split;      /* split screen */
+    int paused;     /* the fight is paused */
+    int pauseMenu;  /* the pause menu is open */
+    int cover;      /* 0..255: how much a screen fade of the game covers the picture */
     FpSide side[2];
 } FpState;
 
