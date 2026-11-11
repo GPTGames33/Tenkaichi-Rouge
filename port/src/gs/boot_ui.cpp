@@ -494,7 +494,7 @@ static void splash_draw(ImDrawList *dl, const View &v, int frame, int cover) {
     float f = (float)frame;
     float in = sat(f / 12.0f), out = 1.0f - sat((float)cover / 128.0f), vis = in < out ? in : out;
     ImFont *big = bold(), *small = ImGui::GetFont();
-    const char *name = "TENKAICHI3DECOMP";
+    const char *name = "TENKAIVERSE";
     float cx = v.x + v.w * 0.5f, cy = v.y + v.h * 0.47f;
     float size = v.h * 0.17f;
     float tw = big->CalcTextSizeA(size, FLT_MAX, 0.0f, name).x;
@@ -549,7 +549,7 @@ static void splash_draw(ImDrawList *dl, const View &v, int frame, int cover) {
         quad(dl, ImVec2(cx - half, ly), ImVec2(cx, ly), ImVec2(cx, ly + th), ImVec2(cx - half, ly + th), none, gold, gold, none);
         quad(dl, ImVec2(cx, ly), ImVec2(cx + half, ly), ImVec2(cx + half, ly + th), ImVec2(cx, ly + th), gold, none, none, gold);
         // the small lines over and under it
-        const char *over = "A NATIVE PC PORT";
+        const char *over = "TENKAICHI 3 PC PORT";
         float os = px(v.h * 0.036f), gap = os * 0.42f;
         float ow = spaced_text(NULL, small, os, ImVec2(0.0f, 0.0f), 0, over, gap);
         spaced_text(dl, small, os, ImVec2(floorf(cx - ow * 0.5f), floorf(pos.y - os * 1.5f)), rgba(214, 222, 246, 0.85f * sat(after / 20.0f)),
@@ -601,9 +601,9 @@ static void title_draw(ImDrawList *dl, const View &v, int fade) {
         ImFont *f = ImGui::GetFont();
         float size = px(v.u * 11.0f);
         if (ver == NULL || ver[0] == '\0' || strcmp(ver, "dev") == 0) {
-            snprintf(line, sizeof(line), "Tenkaichi3Decomp dev build");
+            snprintf(line, sizeof(line), "Tenkaiverse dev build");
         } else {
-            snprintf(line, sizeof(line), "Tenkaichi3Decomp %s%s", ver[0] >= '0' && ver[0] <= '9' ? "v" : "", ver);
+            snprintf(line, sizeof(line), "Tenkaiverse %s%s", ver[0] >= '0' && ver[0] <= '9' ? "v" : "", ver);
         }
         ImVec2 ts = f->CalcTextSizeA(size, FLT_MAX, 0.0f, line);
         ImVec2 at(floorf(v.b.x - ts.x - v.u * 10.0f), floorf(v.b.y - ts.y - v.u * 7.0f));
