@@ -679,6 +679,13 @@ void leave(int how) {
     sSh.leave = how;
     SDL_UnlockMutex(sMx);
 }
+// Whether the screens are already on their way out (to a battle, the shop or the creator)
+bool leaving(void) {
+    SDL_LockMutex(sMx);
+    bool l = sSh.leave != 0;
+    SDL_UnlockMutex(sMx);
+    return l;
+}
 
 // =============================================================================================== drawing (in the manner of Xenoverse's menus)
 // Translucent navy panels with cut corners and a cyan edge over the place behind them, the cursor an orange bar,
@@ -1864,7 +1871,9 @@ void scr_hub(bool input) {
     sHubFrames++;
     want_model(-1, 0);
     place_default();
-    if (!sHubQueued && !sAsking && sTalk.empty() && !sAwaitCreator && sHubFrames > (sArriveFrom >= 0 && sArrive ? 50 : 0)) {
+    // (not while the screens are already leaving: the shop, asked for at the end of a talk, would be swapped for the
+    // place's battle, and the place would then wait for itself forever on the way back)
+    if (!sHubQueued && !sAsking && sTalk.empty() && !sAwaitCreator && !sAfterShop && !leaving() && sHubFrames > (sArriveFrom >= 0 && sArrive ? 50 : 0)) {
         sHubQueued = true;
         sArriveFrom = -1;
         if (getenv("BT3_PATROL_NOHUB") != NULL) { go(S_PEOPLE); sHubQueued = false; return; } // (testing: the list instead)
@@ -2434,9 +2443,11 @@ void on_open(void) {
         if (sCreatorNew) { sCreatorNew = false; welcome(); }
         return;
     }
-    if (sAfterShop) {
+    if (sAfterShop) { // (back from the shop: the place's battle again, as from a talk)
         sAfterShop = false;
         reset_to(S_HUB);
+        sHubQueued = false;
+        sFightKind = FIGHT_NONE;
         return;
     }
     if (gen != sResultSeen) {

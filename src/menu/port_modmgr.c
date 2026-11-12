@@ -1,10 +1,12 @@
 #include "common.h"
+#include <stdio.h>
 #include "menu/menu_e.h"
 #include "sys/pad.h"
 #include "sys/save.h"
 #ifdef PORT
 #include "menu/port_mods.h"
 #include "battle/btl_cam.h"
+#include "battle/stg_a.h"
 #endif
 
 #ifdef PORT
@@ -895,6 +897,34 @@ static void Mm_DrawBehind(void) {
     }
 }
 
+/* With a battle stage behind the viewer (Mm_ViewSetStage), the models stand on its floor where they are: a raised
+   ring (the World Tournament's) or a step is under their feet, not through their legs. The camera goes up with the
+   warrior, so the picture is laid out as on flat ground. */
+static s32 sMmOnGround;
+static f32 sMmGroundY; /* (the warrior's floor this frame; the game's y is down) */
+static f32 Mm_GroundAt(f32 x, f32 z) {
+    Vec4 pos;
+    StgGroundHit hit;
+
+    if (!sMmOnGround || !BtlStage_IsReady()) {
+        return 0.0f;
+    }
+    pos.x = x;
+    pos.y = -700.0f; /* (dropped from high up, as the game drops its fighters onto a stage: stg_a_b.c) */
+    pos.z = z;
+    pos.w = 1.0f;
+    hit.y = -700.0f;
+    BtlStage_ProbeGround(-1, &pos, &hit);
+    if (getenv("BT3_MV_GROUND") != NULL) {
+        fprintf(stderr, "bt3: viewer: ground at (%.1f, %.1f): %.2f
+", x, z, hit.y);
+    }
+    if (!(hit.y > -650.0f && hit.y < 650.0f)) { /* (nothing under it: as before) */
+        return 0.0f;
+    }
+    return hit.y;
+}
+
 /* Puts the viewer's model (`obj`, of the character `ci` is about) where `place` says: its feet (x, y) and its height,
    in the mockup's pixels; turned by *yaw, which goes on turning when `spin`. The camera's distance, where the feet are and how tall it
    is, as parts of the picture, for the models beside it. */
@@ -912,9 +942,10 @@ static void Mm_PlaceModel(MmCharaInfo *ci, u8 *obj, const f32 *place, f32 *yaw, 
 
         /* the camera looks so that the feet are where the mockup has them; the fighter itself is moved across (the
            camera's +x is the picture's left) and turned */
+        sMmGroundY = Mm_GroundAt(ox, 0.0f);
         OrbitCam_SetDistRange(dist * 0.5f, dist * 2.0f);
         OrbitCam_SetDist(dist);
-        OrbitCam_SetTarget(0.0f, ci->targetY + ty * dist, 0.0f);
+        OrbitCam_SetTarget(0.0f, ci->targetY + ty * dist + sMmGroundY, 0.0f);
         OrbitCam_SetAngles(0.0f, 3.1415927f, 0.0f);
         if (obj != NULL) {
             /* its place and its turn, in the pose and in the matrix made from it (rows: right, up, forward, place);
@@ -940,6 +971,10 @@ static void Mm_PlaceModel(MmCharaInfo *ci, u8 *obj, const f32 *place, f32 *yaw, 
             m[9] = 0.0f;
             m[10] = c * sz;
             m[12] = ox;
+            if (sMmOnGround) {
+                *(f32 *)(obj + 0x954) = sMmGroundY;
+                m[13] = sMmGroundY;
+            }
         }
     *outDist = dist;
     *outFy = fy;
@@ -1243,6 +1278,7 @@ static void Mm_ViewHostUpdate(f32 dist, f32 mainFeet, f32 mainH) {
         ox = -(Mx_ScreenFracX(sMvHostPlace[0]) - 0.492f) / 0.76f * dist * k;
         oz = (k - 1.0f) * dist * sMvHostZSign;
         (void)mainFeet;
+        oy = Mm_GroundAt(ox, oz);
         if (sMvHostWant < 0) {
             oy = -100000.0f; /* (not wanted this frame: out of sight) */
         }
@@ -1425,6 +1461,7 @@ static void Mm_ViewLineUpdate(f32 dist, f32 mainH) {
             }
             ox = -(Mx_ScreenFracX(l->place[0]) - 0.492f) / 0.76f * dist * kk;
             oz = (kk - 1.0f) * dist * sMvHostZSign;
+            oy = Mm_GroundAt(ox, oz);
             if (l->want < 0 || l->want != l->shown) {
                 oy = -100000.0f; /* (not wanted this frame: out of sight) */
             }
@@ -1502,9 +1539,11 @@ void Mm_ViewDraw(f32 cx, f32 feet, f32 height) {
     place[0] = cx;
     place[1] = feet;
     place[2] = height;
+    sMmOnGround = sMvStage;
     Mm_PlaceModel(ChrView_GetCharaInfo((u32)sMvChara), BtlObj_Get(gChrView->cur->obj), place, &sMvYaw, 0, &dist, &fy, &hf);
     Mm_ViewHostUpdate(dist, fy, hf);
     Mm_ViewLineUpdate(dist, hf);
+    sMmOnGround = 0;
     if (sMvStage) {
         Mm_SceneStage();
     } else {
