@@ -1810,12 +1810,6 @@ static void misc_tab(void) {
     }
     ImGui::SetItemTooltip("The mod's own card after the logos at the start of the game (two and a half seconds; any\n"
                           "button ends it). Not shown when Skip logos is on. From the next start of the game.");
-    bool loadTips = Port_Setting("loading_tips", 1) != 0;
-    if (ImGui::Checkbox("Loading tips", &loadTips)) {
-        Port_SettingSave("loading_tips", loadTips);
-        Port_SettingsWrite();
-    }
-    ImGui::SetItemTooltip("A short tip about the game or the mod on the loading screens.");
     bool hidePointer = Port_Setting("hide_pointer", 1) != 0;
     if (ImGui::Checkbox("Hide the mouse pointer during play", &hidePointer)) {
         Port_SettingSave("hide_pointer", hidePointer);

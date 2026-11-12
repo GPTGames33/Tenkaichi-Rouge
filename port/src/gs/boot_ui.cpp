@@ -143,7 +143,7 @@ extern "C" int Port_BootOpt(int what) {
     case 1:
         return !classic && Port_Setting("mod_splash", 1) != 0;
     case 2:
-        return Port_Setting("loading_tips", 1) != 0;
+        return 0; // (the loading tips were taken out: the loading screens show no tip)
     }
     return 0;
 }

@@ -258,10 +258,11 @@ static void head(const View &v, const FpMember &m, ImVec2 c, float r, bool flip,
     float hx, hy, hs, fx, fy;
     v.dl->AddCircleFilled(c, r, col(v, kPlate, 0.92f * a), 40);
     if (m.path[0] != '\0' && FightPanels_Art(m.path, m.chara, m.costume, &tex, &hx, &hy, &hs, &fx, &fy) && tex != NULL && hs > 1.0f) {
-        // (the art's head square, a little wider and lower: the whole face in the disc, not the top of the hair)
-        float sz = fminf(hs * 1.2f, ART_W);
+        // (the art's head square, well widened: the whole head in the disc, big hair and helmets included, not
+        // a close-up that cuts the face or the hair off at the disc's edge)
+        float sz = fminf(fmaxf(hs * 1.7f, ART_W * 0.42f), ART_W);
         float x = fminf(fmaxf(hx + hs * 0.5f - sz * 0.5f, 0.0f), ART_W - sz);
-        float y = fminf(fmaxf(hy + hs * 0.6f - sz * 0.5f, 0.0f), ART_H - sz);
+        float y = fminf(fmaxf(hy + hs * 0.5f - sz * 0.5f, 0.0f), ART_H - sz);
         float u0 = x / ART_W, u1 = (x + sz) / ART_W;
         float v0 = (band + y / ART_H) / 3.0f, v1 = (band + (y + sz) / ART_H) / 3.0f;
         if (flip) {
@@ -288,6 +289,8 @@ struct Anim {
     float hit;       // 1 at a hit taken, running to 0: the bar's flash and shake
     float stock;     // the same for a blast stock gained
     float power;     // 0..1: the powered-up look coming and going
+    float mpShow;    // 0..30000: the charge toward Max Power, shown (it builds while charging at full ki)
+    float skillsA;   // 0..1: the skill list's fade (shown while charging ki)
     float full;      // ... and the switch gauge's "ready"
     // the combo counter
     int seqSet;
@@ -366,6 +369,7 @@ static void anim_step(Anim &an, const FpSide &s, float dt) {
     an.lastStock = s.blast / 100000;
     an.stock = an.stock > 0.0f ? an.stock - dt / 0.6f : 0.0f;
     an.power = approach(an.power, s.poweredUp && !s.dead ? 1.0f : 0.0f, 10.0f, dt);
+    an.mpShow = approach(an.mpShow, s.poweredUp ? 0.0f : (float)clampi(s.maxPower, 0, 30000), 16.0f, dt);
     an.full = approach(an.full, s.switchGauge >= 100000 && s.next >= 0 ? 1.0f : 0.0f, 10.0f, dt);
 }
 
@@ -515,12 +519,51 @@ static void draw_gauges(const View &v, const FpSide &s, Anim &an, int side) {
                 }
             }
         }
+        // Charging at full ki with a blast stock builds Max Power (src/battle/btl_act_c.c): the gauge fills blue
+        // from its start, cell by cell, and enters Max Power when the blue reaches the end.
+        float build = !power ? clamp01(an.mpShow / 30000.0f) : 0.0f;
+        if (build > 0.002f) {
+            float reach = build * cells; // (in cells)
+            for (int i = 0; i < cells; i++) {
+                float f = clamp01(reach - i);
+                if (f <= 0.0f) {
+                    break;
+                }
+                float cx0 = kx + i * (cell + gap);
+                slab(v, cx0, cx0 + cell * f, y0, y1, col(v, kMp[1], 1.0f, 1.0f + 0.25f * pulse(0.35f)), col(v, kMp[0], 1.0f));
+                slab(v, cx0, cx0 + cell * f, y0 + 1.0f, y0 + 5.0f, col(v, kWhite, 0.5f), col(v, kWhite, 0.05f));
+            }
+            slab_glow(v, kx - 3.0f, kx + len * build + 3.0f, y0 - 3.0f, y1 + 3.0f, kMp[1], 0.55f + 0.35f * pulse(0.35f));
+            fullP = 0.0f;
+        }
         if (fullP > 0.0f) {
             slab_glow(v, kx - 3.0f, kx + len + 3.0f, y0 - 3.0f, y1 + 3.0f, kKi[1], 0.7f * fullP);
         }
         if (power) { // (over the cells: a blue light round the gauge, breathing)
             slab_glow(v, kx - 3.0f, kx + len + 3.0f, y0 - 3.0f, y1 + 3.0f, kMp[1], an.power * (0.8f + 0.2f * pulse(0.6f)));
             slab_line(v, kx - 4.0f, kx + len + 4.0f, y0 - 3.0f, y1 + 3.0f, col(v, kMp[1], an.power * 0.9f), 1.6f);
+        }
+        if (build > 0.002f && an.power <= 0.05f) { // how far the charge has come
+            ImFont *f = face(Ui_FontBold());
+            float size = 18.0f * v.u;
+            char t[32];
+            snprintf(t, sizeof(t), "MAX POWER %d%%", (int)(build * 100.0f));
+            ImVec2 p = pt(v, kx + len + 14.0f, y0 - 2.0f);
+            if (v.dir < 0.0f) {
+                p.x -= text_w(f, size, t);
+            }
+            float a = 0.65f + 0.35f * pulse(0.35f);
+            text(v, f, size, p, t, col(v, kWhite, a), col(v, Rgb{90, 190, 255}, a), 1.4f * v.u, -0.2f * v.dir);
+        } else if (!power && s.chargeHeld && s.kiMax > 0 && s.ki >= s.kiMax && s.blast < 100000 && s.action == 0x37) {
+            // full ki but no blast stock: Max Power cannot build; say what is missing
+            ImFont *f = face(Ui_FontBold());
+            float size = 16.0f * v.u;
+            const char *t = "NEED 1 BLAST STOCK";
+            ImVec2 p = pt(v, kx + len + 14.0f, y0 - 1.0f);
+            if (v.dir < 0.0f) {
+                p.x -= text_w(f, size, t);
+            }
+            text(v, f, size, p, t, col(v, Rgb{255, 214, 200}, 0.9f), col(v, kLost, 0.9f), 1.3f * v.u, -0.2f * v.dir);
         }
         if (an.power > 0.05f) {
             ImFont *f = face(Ui_FontBold());
@@ -593,6 +636,156 @@ static void draw_gauges(const View &v, const FpSide &s, Anim &an, int side) {
             }
             sx += w + 8.0f;
         }
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ the skill list
+// While a player charges ki (or holds the charge button, which is also how the skills are fired), their Blast 1
+// skills, Blast 2 techniques and Ultimate Blast are listed in their bottom corner, Xenoverse style: the buttons, the
+// name, what it needs. A move that can be fired now is lit; one that cannot is dimmed, its missing need in red.
+// Only for sides a person plays; small, at the screen's edge, clear of the fighters.
+
+// a pad button: the face buttons as their shapes, the rest as a short word in a pill. Returns its width (pixels).
+enum { PB_CIRCLE, PB_TRIANGLE, PB_L2, PB_UP, PB_DOWN };
+static float pad_button(const View &v, int b, ImVec2 c, float r) {
+    ImDrawList *dl = v.dl;
+    ImU32 rim = col(v, {200, 212, 240}, 0.95f), fill = col(v, kInk, 0.92f);
+    if (b == PB_L2) {
+        ImFont *f = face(Ui_FontBold());
+        float size = r * 1.15f, w = text_w(f, size, "L2") + r * 1.1f;
+        dl->AddRectFilled(ImVec2(c.x, c.y - r * 0.82f), ImVec2(c.x + w, c.y + r * 0.82f), fill, r * 0.5f);
+        dl->AddRect(ImVec2(c.x, c.y - r * 0.82f), ImVec2(c.x + w, c.y + r * 0.82f), rim, r * 0.5f, 0, 1.4f * v.u);
+        dl->AddText(f, size, ImVec2(c.x + r * 0.55f, c.y - size * 0.52f), col(v, kWhite, 1.0f), "L2");
+        return w;
+    }
+    ImVec2 m(c.x + r, c.y);
+    dl->AddCircleFilled(m, r, fill, 24);
+    dl->AddCircle(m, r, rim, 24, 1.4f * v.u);
+    float k = r * 0.5f, t = 2.0f * v.u;
+    if (b == PB_CIRCLE) {
+        dl->AddCircle(m, k, col(v, {255, 110, 110}, 1.0f), 20, t);
+    } else if (b == PB_TRIANGLE) {
+        dl->AddTriangle(ImVec2(m.x, m.y - k * 1.1f), ImVec2(m.x + k * 1.1f, m.y + k * 0.75f), ImVec2(m.x - k * 1.1f, m.y + k * 0.75f),
+                        col(v, {100, 230, 160}, 1.0f), t);
+    } else { // a stick direction: an arrow
+        float d = b == PB_UP ? -1.0f : 1.0f;
+        ImU32 w = col(v, kWhite, 1.0f);
+        dl->AddTriangleFilled(ImVec2(m.x, m.y + d * k * 1.15f), ImVec2(m.x + k, m.y - d * k * 0.2f), ImVec2(m.x - k, m.y - d * k * 0.2f), w);
+        dl->AddRectFilled(ImVec2(m.x - k * 0.38f, m.y - d * k * 0.2f + (d < 0 ? 0.0f : -k * 0.9f)),
+                          ImVec2(m.x + k * 0.38f, m.y - d * k * 0.2f + (d < 0 ? k * 0.9f : 0.0f)), w);
+    }
+    return r * 2.0f;
+}
+
+static void draw_skills(const View &v0, const FpSide &s, Anim &an, float dt, float bottom) {
+    bool charging = !s.cpu && !s.dead && (s.action == 0x37 || s.chargeHeld);
+    an.skillsA = charging ? fminf(1.0f, an.skillsA + dt / 0.12f) : fmaxf(0.0f, an.skillsA - dt / 0.25f);
+    if (an.skillsA <= 0.01f) {
+        return;
+    }
+    // the slots in the order the game takes them: 0, 1 Blast 1 (Circle), 2, 3 Blast 2 (Triangle), 4 the Ultimate
+    static const int kSlot[5] = {0, 1, 2, 3, 4};
+    static const int kDir[5] = {-1, PB_UP, -1, PB_UP, PB_DOWN};
+    static const int kFace[5] = {PB_CIRCLE, PB_CIRCLE, PB_TRIANGLE, PB_TRIANGLE, PB_TRIANGLE};
+    int rows = 0;
+    for (int i = 0; i < 5; i++) {
+        rows += s.moves[kSlot[i]].name[0] != ' ';
+    }
+    if (rows == 0) {
+        return;
+    }
+    View v = v0;
+    v.a = v0.a * ease_out(an.skillsA);
+    ImFont *f = face(Ui_FontBold());
+    const float rowH = 34.0f, w = 400.0f, pad = 10.0f, head = 24.0f;
+    float slide = (1.0f - ease_out(an.skillsA)) * -30.0f;
+    float y1 = bottom - 24.0f, y0 = y1 - head - rows * rowH - pad * 1.5f;
+    float x0 = 24.0f + slide;
+    { // the plate
+        ImVec2 a = pt_flat(v, x0, y0), b = pt_flat(v, x0 + w, y1);
+        ImVec2 lo(fminf(a.x, b.x), a.y), hi(fmaxf(a.x, b.x), b.y);
+        v.dl->AddRectFilled(lo, hi, col(v, kInk, 0.72f), 8.0f * v.u);
+        v.dl->AddRect(lo, hi, col(v, {90, 150, 230}, 0.55f), 8.0f * v.u, 0, 1.4f * v.u);
+        ImVec2 la = pt_flat(v, x0 + 12.0f, y0 + head + 2.0f), lb = pt_flat(v, x0 + w - 12.0f, y0 + head + 2.0f);
+        v.dl->AddLine(la, lb, col(v, {90, 150, 230}, 0.35f), 1.0f * v.u);
+        float hs = 15.0f * v.u;
+        const char *t = "SKILLS";
+        ImVec2 hp = pt_flat(v, x0 + 14.0f, y0 + 5.0f);
+        if (v.dir < 0.0f) {
+            hp.x -= text_w(f, hs, t);
+        }
+        text(v, f, hs, hp, t, col(v, {150, 200, 255}, 1.0f), col(v, {150, 200, 255}, 1.0f), 0.0f);
+    }
+    float y = y0 + head + pad;
+    float r = 11.0f * v.u, size = 17.0f * v.u, small = 14.0f * v.u;
+    for (int i = 0; i < 5; i++) {
+        const FpMove &mv = s.moves[kSlot[i]];
+        if (mv.name[0] == ' ') {
+            continue;
+        }
+        // what it needs, and whether that is there now
+        char need[48];
+        bool ok;
+        if (i < 2) {
+            int stocks = (mv.cost + 99999) / 100000;
+            ok = s.blast >= mv.cost;
+            if (mv.cost <= 0) {
+                snprintf(need, sizeof(need), "FREE");
+            } else {
+                snprintf(need, sizeof(need), "%d STOCK%s", stocks, stocks == 1 ? "" : "S");
+            }
+        } else {
+            float bars = (float)mv.cost / 20000.0f;
+            ok = s.ki >= mv.cost;
+            if (i == 4) {
+                ok = ok && s.poweredUp;
+                snprintf(need, sizeof(need), bars == (int)bars ? "MAX POWER + %.0f KI" : "MAX POWER + %.1f KI", bars);
+            } else {
+                snprintf(need, sizeof(need), bars == (int)bars ? "%.0f KI" : "%.1f KI", bars);
+            }
+        }
+        float cy = (y + rowH * 0.5f) * v.u + v.y0;
+        // the buttons, from the outer edge
+        float bx = x0 + 12.0f;
+        float px = v.x0 + v.dir * bx * v.u;
+        int seq[3] = {PB_L2, kDir[i], kFace[i]}, n = 0;
+        float bw[3];
+        float total = 0.0f;
+        for (int k = 0; k < 3; k++) {
+            if (seq[k] < 0) {
+                continue;
+            }
+            View probe = v;
+            probe.a = 0.0f; // (measured, not drawn)
+            bw[n] = seq[k] == PB_L2 ? pad_button(probe, PB_L2, ImVec2(-9999.0f, -9999.0f), r) : r * 2.0f;
+            seq[n++] = seq[k];
+            total += bw[n - 1] + 4.0f * v.u;
+        }
+        float bxStart = v.dir > 0.0f ? px : px - total;
+        float cx = bxStart;
+        View bv = v;
+        bv.a = v.a * (ok ? 1.0f : 0.55f);
+        for (int k = 0; k < n; k++) {
+            pad_button(bv, seq[k], ImVec2(cx, cy), r);
+            cx += bw[k] + 4.0f * v.u;
+        }
+        // the name, then what it needs at the far edge
+        float nameX = bx * v.u + 84.0f * v.u;
+        float needW = text_w(f, small, need);
+        float room = (w - 24.0f) * v.u - 84.0f * v.u - needW - 10.0f * v.u;
+        float ns = size, nw = text_w(f, ns, mv.name);
+        if (nw > room && nw > 0.0f) {
+            ns *= fmaxf(room / nw, 0.7f);
+            nw = text_w(f, ns, mv.name);
+        }
+        ImVec2 np(v.dir > 0.0f ? v.x0 + nameX : v.x0 - nameX - nw, cy - ns * 0.55f);
+        Rgb nc = i == 4 ? Rgb{255, 214, 110} : i < 2 ? Rgb{150, 220, 255} : kWhite;
+        text(bv, f, ns, np, mv.name, col(bv, nc, 1.0f), col(bv, nc, 1.0f, 0.82f), 1.2f * v.u);
+        float edge = (x0 + w - 12.0f) * v.u;
+        ImVec2 qp(v.dir > 0.0f ? v.x0 + edge - needW : v.x0 - edge, cy - small * 0.55f);
+        Rgb qc = ok ? Rgb{140, 255, 170} : Rgb{255, 120, 100};
+        text(v, f, small, qp, need, col(v, qc, 0.95f), col(v, qc, 0.95f, 0.8f), 1.0f * v.u);
+        y += rowH;
     }
 }
 
@@ -869,6 +1062,9 @@ void HudModern_Draw(void) {
             v.a = sGaugeA * all;
             if (v.a > 0.004f) {
                 draw_combo(v, an);
+                View k = v;
+                k.a = v.a * (1.0f - whole);
+                draw_skills(k, s, an, dt, ph / u);
             }
         }
     }
