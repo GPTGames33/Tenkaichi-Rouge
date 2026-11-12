@@ -1,5 +1,7 @@
 // The Story Creator's sample saga (gs/story_ui.cpp lists it with the player's own; "Make a copy to edit" saves it in
-// the sagas folder). The same format as a saga file: docs/port/sagas.md. Disc characters and stages only.
+// the sagas folder). The same format as a saga file: docs/port/sagas.md. Disc characters and stages only. Episodes 5
+// and 6 and the ending show what came later: title and narration cards, a question, fight rules, events with a
+// cutscene that stops the fight (episodes 1 to 4 play as they always did).
 static const char kStorySample[] = R"SAGA({
   "format": 1,
   "title": "Custom Saga: Rivals",
@@ -128,7 +130,7 @@ static const char kStorySample[] = R"SAGA({
           {"speaker": "enemy", "text": "Hahaha! You're nothing but trash!", "pose": "Story gesture 8"}
         ]
       },
-      "next_win": "end",
+      "next_win": 5,
       "next_lose": "retry"
     },
     {
@@ -149,7 +151,91 @@ static const char kStorySample[] = R"SAGA({
       },
       "battle": {"fight": false},
       "next_win": 2
+    },
+    {
+      "title": "Three Years Later",
+      "description": "Peace, for a while. Then a rival knocks on the door.",
+      "stage": 22,
+      "music": 7,
+      "player": [{"chara": 3}],
+      "enemy": [{"chara": 31}],
+      "intro": {
+        "distance": 3,
+        "lines": [
+          {"speaker": "narrator", "card": "title", "text": "Three years later...", "transition": "fade_in"},
+          {"speaker": "narrator", "card": "narration", "text": "The Earth was at peace. But one Saiyan could not let it rest.", "camera": "wide", "move": "from_wide"},
+          {"speaker": "enemy", "text": "Kakarot. I didn't come here to talk.", "camera": "low", "move": "push", "stand": "air", "effects": ["aura_on"]},
+          {"speaker": "player", "text": "Vegeta? You flew all the way out to Mount Paozu?", "camera": "shoulder", "face": "back"},
+          {"speaker": "enemy", "text": "I've trained for three years. Fight me. Now.", "camera": "close", "distance": 2, "effects": ["dark", "rumble"]},
+          {"speaker": "player", "text": "Hmm... what should I do?", "camera": "two", "move": "orbit",
+           "choices": [{"text": "A sparring match? Sure!", "goto": 6}, {"text": "Not today, Vegeta.", "goto": "end"}]}
+        ]
+      },
+      "battle": {"fight": false},
+      "next_win": 6
+    },
+    {
+      "title": "Sparring Partners",
+      "description": "No holding back, but nobody gets hurt. Much.",
+      "stage": 22,
+      "music": 9,
+      "player": [{"chara": 3}],
+      "enemy": [{"chara": 31}],
+      "intro": {
+        "distance": 2,
+        "lines": [
+          {"speaker": "enemy", "text": "First one down to a third of his strength loses.", "camera": "close"},
+          {"speaker": "player", "text": "Fine by me. Let's go!", "camera": "shoulder", "pose": "Battle stance", "effects": ["aura_on"]}
+        ]
+      },
+      "battle": {
+        "fight": true,
+        "cpu": 2,
+        "win": "health",
+        "win_value": 30,
+        "fail_health": 30,
+        "time": 150,
+        "time_up": "health",
+        "player_blast": 3,
+        "enemy_boost": {"attack": 1},
+        "events": [
+          {"when": "start", "do": [{"do": "card", "card": "title", "text": "Round one!"}]},
+          {"when": "enemy_health", "value": 65, "do": [
+            {"do": "scene", "distance": 2, "lines": [
+              {"speaker": "enemy", "text": "Hmph. Warming up is over.", "camera": "close", "effects": ["aura_on"]},
+              {"speaker": "enemy", "text": "Now see what three years of training did!", "camera": "low", "move": "crash", "effects": ["big_shake", "flash"]},
+              {"speaker": "player", "text": "Whoa... his power is way up!", "camera": "shoulder"}
+            ]},
+            {"do": "transform", "side": "enemy", "value": 1},
+            {"do": "heal", "side": "enemy", "value": 20},
+            {"do": "music", "value": 16}
+          ]},
+          {"when": "player_health", "value": 50, "do": [{"do": "say", "speaker": "enemy", "text": "Is that all you've got, Kakarot?"}]},
+          {"when": "time_left", "value": 30, "do": [{"do": "card", "text": "Thirty seconds left!"}]}
+        ]
+      },
+      "win": {
+        "lines": [
+          {"speaker": "enemy", "text": "Tch... Next time, Kakarot.", "camera": "close", "face": "back"},
+          {"speaker": "player", "text": "Any time, Vegeta!", "camera": "two"}
+        ]
+      },
+      "lose": {
+        "lines": [
+          {"speaker": "enemy", "text": "Hah! Three years well spent.", "pose": "Arms open"}
+        ]
+      },
+      "next_win": "end",
+      "next_lose": "retry"
     }
-  ]
+  ],
+  "ending": {
+    "distance": 2,
+    "lines": [
+      {"speaker": "player", "text": "Heh. Same time next year?", "camera": "two"},
+      {"speaker": "narrator", "card": "narration", "text": "And so the rivals went on, each one pushing the other higher.", "camera": "wide", "move": "pull", "move_time": 5},
+      {"speaker": "narrator", "card": "title", "text": "The End", "transition": "fade_out"}
+    ]
+  }
 }
 )SAGA";

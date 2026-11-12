@@ -44,18 +44,8 @@ int Port_NetSession(void);
 namespace {
 
 // =============================================================================================== numbers shared with the game
-// (src/battle/port_story_btl.c and src/menu/port_story.c have the same)
-enum { PL_SIDE, PL_MEMBER, PL_CHARA, PL_VOICE, PL_LIP, PL_CAMERA, PL_MOVE, PL_MOVE_T, PL_POSE, PL_POSE_LOOP, PL_LPOSE,
-       PL_LPOSE_LOOP, PL_FX, PL_LEN, PL_WAIT, PL_VCHARA, PL_COUNT };
-enum { CAM_KEEP, CAM_AUTO, CAM_CLOSE, CAM_MEDIUM, CAM_SHOULDER, CAM_TWO, CAM_WIDE, CAM_LOW, CAM_HIGH, CAM_LISTENER, CAM_COUNT };
-enum { MOVE_CUT, MOVE_PUSH, MOVE_ORBIT, MOVE_PULL, MOVE_FROM_WIDE, MOVE_RISE, MOVE_COUNT };
-enum { FX_SHAKE = 0x1, FX_FLASH = 0x2, FX_AURA_ON = 0x4, FX_AURA_OFF = 0x8, FX_CHARGE_ON = 0x10, FX_CHARGE_OFF = 0x20,
-       FX_BURST = 0x40, FX_FADE_OUT = 0x80, FX_FADE_IN = 0x100, FX_BIG_SHAKE = 0x200, FX_HIDE = 0x400, FX_SHOW = 0x800 };
-enum { SHOW_SAY = 1, SHOW_HIDE, SHOW_TITLE, SHOW_HUD, SHOW_LETTERBOX, SHOW_FLASH, SHOW_FADE, SHOW_TIMER, SHOW_END };
-enum { PB_WIN, PB_SURVIVE, PB_TIME, PB_TIME_UP, PB_EVENTS, PB_COUNT = 8 };
-enum { PE_WHEN, PE_VALUE, PE_LINE, PE_COUNT = 4 };
-enum { WHEN_START, WHEN_ENEMY_HP, WHEN_PLAYER_HP, WHEN_ENEMY_FORM, WHEN_PLAYER_FORM, WHEN_TIME, WHEN_ENEMY_MEMBER,
-       WHEN_PLAYER_MEMBER, WHEN_COUNT };
+// (the battle half, src/battle/port_story_btl.c, reads the same header; src/menu/port_story.c has the PG_ numbers)
+#include "../../include/port_story.h"
 enum { PG_LEAVE, PG_SOUND, PG_KEY, PG_CHARA, PG_COSTUME, PG_TURN, PG_BGM, PG_VOICE };
 
 const int kDiscCharas = 161;
@@ -376,28 +366,70 @@ const Pose kPoses[] = {
     {"Story gesture 1", 384, false}, {"Story gesture 2", 385, false}, {"Story gesture 3", 386, false},
     {"Story gesture 4", 387, false}, {"Story gesture 5", 388, false}, {"Story gesture 6", 389, false},
     {"Story gesture 7", 406, false}, {"Story gesture 8", 413, false},
+    {"Flying up", 47, true}, {"Diving", 50, true}, {"Landing", 45, false},
 };
 const int kPoseCount = (int)(sizeof(kPoses) / sizeof(kPoses[0]));
-const char *const kCamNames[CAM_COUNT] = {"Keep the last", "Automatic", "Close-up", "Medium shot", "Over the shoulder",
-                                          "Both of them", "Wide", "Low angle", "High angle", "On the listener"};
-const char *const kCamKeys[CAM_COUNT] = {"keep", "auto", "close", "medium", "shoulder", "two", "wide", "low", "high", "listener"};
-const char *const kMoveNames[MOVE_COUNT] = {"Cut", "Push in", "Orbit", "Pull back", "From the wide view", "Rise"};
-const char *const kMoveKeys[MOVE_COUNT] = {"cut", "push", "orbit", "pull", "from_wide", "rise"};
+const char *const kCamNames[PS_CAM_COUNT] = {"Keep the last", "Automatic", "Close-up", "Medium shot", "Over the shoulder",
+                                             "Both of them", "Wide", "Low angle", "High angle", "On the listener",
+                                             "The face, very close", "From behind", "Side view", "From above",
+                                             "From the ground", "Far away", "Whole body"};
+const char *const kCamKeys[PS_CAM_COUNT] = {"keep", "auto", "close", "medium", "shoulder", "two", "wide", "low", "high", "listener",
+                                            "face", "behind", "profile", "top", "ground", "far", "full"};
+const char *const kMoveNames[PS_MOVE_COUNT] = {"Cut", "Push in", "Orbit", "Pull back", "From the wide view", "Rise", "Drop down",
+                                               "Slide sideways", "Orbit the other way", "Crash zoom", "Pan from the listener"};
+const char *const kMoveKeys[PS_MOVE_COUNT] = {"cut", "push", "orbit", "pull", "from_wide", "rise", "drop", "slide", "orbit_back",
+                                              "crash", "pan"};
 struct Fx { const char *key, *name; int bit; };
 const Fx kFx[] = {
-    {"shake", "Camera shake", FX_SHAKE}, {"big_shake", "Big shake", FX_BIG_SHAKE}, {"flash", "White flash", FX_FLASH},
-    {"aura_on", "Aura on", FX_AURA_ON}, {"aura_off", "Aura off", FX_AURA_OFF}, {"charge_on", "Charging ki", FX_CHARGE_ON},
-    {"charge_off", "Stop charging", FX_CHARGE_OFF}, {"burst", "Ki burst", FX_BURST}, {"fade_in", "Fade in from black", FX_FADE_IN},
-    {"hide", "Speaker leaves", FX_HIDE}, {"show", "Speaker appears", FX_SHOW},
+    {"shake", "Camera shake", PS_FX_SHAKE}, {"big_shake", "Big shake", PS_FX_BIG_SHAKE}, {"flash", "White flash", PS_FX_FLASH},
+    {"aura_on", "Aura on", PS_FX_AURA_ON}, {"aura_off", "Aura off", PS_FX_AURA_OFF}, {"charge_on", "Charging ki", PS_FX_CHARGE_ON},
+    {"charge_off", "Stop charging", PS_FX_CHARGE_OFF}, {"burst", "Ki burst", PS_FX_BURST}, {"fade_in", "Fade in from black", PS_FX_FADE_IN},
+    {"hide", "Speaker leaves", PS_FX_HIDE}, {"show", "Speaker appears", PS_FX_SHOW},
+    // (the ones below came later: a saga that has none of them plays as it always did)
+    {"fade_out", "Fade out to black", PS_FX_FADE_OUT}, {"red_flash", "Red flash", PS_FX_RED_FLASH},
+    {"dark", "Dim the picture", PS_FX_DARK}, {"rumble", "The ground rumbles", PS_FX_RUMBLE},
+    {"listener_aura_on", "Listener: aura on", PS_FX_L_AURA_ON}, {"listener_aura_off", "Listener: aura off", PS_FX_L_AURA_OFF},
+    {"listener_burst", "Listener: ki burst", PS_FX_L_BURST}, {"listener_hide", "Listener leaves", PS_FX_L_HIDE},
+    {"listener_show", "Listener appears", PS_FX_L_SHOW},
 };
 const int kFxCount = (int)(sizeof(kFx) / sizeof(kFx[0]));
-const char *const kWhenNames[WHEN_COUNT] = {"At the start", "Opponent's health below", "Your health below", "Opponent transforms",
-                                            "You transform", "After seconds", "Opponent switches fighter", "You switch fighter"};
-const char *const kWhenKeys[WHEN_COUNT] = {"start", "enemy_health", "player_health", "enemy_transform", "player_transform",
-                                           "time", "enemy_switch", "player_switch"};
+const char *const kWhenNames[PS_WHEN_COUNT] = {
+    "At the start", "Opponent's health below", "Your health below", "Opponent transforms", "You transform", "After seconds",
+    "Opponent switches fighter", "You switch fighter", "Your ki is full", "Opponent's ki is full", "You go into MAX power",
+    "Opponent goes into MAX power", "One of your team is knocked out", "One of their team is knocked out",
+    "After another event", "Seconds left on the clock", "Your combo reaches", "Opponent's combo reaches",
+    "Your blast stock reaches", "Opponent's blast stock reaches"};
+const char *const kWhenKeys[PS_WHEN_COUNT] = {
+    "start", "enemy_health", "player_health", "enemy_transform", "player_transform", "time", "enemy_switch", "player_switch",
+    "player_ki_full", "enemy_ki_full", "player_max", "enemy_max", "player_ko", "enemy_ko", "after_event", "time_left",
+    "player_combo", "enemy_combo", "player_blast", "enemy_blast"};
+// what an event of the fight does
+const char *const kDoNames[PS_DO_COUNT] = {
+    "Say a line (the fight goes on)", "Cutscene (the fight pauses)", "Heal", "Hurt", "Set health to", "Give ki bars",
+    "Give blast stocks", "Go into MAX power", "Transform", "Bring in a team member", "Change the music", "Play a sound",
+    "Break the stage", "Shake the screen", "Flash", "Aura", "Win the fight now", "Lose the fight now",
+    "Change the opponent's strength", "Add time to the clock", "Wait", "Fire a blast", "Show a message"};
+const char *const kDoKeys[PS_DO_COUNT] = {
+    "say", "scene", "heal", "hurt", "set_health", "ki", "blast", "max_power", "transform", "switch", "music", "sound",
+    "stage", "shake", "flash", "aura", "win", "lose", "cpu", "time", "wait", "use_blast", "card"};
+const char *const kWinNames[PS_WIN_COUNT] = {"Knock out the opponent", "Hold out until the time is up",
+                                             "Bring the opponent's health down", "Finish with a blast"};
+const char *const kWinKeys[PS_WIN_COUNT] = {"ko", "survive", "health", "blast"};
+const char *const kCardNames[3] = {"Text box", "Narration card", "Title card"};
+const char *const kCardKeys[3] = {"box", "narration", "title"};
+const char *const kTransNames[PS_TRANS_COUNT] = {"None", "Fade in from black", "Fade out to black after it", "White flash",
+                                                 "Dip to black and back"};
+const char *const kTransKeys[PS_TRANS_COUNT] = {"none", "fade_in", "fade_out", "flash", "dip"};
+const char *const kStandNames[3] = {"On the ground", "In the air", "High up"};
+const char *const kStandKeys[3] = {"ground", "air", "high"};
+const char *const kFaceNames[3] = {"Facing the other", "Back turned", "Side on"};
+const char *const kFaceKeys[3] = {"front", "back", "side"};
 const char *const kCpuNames[5] = {"Easy", "Normal", "Hard", "Very hard", "Super"};
 const int kCpuLevels[5] = {0, 6, 13, 21, 29}; // CpuLevel_FromSetting (src/battle/view_b_c.c)
 const char *const kDistNames[4] = {"Where the stage starts them", "Close", "Talking distance", "Far apart"};
+// Z items by what they do (ids from 1, as the game's item list has them): level 1..3 of each is base + level
+const struct Boost { const char *key, *name; int base, max; } kBoosts[5] = {
+    {"attack", "Attack", 0, 3}, {"defense", "Defense", 3, 3}, {"blast", "Ki blasts", 6, 3}, {"ki", "Ki", 9, 3}, {"health", "Extra health bars", 124, 2}};
 
 struct Chara { int id; std::string name; bool added; int costumes; };
 std::vector<Chara> sCharas;
@@ -740,6 +772,9 @@ void sagas_read(void) {
             notice(f + " could not be read: is it a saga's JSON?", true);
             continue;
         }
+        bool bad = !s.doc["episodes"].isArr();
+        for (size_t i = 0; !bad && i < s.doc["episodes"].size(); i++) { bad = !s.doc["episodes"][i].isObj(); }
+        if (bad) { notice(f + " is left out: its \"episodes\" are not a list of { }.", true); continue; }
         sSagas.push_back(s);
     }
     sSagas.push_back(sample);
@@ -835,13 +870,24 @@ struct Gsc {
     }
 };
 
-struct CLine { int v[PL_COUNT]; std::string name, text; int portrait; bool onStage; };
+// where an answer of a question sends the saga: an episode's number from 0, or one of these
+enum { GO_END = -1, GO_RETRY = -2, GO_NEXT = -3 };
+struct CLine {
+    int v[PL_COUNT];
+    std::string name, text;
+    int portrait;
+    bool onStage;
+    std::vector<int> pool;            // a random voice: the lines it is picked from each time the episode is played
+    std::vector<std::string> answers; // a question: what the player picks from ...
+    std::vector<int> gotos;           // ... and where each sends the saga
+};
 struct CEp {
     std::vector<uint8_t> script;
     std::vector<CLine> lines;
     int battle[PB_COUNT];
-    std::vector<std::vector<int>> events;
-    std::string sagaTitle, label, title, desc;
+    std::vector<std::vector<int>> events;  // PE_
+    std::vector<std::vector<int>> actions; // PA_
+    std::string sagaTitle, label, title, desc, objective;
     int number;
 };
 SDL_Mutex *sMx;
@@ -850,7 +896,7 @@ bool sInBattle; // its battle is set up or running (the overlay is drawn)
 int sSaga = -1;  // the saga open in the editor or being played (index in sSagas)
 bool sPlayMode;  // the saga is being played (not tested from the editor)
 
-struct Team { std::vector<int> chara, costume; };
+struct Team { std::vector<int> chara, costume, health; };
 Team team_of(const J &ep, const char *key) {
     Team t;
     const J &l = ep[key];
@@ -859,6 +905,7 @@ Team team_of(const J &ep, const char *key) {
         if (c < 0) { continue; }
         t.chara.push_back(c);
         t.costume.push_back(l[i].isObj() ? (int)l[i]["costume"].number(0) : 0);
+        t.health.push_back(l[i].isObj() && l[i]["health"].isNum() ? (int)l[i]["health"].n : -1); // (its own, or the side's)
     }
     return t;
 }
@@ -866,6 +913,12 @@ int utf8_len(const std::string &s) {
     int n = 0;
     for (unsigned char c : s) { n += (c & 0xC0) != 0x80; }
     return n;
+}
+int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
+std::string clock_text(int s) {
+    char b[24];
+    snprintf(b, sizeof(b), "%d:%02d", s / 60, s % 60);
+    return b;
 }
 
 // speaker: "player", "player2".."player5", "enemy", "enemy2".., "narrator"
@@ -875,6 +928,13 @@ void speaker_of(const std::string &sp, int *side, int *member) {
     if (sp.compare(0, 6, "player") == 0) { *side = 0; *member = sp.size() > 6 ? atoi(sp.c_str() + 6) - 1 : -1; }
     else if (sp.compare(0, 5, "enemy") == 0) { *side = 1; *member = sp.size() > 5 ? atoi(sp.c_str() + 5) - 1 : -1; }
     if (*member == 0) { *member = -1; }
+}
+
+// "goto" of an answer: an episode's number (from 1), "end", "retry", or "next" (the saga goes on as it would)
+int goto_of(const J &g) {
+    if (g.isNum()) { return (int)g.n >= 1 ? (int)g.n - 1 : GO_NEXT; }
+    std::string t = g.text("next");
+    return t == "end" ? GO_END : t == "retry" ? GO_RETRY : GO_NEXT;
 }
 
 CLine compile_line(const J &l, const Team *teams) {
@@ -912,17 +972,18 @@ CLine compile_line(const J &l, const Team *teams) {
     } else if (v.text() == "random") {
         vline = -2;
     }
-    if (vline == -2) {
-        const std::vector<int> &have = voice_lines(vchara);
-        vline = have.empty() ? -1 : have[(size_t)(rand() % (int)have.size())];
+    if (vline == -2) { // (picked when the line is said: PortStoryUi_Line, another one every time the episode is played)
+        c.pool = voice_lines(vchara);
+        vline = -1;
+        if (!c.pool.empty()) { c.v[PL_VCHARA] = vchara; }
     }
     if (vline >= 0 && vchara >= 0) {
         c.v[PL_VOICE] = vline;
         c.v[PL_VCHARA] = vchara;
         if (vchara == chara && c.onStage) { c.v[PL_LIP] = vline; }
     }
-    c.v[PL_CAMERA] = key_index(kCamKeys, CAM_COUNT, l["camera"].text("auto"), CAM_AUTO);
-    c.v[PL_MOVE] = key_index(kMoveKeys, MOVE_COUNT, l["move"].text("cut"), MOVE_CUT);
+    c.v[PL_CAMERA] = key_index(kCamKeys, PS_CAM_COUNT, l["camera"].text("auto"), PS_CAM_AUTO);
+    c.v[PL_MOVE] = key_index(kMoveKeys, PS_MOVE_COUNT, l["move"].text("cut"), PS_MOVE_CUT);
     c.v[PL_MOVE_T] = (int)(l["move_time"].number(3.0) * 10.0 + 0.5);
     int p = pose_index(l["pose"]);
     if (l["pose"].isNum() && p < 0) { c.v[PL_POSE] = (int)l["pose"].n; c.v[PL_POSE_LOOP] = l["pose_loop"].truthy(true); }
@@ -938,15 +999,79 @@ CLine compile_line(const J &l, const Team *teams) {
     c.v[PL_FX] = fx;
     c.v[PL_LEN] = utf8_len(c.text);
     c.v[PL_WAIT] = (int)(l["wait"].number(0) * 60.0);
+    // what came later (a line without these keys is the line it always was)
+    c.v[PL_SOUND] = l["sound"].isNum() ? clampi((int)l["sound"].n, 0, 999) : -1;
+    c.v[PL_MUSIC] = l["music"].isNum() ? (int)l["music"].n : l["music"].text() == "stop" ? -2 : -1;
+    c.v[PL_CARD] = key_index(kCardKeys, 3, l["card"].text("box"), 0);
+    c.v[PL_TRANS] = key_index(kTransKeys, PS_TRANS_COUNT, l["transition"].text("none"), PS_TRANS_NONE);
+    c.v[PL_DIST] = l["distance"].isNum() ? clampi((int)l["distance"].n, 1, 3) : -1;
+    c.v[PL_STAND] = key_index(kStandKeys, 3, l["stand"].text(), -1);
+    c.v[PL_LSTAND] = key_index(kStandKeys, 3, l["listener_stand"].text(), -1);
+    c.v[PL_FACE] = key_index(kFaceKeys, 3, l["face"].text(), -1);
+    c.v[PL_LFACE] = key_index(kFaceKeys, 3, l["listener_face"].text(), -1);
+    c.v[PL_DELAY] = clampi((int)(l["delay"].number(0) * 60.0), 0, 600);
+    const J &ch = l["choices"];
+    for (size_t i = 0; i < ch.size() && i < 3; i++) {
+        c.answers.push_back(ch[i]["text"].text("..."));
+        c.gotos.push_back(goto_of(ch[i]["goto"]));
+    }
+    c.v[PL_CHOICE] = (int)c.answers.size();
+    if (c.v[PL_CARD] > 0) { c.onStage = false; c.v[PL_LIP] = -1; if (!l.has("name")) { c.name.clear(); } }
     return c;
 }
 
-// What an episode is played as. preview: one of its scenes alone ("intro", "win", "lose"), no fight.
+// What the fight asks of the player, in a sentence or two (the banner as it starts, the editor, the result screen).
+std::string objective_text(const J &bt) {
+    if (!bt["fight"].truthy(true)) { return ""; }
+    std::string o = bt["objective"].text();
+    int win = key_index(kWinKeys, PS_WIN_COUNT, bt["win"].text("ko"), PS_WIN_KO);
+    if (o.empty()) {
+        switch (win) {
+        case PS_WIN_SURVIVE: o = "Hold out for " + clock_text((int)bt["survive"].number(60)) + "."; break;
+        case PS_WIN_HEALTH: o = "Bring the opponent's health down to " + std::to_string(clampi((int)bt["win_value"].number(50), 1, 99)) + "%."; break;
+        case PS_WIN_BLAST: o = "Finish the opponent with a blast."; break;
+        default: o = "Knock out the opponent."; break;
+        }
+    }
+    if (bt["fail_member"].truthy()) { o += " Don't lose a team member."; }
+    int fh = clampi((int)bt["fail_health"].number(0), 0, 99);
+    if (fh > 0) { o += " Keep your health above " + std::to_string(fh) + "%."; }
+    int t = (int)bt["time"].number(0);
+    if (t > 0) {
+        std::string tu = bt["time_up"].text("health");
+        o += " Time limit " + clock_text(t) + ": " + (tu == "win" ? "you win when it runs out." : tu == "lose" ? "you lose when it runs out." : "the healthier fighter wins.");
+    }
+    return o;
+}
+// ... and whether the banner is put up: asked for, or the fight has a rule a saga of before could not have
+bool objective_shown(const J &bt) {
+    if (bt.has("show_objective")) { return bt["show_objective"].truthy(); }
+    int win = key_index(kWinKeys, PS_WIN_COUNT, bt["win"].text("ko"), PS_WIN_KO);
+    return bt.has("objective") || win == PS_WIN_HEALTH || win == PS_WIN_BLAST || bt["fail_member"].truthy() || bt["fail_health"].number(0) > 0;
+}
+
+// A scene played alone: "intro", "win", "lose"; "ending" (the saga's); "event:<event>:<action>" (a scene that stops
+// the fight, both from 0).
+const J &preview_scene(const J &saga, const J &ep, const std::string &preview) {
+    if (preview == "ending") { return saga["ending"]; }
+    if (preview.compare(0, 6, "event:") == 0) {
+        int e = 0, a = 0;
+        sscanf(preview.c_str() + 6, "%d:%d", &e, &a);
+        return ep["battle"]["events"][e]["do"][a];
+    }
+    return ep[preview.c_str()];
+}
+
+// What an episode is played as. preview: one of its scenes alone (preview_scene), no fight.
 bool compile(const J &saga, int number, const std::string &preview, CEp &out, std::string &why) {
     const J &eps = saga["episodes"];
     if (number < 0 || number >= (int)eps.size()) { why = "That episode is not in the saga."; return false; }
     const J &ep = eps[number];
-    Team teams[2] = {team_of(ep, "player"), team_of(ep, "enemy")};
+    // (the saga's ending is played by the fighters and on the stage of its own, or of the episode it follows)
+    const J &end = saga["ending"];
+    bool ending = preview == "ending";
+    const J &cast = ending && end["player"].size() > 0 && end["enemy"].size() > 0 ? end : ep;
+    Team teams[2] = {team_of(cast, "player"), team_of(cast, "enemy")};
     if (teams[0].chara.empty() || teams[1].chara.empty()) {
         why = "Episode " + std::to_string(number + 1) + " needs a fighter on each side.";
         return false;
@@ -962,22 +1087,45 @@ bool compile(const J &saga, int number, const std::string &preview, CEp &out, st
     const J &hubDef = ep["hub"]; // (Corrupt Patrol's headquarters: a battle without a fight, people standing round: 9007)
     bool hub = hubDef.isObj() && preview.empty();
     if (hub) { fight = true; }
+    // the scenes that stop the fight: each an event action of the script (counted first: the opening lists them)
+    int scenes = 0;
+    const J &evs = bt["events"];
+    for (size_t i = 0; fight && !hub && i < evs.size(); i++) {
+        const J &acts = evs[i]["do"];
+        for (size_t k = 0; k < acts.size(); k++) { scenes += acts[k]["do"].text() == "scene" && acts[k]["lines"].size() > 0; }
+    }
+    scenes = std::min(scenes, PS_SCENE_MAX);
     Gsc g;
     // the setup: the rule, the sides, the members (the game's commands 10, 11, 12)
     g.action(1000);
-    int stage = stage_of(ep["stage"]);
-    int bgm = (int)ep["music"].number(8);
+    int stage = stage_of(ending && end.has("stage") ? end["stage"] : ep["stage"]);
+    int bgm = (int)(ending && end.has("music") ? end["music"] : ep["music"]).number(8);
     g.cmd(10, {Gsc::I(stage), Gsc::I(bgm), Gsc::I(0), Gsc::I(fight ? 3 : 0), Gsc::I(0)});
     for (int s = 0; s < 2; s++) { g.cmd(11, {Gsc::I(s), Gsc::I((int)teams[s].chara.size())}); }
-    int cpu = kCpuLevels[std::max(0, std::min(4, (int)bt["cpu"].number(1)))];
-    if (bt.has("cpu_level")) { cpu = std::max(hub ? -1 : 0, std::min(40, (int)bt["cpu_level"].number(cpu))); } // (Corrupt Patrol: the AI's own scale)
+    // the opponent's strength: one of the game's five, or the AI's own scale; the saga's difficulty moves either
+    int diff = clampi((int)saga["settings"]["difficulty"].number(0), -2, 2);
+    int cpu = kCpuLevels[clampi((int)bt["cpu"].number(1) + diff, 0, 4)];
+    if (bt.has("cpu_level")) { // (Corrupt Patrol too; -1 for its hub)
+        cpu = (int)bt["cpu_level"].number(cpu);
+        cpu = cpu < 0 ? (hub ? -1 : 0) : clampi(cpu + diff * 5, 0, 40);
+    }
     for (int s = 0; s < 2; s++) {
-        int hp = std::max(1, std::min(100, (int)bt[s ? "enemy_health" : "player_health"].number(100)));
-        const J &items = bt[s ? "enemy_items" : "player_items"]; // (Corrupt Patrol: Z items of the side's fighters, up to 8 ids)
+        int hp = clampi((int)bt[s ? "enemy_health" : "player_health"].number(100), 1, 100);
+        // Z items of the side's fighters, up to 8 ids: the boosts chosen by what they do, then a list of ids as it is
+        // (Corrupt Patrol's)
+        std::vector<int> items;
+        const J &boost = bt[s ? "enemy_boost" : "player_boost"];
+        for (const Boost &b : kBoosts) {
+            int lv = clampi((int)boost[b.key].number(0), 0, b.max);
+            if (lv > 0) { items.push_back(b.base + lv); }
+        }
+        const J &raw = bt[s ? "enemy_items" : "player_items"];
+        for (size_t i = 0; i < raw.size(); i++) { items.push_back((int)raw[i].number(-1)); }
         for (size_t m = 0; m < teams[s].chara.size(); m++) {
+            int own = teams[s].health[m] >= 0 ? clampi(teams[s].health[m], 1, 100) : hp;
             std::vector<Gsc::Op> ops = {Gsc::I((s << 15) | (int)m), Gsc::I(teams[s].chara[m]), Gsc::I(teams[s].costume[m]), Gsc::I(0),
-                                        Gsc::I(s ? cpu : 0), Gsc::I(items.size() > 7 ? (int)items[7].number(-1) : -1), Gsc::I(hp)};
-            for (int i = 0; i < 7; i++) { ops.push_back(Gsc::I(i < (int)items.size() ? (int)items[i].number(-1) : -1)); }
+                                        Gsc::I(s ? cpu : 0), Gsc::I(items.size() > 7 ? items[7] : -1), Gsc::I(own)};
+            for (int i = 0; i < 7; i++) { ops.push_back(Gsc::I(i < (int)items.size() ? items[(size_t)i] : -1)); }
             g.cmd(12, ops);
         }
     }
@@ -998,6 +1146,11 @@ bool compile(const J &saga, int number, const std::string &preview, CEp &out, st
         }
         g.cmd(9006);
     };
+    // the events the game's trigger list is asked to keep: the scenes after the fight and those that stop it (an event
+    // that starts empties the list, so every one of them asks again as it ends)
+    std::vector<std::pair<char, std::vector<Gsc::Op>>> wanted = {{'a', {Gsc::I(0x7F), Gsc::I(10040)}}, {'a', {Gsc::I(0x7F), Gsc::I(10041)}},
+                                                                 {'a', {Gsc::I(0x7F), Gsc::I(10030)}}, {'a', {Gsc::I(0x7F), Gsc::I(10031)}}};
+    for (int k = 0; k < scenes; k++) { wanted.push_back({'a', {Gsc::I(0x7F), Gsc::I(PS_SCENE_FIRST + k)}}); }
     // the opening: the scene, then the fight (or the end, without one)
     g.action(10000);
     g.cmd(3);
@@ -1005,11 +1158,10 @@ bool compile(const J &saga, int number, const std::string &preview, CEp &out, st
     g.cmd(5);
     if (hub) {} // (no scene: the player is let loose at once)
     else if (preview.empty() || preview == "intro") { scene(ep["intro"], preview.empty()); }
-    else { scene(ep[preview.c_str()], false); }
+    else { scene(preview_scene(saga, ep, preview), false); }
     g.cmd(6);
     if (fight) {
-        g.cmd(7, {}, {{'a', {Gsc::I(0x7F), Gsc::I(10040)}}, {'a', {Gsc::I(0x7F), Gsc::I(10041)}},
-                      {'a', {Gsc::I(0x7F), Gsc::I(10030)}}, {'a', {Gsc::I(0x7F), Gsc::I(10031)}}});
+        g.cmd(7, {}, wanted);
         for (int s = 0; s < 2; s++) {
             int ki = std::max(0, std::min(100, (int)bt[s ? "enemy_ki" : "player_ki"].number(0)));
             if (ki > 0) { g.cmd(s ? 14 : 13, {}, {{'F', {Gsc::I(ki)}}}); } else { g.cmd(s ? 14 : 13); }
@@ -1057,21 +1209,103 @@ bool compile(const J &saga, int number, const std::string &preview, CEp &out, st
             g.end();
         }
     }
-    // the battle's conditions and the lines said in it
+    // the fight's rules
     for (int i = 0; i < PB_COUNT; i++) { out.battle[i] = 0; }
-    out.battle[PB_WIN] = bt["win"].text("ko") == "survive" ? 1 : 0;
+    out.battle[PB_WIN] = key_index(kWinKeys, PS_WIN_COUNT, bt["win"].text("ko"), PS_WIN_KO);
     out.battle[PB_SURVIVE] = (int)bt["survive"].number(60);
     out.battle[PB_TIME] = (int)bt["time"].number(0);
     std::string tu = bt["time_up"].text("health");
     out.battle[PB_TIME_UP] = tu == "win" ? 1 : tu == "lose" ? 0 : 2;
-    const J &ev = bt["lines"];
-    for (size_t i = 0; fight && i < ev.size() && out.events.size() < 32; i++) {
-        std::vector<int> e(PE_COUNT, 0);
-        e[PE_WHEN] = key_index(kWhenKeys, WHEN_COUNT, ev[i]["when"].text("start"), WHEN_START);
-        e[PE_VALUE] = (int)ev[i]["value"].number(50);
-        out.lines.push_back(compile_line(ev[i], teams));
-        e[PE_LINE] = (int)out.lines.size() - 1;
-        out.events.push_back(e);
+    out.battle[PB_WIN_VALUE] = clampi((int)bt["win_value"].number(50), 1, 99);
+    out.battle[PB_FAIL_MEMBER] = bt["fail_member"].truthy() ? 1 : 0;
+    out.battle[PB_FAIL_HEALTH] = clampi((int)bt["fail_health"].number(0), 0, 99);
+    for (int s = 0; s < 2; s++) {
+        out.battle[PB_BLAST + s] = bt[s ? "enemy_blast" : "player_blast"].isNum() ? clampi((int)bt[s ? "enemy_blast" : "player_blast"].n, 0, 7) : -1;
+        out.battle[PB_MAX + s] = bt[s ? "enemy_max" : "player_max"].truthy() ? 1 : 0;
+        out.battle[PB_FORM + s] = clampi((int)bt[s ? "enemy_form" : "player_form"].number(0), 0, 3);
+        out.battle[PB_KI + s] = -1; // (ki at the start is the script's own: "player_ki", above)
+    }
+    out.objective = fight && !hub ? objective_text(bt) : "";
+    out.battle[PB_OBJECTIVE] = fight && !hub && objective_shown(bt) ? 1 : 0;
+    // what happens during the fight. The lines said in it ("lines": the oldest way) are events that say one line each;
+    // "events" have a list of actions.
+    auto add_event = [&](const J &e) -> std::vector<int> & {
+        std::vector<int> v(PE_COUNT, 0);
+        v[PE_WHEN] = key_index(kWhenKeys, PS_WHEN_COUNT, e["when"].text("start"), PS_WHEN_START);
+        v[PE_VALUE] = (int)e["value"].number(50);
+        v[PE_FIRST] = (int)out.actions.size();
+        v[PE_REPEAT] = clampi((int)e["repeat"].number(0), 0, 3600);
+        out.events.push_back(v);
+        return out.events.back();
+    };
+    auto add_action = [&](int kind, int side, int value) {
+        std::vector<int> a(PA_COUNT, 0);
+        a[PA_KIND] = kind;
+        a[PA_SIDE] = side;
+        a[PA_VALUE] = value;
+        out.actions.push_back(a);
+        out.events.back()[PE_ACTIONS]++;
+    };
+    const J &said = bt["lines"];
+    for (size_t i = 0; fight && i < said.size() && out.events.size() < 96; i++) {
+        add_event(said[i]);
+        out.lines.push_back(compile_line(said[i], teams));
+        add_action(PS_DO_SAY, 0, (int)out.lines.size() - 1);
+    }
+    int sceneAt = 0;
+    for (size_t i = 0; fight && !hub && i < evs.size() && out.events.size() < 96; i++) { // (96: the referee's list)
+        add_event(evs[i]);
+        if (evs[i]["when"].text() == "after_event") { // (written as an event of the list, from 1: the lines come first)
+            out.events.back()[PE_VALUE] = (int)evs[i]["value"].number(1) + (int)said.size();
+        }
+        const J &acts = evs[i]["do"];
+        for (size_t k = 0; k < acts.size() && k < 16; k++) {
+            const J &a = acts[k];
+            int kind = key_index(kDoKeys, PS_DO_COUNT, a["do"].text("say"), PS_DO_SAY);
+            int side = a["side"].text("enemy") == "player" ? 0 : 1;
+            int value = (int)a["value"].number(0);
+            switch (kind) {
+            case PS_DO_SAY:
+            case PS_DO_CARD:
+                out.lines.push_back(compile_line(a, teams));
+                value = (int)out.lines.size() - 1;
+                break;
+            case PS_DO_SCENE:
+                if (a["lines"].size() == 0 || sceneAt >= scenes) { continue; }
+                value = PS_SCENE_FIRST + sceneAt++;
+                // the scene's event action. Its camera command (1201) is what lets the game's trigger list start it in
+                // the middle of the fight, as soon as both fighters can be interrupted; the fight is held while it
+                // plays and goes on where it was at its end.
+                g.action(value);
+                g.cmd(3);
+                g.cmd(9, {Gsc::I(-1)});
+                g.cmd(5);
+                g.cmd(1201, {Gsc::F(0), Gsc::F(0), Gsc::F(0), Gsc::F(0), Gsc::F(0), Gsc::F(0)});
+                scene(a, false);
+                g.cmd(6);
+                g.cmd(7, {}, wanted);
+                g.cmd(8, {Gsc::I(0x8000), Gsc::I(-1)});
+                g.cmd(4);
+                g.end();
+                break;
+            case PS_DO_HEAL: case PS_DO_HURT: value = clampi((int)a["value"].number(25), 1, 100); break;
+            case PS_DO_SET_HP: value = clampi((int)a["value"].number(100), 1, 100); break;
+            case PS_DO_KI: value = clampi((int)a["value"].number(5), -5, 5); break;
+            case PS_DO_BLAST: value = clampi((int)a["value"].number(1), -7, 7); break;
+            case PS_DO_TRANSFORM: value = clampi(value, 0, 4); break;
+            case PS_DO_SWITCH: value = clampi(value, 0, 5); break;
+            case PS_DO_MUSIC: value = a["value"].isNum() ? (int)a["value"].n : -2; break;
+            case PS_DO_SOUND: value = clampi(value, 0, 999); break;
+            case PS_DO_SHAKE: value = clampi((int)a["value"].number(6), 1, 50); break;
+            case PS_DO_AURA: value = a["value"].truthy(true) ? 1 : 0; break;
+            case PS_DO_CPU: value = clampi((int)a["value"].number(20), 0, 40); break;
+            case PS_DO_TIME: value = clampi((int)a["value"].number(30), -600, 600); break;
+            case PS_DO_WAIT: value = clampi((int)a["value"].number(10), 1, 300); break;
+            case PS_DO_USE_BLAST: value = clampi(value, 0, 2); break;
+            default: break;
+            }
+            add_action(kind, side, value);
+        }
     }
     out.battle[PB_EVENTS] = (int)out.events.size();
     out.script = g.bytes();
@@ -1100,12 +1334,42 @@ struct Shared {
     int title = -1;        // frames since the title card came, -1 none
     int hud = -1, hudFrames = 0;
     int letterbox = 0;
-    int flash = 0;
-    int fadeAlpha = 0, fadeStep = 0;
+    int flash = 0, flashRed = 0;
+    int fadeSet = -1, fadeStep = 0, fadeGen = 0; // a fade asked for: the black's strength to start from (0..255, -1 as
+                           // it is), and its way (> 0 into black, where it stays; < 0 out of it)
+    int dark = 0;          // the picture dimmed (a line's effect)
     int timer = -1, timerSurvive = 0;
+    int choice = -1, choiceCur = 0; // a question waiting for its answer: the line, the answer the cursor is on
+    bool picked = false, pickLate = false; // an answer was given (pickLate: after the fight was decided) ...
+    int pick = GO_NEXT;    // ... and where it sends the saga
+    int objective = -1;    // frames since the fight's objective came up, -1 not shown
+    int card = -1, cardFrames = 0; // a message shown during the fight: the line, frames since it came
+    bool fought = false;   // the fight was decided: how long it took, and the player's health then
+    int fightSecs = 0, fightHealth = 0;
     int result = 0, resultGen = 0; // how the battle went (PortStoryUi_Result)
 };
 Shared sSh;
+// (an episode's battle starts: nothing of the last one's stays on the screen)
+void overlay_reset(void) {
+    sSh.say = -1;
+    sSh.title = -1;
+    sSh.hud = -1;
+    sSh.letterbox = 0;
+    sSh.flash = 0;
+    sSh.fadeSet = 0;
+    sSh.fadeStep = 0;
+    sSh.fadeGen++;
+    sSh.dark = 0;
+    sSh.timer = -1;
+    sSh.choice = -1;
+    sSh.picked = false;
+    sSh.pickLate = false;
+    sSh.pick = GO_NEXT;
+    sSh.objective = -1;
+    sSh.card = -1;
+    sSh.fought = false;
+    sSh.result = 0;
+}
 
 void sound(int id) { // 0 move, 1 choose, 2 back
     SDL_LockMutex(sMx);
@@ -1189,14 +1453,7 @@ extern "C" int PortStoryUi_Prepare(void) {
     }
     if (ok) {
         sInBattle = true;
-        sSh.say = -1;
-        sSh.title = -1;
-        sSh.hud = -1;
-        sSh.letterbox = 0;
-        sSh.flash = 0;
-        sSh.fadeAlpha = 0;
-        sSh.timer = -1;
-        sSh.result = 0;
+        overlay_reset();
         fprintf(stderr, "bt3: story: playing %s, episode %d%s%s (%d lines, script %d bytes)\n", sSagas[(size_t)saga].file.c_str(), episode + 1,
                 preview.empty() ? "" : ", scene ", preview.c_str(), (int)sEp.lines.size(), (int)sEp.script.size());
     } else {
@@ -1219,14 +1476,7 @@ extern "C" int PortStoryUi_PrepareDoc(const char *json, int episode) {
     bool ok = compile(sExtDoc, episode, "", sEp, why);
     if (ok) {
         sInBattle = true;
-        sSh.say = -1;
-        sSh.title = -1;
-        sSh.hud = -1;
-        sSh.letterbox = 0;
-        sSh.flash = 0;
-        sSh.fadeAlpha = 0;
-        sSh.timer = -1;
-        sSh.result = 0;
+        overlay_reset();
     }
     SDL_UnlockMutex(sMx);
     if (ok) { fprintf(stderr, "bt3: story: a mode's episode %d (%d lines)\n", episode + 1, (int)sEp.lines.size()); }
@@ -1267,7 +1517,18 @@ extern "C" void PortStoryUi_ScriptCopy(void *dst) {
 extern "C" int PortStoryUi_Line(int n, int *out) {
     SDL_LockMutex(sMx);
     bool ok = n >= 0 && n < (int)sEp.lines.size();
-    if (ok) { memcpy(out, sEp.lines[(size_t)n].v, sizeof(int) * 16); }
+    if (ok) {
+        CLine &l = sEp.lines[(size_t)n];
+        if (!l.pool.empty()) { // a random voice: picked the first time the line is asked for, so every play has another
+            static unsigned seed;
+            if (seed == 0) { seed = (unsigned)SDL_GetTicks() | 1u; }
+            seed = seed * 1664525u + 1013904223u;
+            l.v[PL_VOICE] = l.pool[(size_t)((seed >> 16) % (unsigned)l.pool.size())];
+            if (l.v[PL_VCHARA] == l.v[PL_CHARA] && l.onStage) { l.v[PL_LIP] = l.v[PL_VOICE]; }
+            l.pool.clear();
+        }
+        memcpy(out, l.v, sizeof(int) * PL_COUNT);
+    }
     SDL_UnlockMutex(sMx);
     return ok;
 }
@@ -1284,19 +1545,45 @@ extern "C" int PortStoryUi_Event(int n, int *out) {
     SDL_UnlockMutex(sMx);
     return ok;
 }
+extern "C" int PortStoryUi_Action(int n, int *out) {
+    SDL_LockMutex(sMx);
+    bool ok = n >= 0 && n < (int)sEp.actions.size();
+    if (ok) { for (int i = 0; i < PA_COUNT; i++) { out[i] = sEp.actions[(size_t)n][(size_t)i]; } }
+    SDL_UnlockMutex(sMx);
+    return ok;
+}
+// BT3_STORY_PICK=<answer, from 0> (testing, with BT3_STORY_AUTO): the answer given to every question
+extern "C" int PortStoryUi_AutoPick(void) {
+    const char *e = getenv("BT3_STORY_PICK");
+    return e != NULL ? atoi(e) : 0;
+}
 extern "C" void PortStoryUi_Show(int what, int a, int b) {
     if (sMx == NULL) { return; }
     SDL_LockMutex(sMx);
     switch (what) {
-    case SHOW_SAY: if (sSh.say != a) { sSh.sayGen++; } sSh.say = a; sSh.shown = b; break;
-    case SHOW_HIDE: sSh.say = -1; break;
-    case SHOW_TITLE: sSh.title = a; break;
-    case SHOW_HUD: sSh.hud = a; sSh.hudFrames = b; break;
-    case SHOW_LETTERBOX: sSh.letterbox = a; break;
-    case SHOW_FLASH: sSh.flash = a; break;
-    case SHOW_FADE: sSh.fadeAlpha = a; sSh.fadeStep = b; break;
-    case SHOW_TIMER: sSh.timer = a; sSh.timerSurvive = b; break;
-    case SHOW_END: sSh.say = -1; sSh.letterbox = 0; break;
+    case PS_SHOW_SAY: if (sSh.say != a) { sSh.sayGen++; } sSh.say = a; sSh.shown = b; break;
+    case PS_SHOW_HIDE: sSh.say = -1; sSh.choice = -1; break;
+    case PS_SHOW_TITLE: sSh.title = a; break;
+    case PS_SHOW_HUD: sSh.hud = a; sSh.hudFrames = b; break;
+    case PS_SHOW_LETTERBOX: sSh.letterbox = a; break;
+    case PS_SHOW_FLASH: sSh.flash = a; sSh.flashRed = b; break;
+    case PS_SHOW_FADE: sSh.fadeSet = a; sSh.fadeStep = b; sSh.fadeGen++; break;
+    case PS_SHOW_TIMER: sSh.timer = a; sSh.timerSurvive = b; break;
+    case PS_SHOW_END: sSh.say = -1; sSh.choice = -1; sSh.letterbox = 0; break;
+    case PS_SHOW_CHOICE: sSh.choice = a; sSh.choiceCur = b; break;
+    case PS_SHOW_CHOSEN: // (the answer given to a question; the saga goes where it leads when the episode is over)
+        sSh.choice = -1;
+        if (a >= 0 && a < (int)sEp.lines.size() && b >= 0 && b < (int)sEp.lines[(size_t)a].gotos.size()) {
+            sSh.picked = true;
+            sSh.pickLate = sSh.fought;
+            sSh.pick = sEp.lines[(size_t)a].gotos[(size_t)b];
+            fprintf(stderr, "bt3: story: answer %d of line %d (goes to %d)\n", b + 1, a, sSh.pick);
+        }
+        break;
+    case PS_SHOW_OBJECTIVE: sSh.objective = a; break;
+    case PS_SHOW_DARK: sSh.dark = a; break;
+    case PS_SHOW_CARD: sSh.card = a; sSh.cardFrames = b; break;
+    case PS_SHOW_FOUGHT: sSh.fought = true; sSh.fightSecs = a; sSh.fightHealth = b; break;
     }
     SDL_UnlockMutex(sMx);
 }
@@ -1405,7 +1692,15 @@ struct Prompt { int b; std::string label; };
 void prompts(const std::vector<Prompt> &ps) {
     float r = S(12), size = S(17), gap = S(22);
     float total = 0;
-    for (const Prompt &p : ps) { total += S(70) + text_w(sFont, size, p.label.c_str()) + gap; }
+    for (const Prompt &p : ps) { total += S(54) + text_w(sFont, size, p.label.c_str()) + gap; }
+    float room = P(1336, 0).x - P(40, 0).x;
+    if (total > room) { // (many buttons: all of them made smaller, none cut off)
+        float k = room / total;
+        r *= k;
+        size *= k;
+        gap *= k;
+        total = room;
+    }
     ImVec2 at = P(1336, 742);
     float x = at.x - total;
     if (x < P(40, 0).x) { x = P(40, 0).x; }
@@ -1448,8 +1743,10 @@ void heading(const std::string &h, const std::string &sub) {
     float hs = S(46);
     std::string up = h;
     for (char &c : up) { c = (char)SDL_toupper((unsigned char)c); }
-    if (up.size() > 26) { up = up.substr(0, 26); }
-    outlined(sBold, hs, P(120, 30), IM_COL32(255, 214, 70, 255), IM_COL32(90, 29, 0, 255), up, S(2.5f));
+    float room = P(1150, 0).x - P(120, 0).x, w = text_w(sBold, hs, up.c_str());
+    if (w > room) { hs = std::max(S(26), hs * room / w); } // (a long title: smaller, and only then shortened)
+    while (up.size() > 6 && text_w(sBold, hs, up.c_str()) > room) { up = up.substr(0, up.size() - 4) + "..."; }
+    outlined(sBold, hs, ImVec2(P(120, 0).x, P(0, 30).y + (S(46) - hs) * 0.5f), IM_COL32(255, 214, 70, 255), IM_COL32(90, 29, 0, 255), up, S(2.5f));
     if (!sub.empty()) {
         float size = S(16), w = text_w(sBold, size, sub.c_str()) + S(36), h2 = S(32);
         ImVec2 a(P(40, 0).x, P(0, 98).y), b(a.x + w, a.y + h2);
@@ -1583,7 +1880,7 @@ int draw_rows(ImVec2 a, ImVec2 b, const std::vector<Row> &rows, int cur, int &to
         else { sDl->AddRectFilled(ra, rb, IM_COL32(255, 255, 255, r.locked ? 8 : 16), rh * 0.5f); }
         float x = ra.x + S(14);
         float size = S(18);
-        ImU32 ink = r.locked ? IM_COL32(170, 160, 200, 200) : sel ? kDark : kInk;
+        ImU32 ink = sel ? (r.locked ? IM_COL32(110, 60, 20, 255) : kDark) : r.locked ? IM_COL32(170, 160, 200, 200) : kInk;
         if (r.face >= 0) {
             float fs = rh - S(8);
             face_at(r.face, ImVec2(x - S(6), y + S(4)), ImVec2(x - S(6) + fs, y + S(4) + fs), fs * 0.5f);
@@ -1912,24 +2209,31 @@ void grid_frame(Overlay &o, std::vector<Prompt> &ps) {
 }
 
 // =============================================================================================== the screens
-enum { SC_HOME, SC_SAGA, SC_EPISODE, SC_SCENE, SC_LINE, SC_FIGHTLINES, SC_RESULT };
-struct Page { int screen; int episode; std::string scene; int line; int cur, top; };
+enum { SC_HOME, SC_SAGA, SC_EPISODE, SC_SCENE, SC_LINE, SC_FIGHTLINES, SC_RESULT, SC_FIGHT, SC_EVENTS, SC_EVENT, SC_ACTION };
+struct Page { int screen; int episode; std::string scene; int line; int cur, top; int sub; }; // (line: the line, or the event; sub: an event's action)
 std::vector<Page> sPages;     // the editor's way down (the last is up)
 bool sDirty;                  // the saga in the editor has changes not saved
 int sSeenGen, sSeenResult;
 int sResult;                  // the episode's result shown (SC_RESULT): 1 won, 2 lost, 3 left
 int sResultNext;              // what Continue does: the next episode, -1 the end of the saga, -2 again
+std::string sResultRank;      // ... the fight's rank ("" no fight won), whether it is the saga's new best,
+bool sResultBest;
+int sResultSecs = -1, sResultHealth; // ... how long the fight took (-1 none) and the health the player's side had left
+int sLivesLeft = -1;          // ... the tries left after a loss (-1: the saga does not count them)
+// a fight's rank, by the health the player's side had left at its end
+const char *rank_of(int health) { return health >= 80 ? "S" : health >= 60 ? "A" : health >= 40 ? "B" : health >= 20 ? "C" : "D"; }
 int sHomeCur = 1, sHomeTop;
 int sModel = -1, sModelCostume;
 std::string sTip;
 
 Page &page(void) { return sPages.back(); }
-void push_page(int screen, int episode = -1, const std::string &scene = "", int line = -1) {
+void push_page(int screen, int episode = -1, const std::string &scene = "", int line = -1, int sub = -1) {
     Page p;
     p.screen = screen;
     p.episode = episode;
     p.scene = scene;
     p.line = line;
+    p.sub = sub;
     p.cur = 0;
     p.top = 0;
     sPages.push_back(p);
@@ -1938,9 +2242,48 @@ Saga *saga(void) { return sSaga >= 0 && sSaga < (int)sSagas.size() ? &sSagas[(si
 J &doc(void) { static J none; Saga *s = saga(); return s != NULL ? s->doc : none; }
 J &episodes(void) { return doc().list("episodes"); }
 J &episode(int i) { static J none; J &l = episodes(); return i >= 0 && i < (int)l.a.size() ? l.a[(size_t)i] : none; }
-J &scene_of(int ep, const std::string &key) { return episode(ep).at(key.c_str()); }
+// The scenes and lines a page edits, by a key: "intro", "win", "lose" (the episode's scenes), "fight" (its lines said
+// during the fight), "ending" (the saga's ending), "scene:<event>:<action>" (a cutscene that stops the fight),
+// "say:<event>:<action>" (one line said or shown during the fight: the event's action is the line itself)
+bool key_ev(const std::string &key, const char *kind, int *e, int *a) {
+    size_t n = strlen(kind);
+    if (key.compare(0, n, kind) != 0 || key.size() <= n || key[n] != ':') { return false; }
+    *e = 0;
+    *a = 0;
+    return sscanf(key.c_str() + n + 1, "%d:%d", e, a) == 2;
+}
+J &event_of(int ep, int e) {
+    static J none;
+    J &l = episode(ep).at("battle").list("events");
+    if (e >= 0 && e < (int)l.a.size()) { return l.a[(size_t)e]; }
+    none = J::obj();
+    return none;
+}
+J &action_of(int ep, int e, int a) {
+    static J none;
+    J &l = event_of(ep, e).list("do");
+    if (a >= 0 && a < (int)l.a.size()) { return l.a[(size_t)a]; }
+    none = J::obj();
+    return none;
+}
+J &scene_of(int ep, const std::string &key) {
+    int e, a;
+    if (key == "ending") { return doc().at("ending"); }
+    if (key_ev(key, "scene", &e, &a)) { return action_of(ep, e, a); }
+    return episode(ep).at(key.c_str());
+}
 J &lines_of(int ep, const std::string &key) { return key == "fight" ? episode(ep).at("battle").list("lines") : scene_of(ep, key).list("lines"); }
-void touch(void) { sDirty = true; }
+J &line_ref(int ep, const std::string &key, int idx) {
+    static J none;
+    int e, a;
+    if (key_ev(key, "say", &e, &a)) { return action_of(ep, e, a); }
+    J &l = lines_of(ep, key);
+    if (idx >= 0 && idx < (int)l.a.size()) { return l.a[(size_t)idx]; }
+    none = J::obj();
+    return none;
+}
+int sDocGen; // (counts the changes: undo keeps the saga as it was before each)
+void touch(void) { sDirty = true; sDocGen++; }
 
 J new_line(const std::string &speaker, const std::string &text) {
     J l = J::obj();
@@ -2059,149 +2402,9 @@ template <typename F> Row text_row(const std::string &label, const std::string &
     r.label = label;
     r.value = value.empty() ? "-" : value;
     r.ok = [title, value, max, set] { open_keys(title, value, max, [set](const std::string &t) { set(t); touch(); }); };
+    r.okLabel = "Type";
+    r.tip = "Cross: type it (with the pad's keys, or the keyboard).";
     return r;
-}
-
-void rows_home(std::vector<Row> &rows) {
-    rows.push_back(sec("MY SAGAS"));
-    for (size_t i = 0; i < sSagas.size(); i++) {
-        const Saga &s = sSagas[i];
-        Row r;
-        r.label = s.doc["title"].text("Untitled saga");
-        r.value = progress_text(s);
-        r.sub = s.builtin ? "sample" : s.doc["author"].text();
-        const J &e0 = s.doc["episodes"][0];
-        r.face = chara_of(e0["player"][0].isObj() ? e0["player"][0]["chara"] : e0["player"][0]);
-        r.model = r.face;
-        r.tip = s.doc["description"].text().empty() ? "Cross plays it (from where you left it), Square edits it." : s.doc["description"].text();
-        int idx = (int)i;
-        r.ok = [idx] { play_saga(idx, false); };
-        r.okLabel = "Play";
-        r.sq = [idx] { sSaga = idx; sPlayMode = false; sDirty = false; sPages.clear(); push_page(SC_SAGA); sound(1); };
-        r.sqLabel = "Edit";
-        r.tri = [idx] {
-            std::vector<Row> rs(3);
-            rs[0].label = "Play from the first episode";
-            rs[0].ok = [idx] { ov_close(); play_saga(idx, true); };
-            rs[1].label = "Make a copy to edit";
-            rs[1].ok = [idx] {
-                ov_close();
-                Saga c = sSagas[(size_t)idx];
-                c.builtin = false;
-                c.doc.set("title", J::str(c.doc["title"].text("Saga") + " (copy)"));
-                c.file = file_for(c.doc["title"].text());
-                sSagas.insert(sSagas.begin(), c);
-                sSaga = 0;
-                save_saga();
-                sSagas.clear();
-                sagas_read();
-            };
-            rs[2].label = sSagas[(size_t)idx].builtin ? "(the sample cannot be deleted)" : "Delete this saga";
-            rs[2].locked = sSagas[(size_t)idx].builtin;
-            rs[2].ok = [idx] {
-                ov_close();
-                std::string file = sSagas[(size_t)idx].file;
-                confirm("DELETE " + sSagas[(size_t)idx].doc["title"].text() + "?", [file] {
-                    std::string from = sDir + "/" + file, to = sDir + "/" + file + ".deleted";
-                    remove(to.c_str());
-                    rename(from.c_str(), to.c_str()); // (kept beside, renamed: a saga is not lost by one press)
-                    notice("Deleted (kept as " + file + ".deleted in the sagas folder)");
-                    sagas_read();
-                });
-            };
-            open_list("SAGA", rs);
-        };
-        r.triLabel = "More";
-        rows.push_back(r);
-    }
-    rows.push_back(sec("MAKE YOUR OWN"));
-    Row n;
-    n.label = "New saga";
-    n.tip = "A saga is episodes: scenes with your own lines, and battles that lead on to what comes next.";
-    n.ok = [] {
-        open_keys("NAME YOUR SAGA", "", 40, [](const std::string &t) {
-            Saga s;
-            s.doc = J::obj();
-            s.doc.set("format", J::num(1));
-            s.doc.set("title", J::str(t.empty() ? "My Saga" : t));
-            s.doc.set("author", J::str(""));
-            s.doc.set("description", J::str(""));
-            J eps = J::arr();
-            eps.push(new_episode(1));
-            s.doc.set("episodes", eps);
-            s.file = file_for(s.doc["title"].text());
-            sSagas.insert(sSagas.begin(), s);
-            sSaga = 0;
-            sPlayMode = false;
-            save_saga();
-            sPages.clear();
-            push_page(SC_SAGA);
-        });
-    };
-    rows.push_back(n);
-    Row f;
-    f.label = "Sagas folder";
-    f.value = sDir;
-    f.tip = "Saga files are shared by copying them into this folder (JSON: docs/port/sagas.md). Cross reads it again.";
-    f.ok = [] { sagas_read(); notice("Read " + std::to_string(sSagas.size() - 1) + " saga files from " + sDir); };
-    rows.push_back(f);
-}
-
-void rows_saga(std::vector<Row> &rows) {
-    J &d = doc();
-    rows.push_back(sec("THE SAGA"));
-    rows.push_back(text_row("Title", d["title"].text(), "THE SAGA'S TITLE", 40, [](const std::string &t) { doc().set("title", J::str(t)); }));
-    rows.push_back(text_row("Author", d["author"].text(), "WHO MADE IT", 40, [](const std::string &t) { doc().set("author", J::str(t)); }));
-    rows.push_back(text_row("Description", d["description"].text(), "WHAT IT IS ABOUT", 200, [](const std::string &t) { doc().set("description", J::str(t)); }));
-    rows.back().tip = "Shown on My Sagas.";
-    rows.push_back(sec("EPISODES"));
-    J &eps = episodes();
-    for (size_t i = 0; i < eps.a.size(); i++) {
-        const J &e = eps.a[i];
-        Row r;
-        Team p = team_of(e, "player"), q = team_of(e, "enemy");
-        r.label = std::to_string(i + 1) + ". " + e["title"].text("Untitled");
-        r.value = (p.chara.empty() ? std::string("?") : short_name(p.chara[0])) + (e["battle"]["fight"].truthy(true) ? " vs " : " & ") +
-                  (q.chara.empty() ? std::string("?") : short_name(q.chara[0]));
-        r.sub = e["battle"]["fight"].truthy(true) ? "" : "scene";
-        r.face = p.chara.empty() ? -1 : p.chara[0];
-        r.model = r.face;
-        int idx = (int)i;
-        r.ok = [idx] { push_page(SC_EPISODE, idx); };
-        r.okLabel = "Open";
-        r.sq = [idx] { // up one place
-            J &l = episodes();
-            if (idx > 0) { std::swap(l.a[(size_t)idx], l.a[(size_t)idx - 1]); page().cur--; touch(); sound(0); }
-        };
-        r.sqLabel = "Move up";
-        r.tri = [idx] {
-            confirm("DELETE EPISODE " + std::to_string(idx + 1) + "?", [idx] {
-                J &l = episodes();
-                l.a.erase(l.a.begin() + idx);
-                touch();
-            });
-        };
-        r.triLabel = "Delete";
-        r.l2 = [idx] { J &l = episodes(); l.a.insert(l.a.begin() + idx + 1, l.a[(size_t)idx]); touch(); notice("Episode copied"); };
-        r.l2Label = "Copy";
-        r.tip = e["description"].text().empty() ? "Cross opens the episode: its scenes, its battle, where it leads." : e["description"].text();
-        rows.push_back(r);
-    }
-    Row add;
-    add.label = "+ Add an episode";
-    add.ok = [] { J &l = episodes(); l.push(new_episode((int)l.a.size() + 1)); touch(); push_page(SC_EPISODE, (int)l.a.size() - 1); };
-    rows.push_back(add);
-    rows.push_back(sec("PLAY"));
-    Row play;
-    play.label = "Play the saga from the start";
-    play.tip = "Plays it as a player would (saved first). Your progress in it is kept apart from the editor's tests.";
-    play.ok = [] { if (!sDirty || save_saga()) { play_saga(sSaga, true); } };
-    rows.push_back(play);
-    Row sv;
-    sv.label = "Save";
-    sv.value = sDirty ? "not saved" : "saved";
-    sv.ok = [] { save_saga(); };
-    rows.push_back(sv);
 }
 
 std::string team_text(const Team &t) {
@@ -2261,6 +2464,15 @@ void team_rows(std::vector<Row> &rows, int ep, const char *key, const char *what
             touch();
         };
         r.lrLabel = "Costume";
+        int mh = (int)m["health"].number(-1);
+        if (mh > 0) { r.sub += "  health " + std::to_string(mh) + "%"; }
+        r.sq = [ep, k, idx] { // (100% ... 10%, then as the fight's rules say)
+            J &mm = episode(ep).list(k.c_str()).a[(size_t)idx];
+            int h = (int)mm["health"].number(110) - 10;
+            if (h < 10) { mm.erase("health"); } else { mm.set("health", J::num(h)); }
+            touch();
+        };
+        r.sqLabel = "Health";
         if (list.a.size() > 1) {
             r.tri = [ep, k, idx] { J &l = episode(ep).list(k.c_str()); l.a.erase(l.a.begin() + idx); touch(); sound(2); };
             r.triLabel = "Remove";
@@ -2359,65 +2571,26 @@ void rows_episode(std::vector<Row> &rows, int ep) {
         rows.push_back(r);
     }
     if (fight) {
-        Row w;
-        bool survive = bt["win"].text("ko") == "survive";
-        w.label = "To win";
-        w.value = survive ? "Hold out until the time is up" : "Knock out the other team";
-        w.lr = [ep](int) { J &b = episode(ep).at("battle"); b.set("win", J::str(b["win"].text("ko") == "survive" ? "ko" : "survive")); touch(); };
-        rows.push_back(w);
-        if (survive) {
-            Row s;
-            s.label = "Hold out for";
-            s.value = std::to_string((int)bt["survive"].number(60)) + " seconds";
-            s.lr = [ep](int d) { cycle(episode(ep).at("battle"), "survive", d, 10, 600, 10, 60); };
-            rows.push_back(s);
-        }
-        Row t;
-        t.label = "Time limit";
-        int tl = (int)bt["time"].number(0);
-        t.value = tl == 0 ? std::string("None") : std::to_string(tl) + " seconds";
-        t.lr = [ep](int d) { cycle(episode(ep).at("battle"), "time", d, 0, 600, 30, 0); };
-        rows.push_back(t);
-        if (tl > 0) {
-            Row u;
-            u.label = "When the time is up";
-            std::string tu = bt["time_up"].text("health");
-            u.value = tu == "win" ? "You win" : tu == "lose" ? "You lose" : "More health wins";
-            u.lr = [ep](int d) {
-                static const char *const k[3] = {"health", "win", "lose"};
-                J &b = episode(ep).at("battle");
-                int at = key_index(k, 3, b["time_up"].text("health"), 0);
-                b.set("time_up", J::str(k[(at + d + 3) % 3]));
-                touch();
-            };
-            rows.push_back(u);
-        }
-        Row ph, eh, pk, ek, cpu;
-        ph.label = "Your health";
-        ph.value = std::to_string((int)bt["player_health"].number(100)) + "%";
-        ph.lr = [ep](int d) { cycle(episode(ep).at("battle"), "player_health", d, 10, 100, 10, 100); };
-        eh.label = "Their health";
-        eh.value = std::to_string((int)bt["enemy_health"].number(100)) + "%";
-        eh.lr = [ep](int d) { cycle(episode(ep).at("battle"), "enemy_health", d, 10, 100, 10, 100); };
-        pk.label = "Your ki at the start";
-        pk.value = std::to_string((int)bt["player_ki"].number(0)) + "%";
-        pk.lr = [ep](int d) { cycle(episode(ep).at("battle"), "player_ki", d, 0, 100, 25, 0); };
-        ek.label = "Their ki at the start";
-        ek.value = std::to_string((int)bt["enemy_ki"].number(0)) + "%";
-        ek.lr = [ep](int d) { cycle(episode(ep).at("battle"), "enemy_ki", d, 0, 100, 25, 0); };
-        cpu.label = "Opponent strength";
-        cpu.value = kCpuNames[std::max(0, std::min(4, (int)bt["cpu"].number(1)))];
-        cpu.lr = [ep](int d) { cycle(episode(ep).at("battle"), "cpu", d, 0, 4, 1, 1); };
-        rows.push_back(ph);
-        rows.push_back(eh);
-        rows.push_back(pk);
-        rows.push_back(ek);
-        rows.push_back(cpu);
+        Row fr;
+        fr.label = "Fight rules";
+        fr.value = objective_text(bt);
+        fr.tip = "How to win and to lose, the clock, the opponent's strength, and each side's health, ki and boosts at the start.";
+        fr.ok = [ep] { push_page(SC_FIGHT, ep); };
+        fr.okLabel = "Open";
+        rows.push_back(fr);
+        Row ev;
+        int ne = (int)bt["events"].size();
+        ev.label = "Events during the fight";
+        ev.value = ne == 0 ? std::string("none") : std::to_string(ne) + (ne == 1 ? " event" : " events");
+        ev.tip = "When something happens (a time, a health, a transformation...) then cutscenes, lines, healing, power-ups...";
+        ev.ok = [ep] { push_page(SC_EVENTS, ep); };
+        ev.okLabel = "Open";
+        rows.push_back(ev);
         Row fl;
         fl.label = "Lines during the fight";
         int n = (int)bt["lines"].size();
         fl.value = n == 0 ? std::string("none") : std::to_string(n);
-        fl.tip = "Said in a box while they fight: at the start, when health drops, on a transformation...";
+        fl.tip = "Simple lines said in a box while they fight (the Events page does the same and much more).";
         fl.ok = [ep] { push_page(SC_FIGHTLINES, ep, "fight"); };
         rows.push_back(fl);
     }
@@ -2462,42 +2635,82 @@ int speaker_chara(const J &l, int ep) {
     int m = member < 0 ? 0 : member;
     return m < (int)t.chara.size() ? t.chara[(size_t)m] : t.chara.empty() ? -1 : t.chara[0];
 }
+#include "story_tools.h"
+#include "story_events.h"
+
 void line_rows_list(std::vector<Row> &rows, int ep, const std::string &key, bool fightLines) {
     J &ls = lines_of(ep, key);
     for (size_t i = 0; i < ls.a.size(); i++) {
         const J &l = ls.a[i];
         Row r;
-        r.label = speaker_label(l, ep);
+        r.label = l["card"].text("box") != "box" ? std::string("Card") : speaker_label(l, ep);
         r.value = l["text"].text().empty() ? std::string("(no text)") : "\"" + l["text"].text() + "\"";
         if (fightLines) {
-            int w = key_index(kWhenKeys, WHEN_COUNT, l["when"].text("start"), 0);
+            int w = key_index(kWhenKeys, PS_WHEN_COUNT, l["when"].text("start"), 0);
             r.sub = kWhenNames[w];
-            if (w == WHEN_ENEMY_HP || w == WHEN_PLAYER_HP) { r.sub += " " + std::to_string((int)l["value"].number(50)) + "%"; }
-            if (w == WHEN_TIME) { r.sub = std::to_string((int)l["value"].number(30)) + " s"; }
-        } else if (!l["voice"].nul()) {
-            r.sub = "voice";
+            if (w == PS_WHEN_ENEMY_HP || w == PS_WHEN_PLAYER_HP) { r.sub += " " + std::to_string((int)l["value"].number(50)) + "%"; }
+            if (w == PS_WHEN_TIME) { r.sub = std::to_string((int)l["value"].number(30)) + " s"; }
+        } else { // (what the line has besides its words)
+            std::string t;
+            if (l["choices"].size() > 0) { t += " question"; }
+            if (l["transition"].text("none") != "none") { t += " " + l["transition"].text(); }
+            if (!l["voice"].nul()) { t += " voice"; }
+            if (l.has("music") || l.has("sound")) { t += " sound"; }
+            r.sub = t.empty() ? t : t.substr(1);
         }
-        r.face = speaker_chara(l, ep);
+        r.face = l["card"].text("box") != "box" ? -1 : speaker_chara(l, ep);
         r.model = r.face;
         int idx = (int)i;
         r.ok = [ep, key, idx] { push_page(SC_LINE, ep, key, idx); };
         r.okLabel = "Edit";
-        r.sq = [ep, key, idx] { // a new line after this one, the other one speaking
-            J &l2 = lines_of(ep, key);
-            std::string sp = l2.a[(size_t)idx]["speaker"].text("player");
-            J n = new_line(sp.compare(0, 6, "player") == 0 ? "enemy" : "player", "");
-            if (key == "fight") { n.set("when", J::str("enemy_health")); n.set("value", J::num(50)); }
-            l2.a.insert(l2.a.begin() + idx + 1, n);
-            touch();
-            page().cur++;
-            sound(1);
+        r.sq = [ep, key, idx] {
+            std::vector<Row> rs;
+            Row n;
+            n.label = "New line after it";
+            n.tip = "The other one speaking.";
+            n.ok = [ep, key, idx] {
+                ov_close();
+                J &l2 = lines_of(ep, key);
+                std::string sp = l2.a[(size_t)idx]["speaker"].text("player");
+                J nl = new_line(sp.compare(0, 6, "player") == 0 ? "enemy" : "player", "");
+                if (key == "fight") { nl.set("when", J::str("enemy_health")); nl.set("value", J::num(50)); }
+                l2.a.insert(l2.a.begin() + idx + 1, nl);
+                touch();
+                page().cur++;
+                push_page(SC_LINE, ep, key, idx + 1);
+                open_keys("WHAT IS SAID?", "", 240, [ep, key, idx](const std::string &t) { line_ref(ep, key, idx + 1).set("text", J::str(t)); });
+            };
+            rs.push_back(n);
+            Row d;
+            d.label = "Duplicate it";
+            d.ok = [ep, key, idx] { ov_close(); J &l2 = lines_of(ep, key); l2.a.insert(l2.a.begin() + idx + 1, l2.a[(size_t)idx]); touch(); };
+            rs.push_back(d);
+            Row c;
+            c.label = "Copy it";
+            c.ok = [ep, key, idx] { ov_close(); clip("line", line_ref(ep, key, idx), "The line"); };
+            rs.push_back(c);
+            Row p;
+            bool can = sClipKind == "line" || sClipKind == "lines";
+            p.label = sClipKind == "lines" ? "Paste the lines copied after it" : can ? "Paste the line copied after it" : "(no line copied)";
+            p.locked = !can;
+            p.ok = [ep, key, idx] {
+                ov_close();
+                J &l2 = lines_of(ep, key);
+                std::vector<J> add = sClipKind == "lines" ? sClip.a : std::vector<J>{sClip};
+                l2.a.insert(l2.a.begin() + idx + 1, add.begin(), add.end());
+                touch();
+            };
+            rs.push_back(p);
+            open_list("LINE " + std::to_string(idx + 1), rs);
         };
-        r.sqLabel = "New line after";
-        r.tri = [ep, key, idx] { J &l2 = lines_of(ep, key); l2.a.erase(l2.a.begin() + idx); touch(); sound(2); };
+        r.sqLabel = "More";
+        r.tri = [ep, key, idx] {
+            confirm("DELETE THIS LINE?", [ep, key, idx] { J &l2 = lines_of(ep, key); if (idx < (int)l2.a.size()) { l2.a.erase(l2.a.begin() + idx); touch(); notice("Deleted. L1 undoes it."); } });
+        };
         r.triLabel = "Delete";
         r.l2 = [ep, key, idx] { J &l2 = lines_of(ep, key); if (idx > 0) { std::swap(l2.a[(size_t)idx], l2.a[(size_t)idx - 1]); page().cur--; touch(); sound(0); } };
-        r.l2Label = "Move up";
         r.r2 = [ep, key, idx] { J &l2 = lines_of(ep, key); if (idx + 1 < (int)l2.a.size()) { std::swap(l2.a[(size_t)idx], l2.a[(size_t)idx + 1]); page().cur++; touch(); sound(0); } };
+        r.l2Label = "Move";
         rows.push_back(r);
     }
     Row add;
@@ -2517,12 +2730,35 @@ void line_rows_list(std::vector<Row> &rows, int ep, const std::string &key, bool
     };
     rows.push_back(add);
 }
+// what a scene is played as from the editor (PortStoryUi_Prepare's preview)
+std::string preview_of(const std::string &key) {
+    int e, a;
+    if (key_ev(key, "scene", &e, &a)) { return "event:" + std::to_string(e) + ":" + std::to_string(a); }
+    return key == "fight" ? "intro" : key;
+}
 void rows_scene(std::vector<Row> &rows, int ep, const std::string &key) {
     J &sc = scene_of(ep, key);
-    static const char *const kNames[] = {"intro", "Opening scene", "win", "After a win", "lose", "After a loss"};
-    std::string title;
-    for (int i = 0; i < 6; i += 2) { if (key == kNames[i]) { title = kNames[i + 1]; } }
+    static const char *const kNames[] = {"intro", "OPENING SCENE", "win", "AFTER A WIN", "lose", "AFTER A LOSS", "ending", "THE SAGA'S ENDING"};
+    std::string title = "A CUTSCENE OF THE FIGHT";
+    for (int i = 0; i < 8; i += 2) { if (key == kNames[i]) { title = kNames[i + 1]; } }
     rows.push_back(sec(title));
+    if (key == "ending") {
+        Row st;
+        st.label = "Stage";
+        st.value = sc.has("stage") ? stage_name(stage_of(sc["stage"])) : std::string("The last episode's");
+        st.lr = [ep, key](int d) {
+            J &s = scene_of(ep, key);
+            std::vector<int> l = stage_list();
+            int at = -1;
+            if (s.has("stage")) { int now = stage_of(s["stage"]); for (size_t i = 0; i < l.size(); i++) { if (l[i] == now) { at = (int)i; } } }
+            at += d;
+            if (at < -1) { at = (int)l.size() - 1; }
+            if (at < 0 || at >= (int)l.size()) { s.erase("stage"); } else { s.set("stage", stage_ref(l[(size_t)at])); }
+            touch();
+        };
+        st.tip = "The ending is played by the fighters of the episode that ended the saga, on its stage unless one is chosen.";
+        rows.push_back(st);
+    }
     Row d;
     d.label = "How far apart";
     d.value = kDistNames[std::max(0, std::min(3, (int)sc["distance"].number(2)))];
@@ -2543,8 +2779,24 @@ void rows_scene(std::vector<Row> &rows, int ep, const std::string &key) {
     Row pv;
     pv.label = "Preview this scene";
     pv.tip = "Plays the scene on its stage with its fighters, as the saga will (saved first).";
-    pv.ok = [ep, key] { if (!sDirty || save_saga()) { leave_for(sSaga, ep, key == "fight" ? "intro" : key); } };
+    pv.ok = [ep, key] { if (lines_of(ep, key).a.empty()) { notice("The scene has no lines yet.", true); return; } if (!sDirty || save_saga()) { sPlayMode = false; leave_for(sSaga, ep, preview_of(key)); } };
     rows.push_back(pv);
+    Row cp;
+    cp.label = "Copy all its lines";
+    cp.tip = "Then \"Paste\" in a line's menu (Square) of another scene puts them after that line.";
+    cp.ok = [ep, key] { clip("lines", lines_of(ep, key), "The scene's lines"); };
+    rows.push_back(cp);
+    if (sClipKind == "line" || sClipKind == "lines") {
+        Row pa;
+        pa.label = "Paste at the end";
+        pa.ok = [ep, key] {
+            J &l2 = lines_of(ep, key);
+            std::vector<J> add = sClipKind == "lines" ? sClip.a : std::vector<J>{sClip};
+            l2.a.insert(l2.a.end(), add.begin(), add.end());
+            touch();
+        };
+        rows.push_back(pa);
+    }
 }
 
 void speaker_cycle(J &l, int ep, int d) {
@@ -2588,7 +2840,7 @@ void open_voice_list(int ep, const std::string &key, int idx, int chara) {
     std::vector<Row> rs;
     Row none;
     none.label = "No voice";
-    none.ok = [ep, key, idx] { ov_close(); lines_of(ep, key).a[(size_t)idx].erase("voice"); touch(); };
+    none.ok = [ep, key, idx] { ov_close(); line_ref(ep, key, idx).erase("voice"); touch(); };
     rs.push_back(none);
     Row rnd;
     rnd.label = "A random line of " + short_name(chara);
@@ -2597,7 +2849,7 @@ void open_voice_list(int ep, const std::string &key, int idx, int chara) {
         J v = J::obj();
         v.set("chara", chara_ref(chara));
         v.set("line", J::str("random"));
-        lines_of(ep, key).a[(size_t)idx].set("voice", v);
+        line_ref(ep, key, idx).set("voice", v);
         touch();
     };
     rs.push_back(rnd);
@@ -2622,7 +2874,7 @@ void open_voice_list(int ep, const std::string &key, int idx, int chara) {
             J v = J::obj();
             v.set("story", J::num(story));
             v.set("line", J::num(line));
-            J &x = lines_of(ep, key).a[(size_t)idx];
+            J &x = line_ref(ep, key, idx);
             x.set("voice", v);
             if (x["text"].text().empty()) { x.set("text", J::str(words)); } // (its words too, when the line has none yet)
             touch();
@@ -2646,7 +2898,7 @@ void open_voice_list(int ep, const std::string &key, int idx, int chara) {
             J v = J::obj();
             v.set("chara", chara_ref(chara));
             v.set("line", J::num(l));
-            lines_of(ep, key).a[(size_t)idx].set("voice", v);
+            line_ref(ep, key, idx).set("voice", v);
             touch();
         };
         r.sq = [chara, l] { hear(chara, l); };
@@ -2655,115 +2907,201 @@ void open_voice_list(int ep, const std::string &key, int idx, int chara) {
     }
     open_list("VOICE", rs, 0);
 }
+// a field cycled through its keys (keys[0] the default: kept out of the file)
+int key_at(const J &x, const char *field, const char *const *keys, int n) {
+    for (int i = 0; i < n; i++) { if (x[field].text() == keys[i]) { return i; } }
+    return 0;
+}
+void key_cycle(J &x, const char *field, const char *const *keys, int n, int d) {
+    int at = (key_at(x, field, keys, n) + d + n) % n;
+    if (at == 0) { x.erase(field); } else { x.set(field, J::str(keys[at])); }
+    touch();
+}
+// where an answer to a question leads
+std::string goto_text(const J &g) {
+    if (g.isNum()) { int n = (int)g.n; return "Episode " + std::to_string(n) + ": " + (n >= 1 && n <= (int)episodes().a.size() ? episode(n - 1)["title"].text("Untitled") : std::string("(not there)")); }
+    std::string t = g.text("next");
+    return t == "end" ? "The end of the saga" : t == "retry" ? "This episode again" : "Go on as usual";
+}
+void goto_cycle(J &g, int d) {
+    std::vector<J> ch = {J::str("next"), J::str("end"), J::str("retry")};
+    for (int i = 1; i <= (int)episodes().a.size(); i++) { ch.push_back(J::num(i)); }
+    int at = 0;
+    for (size_t i = 0; i < ch.size(); i++) {
+        if ((ch[i].isNum() && g.isNum() && (int)g.n == (int)ch[i].n) || (ch[i].isStr() && !g.isNum() && g.text("next") == ch[i].s)) { at = (int)i; }
+    }
+    g = ch[(size_t)((at + d + (int)ch.size()) % (int)ch.size())];
+    touch();
+}
+bool action_there(int ep, int e, int a) {
+    const J &evs = episode(ep)["battle"]["events"];
+    return e >= 0 && e < (int)evs.size() && a >= 0 && a < (int)evs[e]["do"].size();
+}
+const char *const kCardOpt[3] = {"box", "narration", "title"};
+const char *const kCardOptNames[3] = {"The text box", "A narration card (the words on a dark band)", "A title card (\"Three years later...\")"};
+const char *const kTransOptNames[PS_TRANS_COUNT] = {"None", "Fade in from black", "Fade out to black after it", "A white flash", "Dip to black and back"};
+const char *const kStandOpt[4] = {"", "ground", "air", "high"};
+const char *const kStandOptNames[4] = {"As they are", "On the ground", "In the air", "High up"};
+const char *const kFaceOpt[4] = {"", "front", "back", "side"};
+const char *const kFaceOptNames[4] = {"As they are", "Facing the other", "Back turned", "Side on"};
+const char *const kLineDist[4] = {"As the scene has it", "Close", "Talking distance", "Far apart"};
+
 void rows_line(std::vector<Row> &rows, int ep, const std::string &key, int idx) {
-    J &ls = lines_of(ep, key);
-    if (idx < 0 || idx >= (int)ls.a.size()) { rows.push_back(sec("THIS LINE IS GONE: CIRCLE GOES BACK")); return; }
-    J &l = ls.a[(size_t)idx];
-    bool fightLine = key == "fight";
-    rows.push_back(sec(fightLine ? "A LINE DURING THE FIGHT" : "LINE " + std::to_string(idx + 1)));
-    if (fightLine) {
+    bool single = key.compare(0, 4, "say:") == 0; // (a line of an event: the event's action is the line itself)
+    if (single) {
+        int e = 0, a = 0;
+        if (!key_ev(key, "say", &e, &a) || !action_there(ep, e, a)) { rows.push_back(sec("THIS LINE IS GONE: CIRCLE GOES BACK")); return; }
+    } else {
+        J &ls = lines_of(ep, key);
+        if (idx < 0 || idx >= (int)ls.a.size()) { rows.push_back(sec("THIS LINE IS GONE: CIRCLE GOES BACK")); return; }
+    }
+    J &l = line_ref(ep, key, idx);
+    bool fightLine = key == "fight" || single;
+    bool card = single && l["do"].text() == "card";
+    rows.push_back(sec(card ? "A MESSAGE DURING THE FIGHT" : fightLine ? "A LINE DURING THE FIGHT" : "LINE " + std::to_string(idx + 1)));
+    if (single) {
+        static const char *const kAs[3] = {"Said in a box (the fight goes on)", "A message across the picture", "A big title across the picture"};
+        int as = !card ? 0 : l["card"].text() == "title" ? 2 : 1;
+        Row r;
+        r.label = "Shown as";
+        r.value = kAs[as];
+        r.tip = "A line in the box, with a face and a voice; or words across the picture, like a title card.";
+        r.lr = [ep, key, idx](int d) {
+            J &x = line_ref(ep, key, idx);
+            int at = x["do"].text() != "card" ? 0 : x["card"].text() == "title" ? 2 : 1;
+            at = (at + d + 3) % 3;
+            x.set("do", J::str(at == 0 ? "say" : "card"));
+            if (at == 0) { x.erase("card"); } else { x.set("card", J::str(at == 2 ? "title" : "box")); }
+            touch();
+        };
+        rows.push_back(r);
+    }
+    if (key == "fight") {
         Row w;
-        int wi = key_index(kWhenKeys, WHEN_COUNT, l["when"].text("start"), 0);
+        int wi = key_index(kWhenKeys, PS_WHEN_COUNT, l["when"].text("start"), 0);
         w.label = "When";
         w.value = kWhenNames[wi];
         w.lr = [ep, key, idx](int d) {
-            J &x = lines_of(ep, key).a[(size_t)idx];
-            int at = key_index(kWhenKeys, WHEN_COUNT, x["when"].text("start"), 0);
-            x.set("when", J::str(kWhenKeys[(at + d + WHEN_COUNT) % WHEN_COUNT]));
+            J &x = line_ref(ep, key, idx);
+            int at = key_index(kWhenKeys, PS_WHEN_COUNT, x["when"].text("start"), 0);
+            x.set("when", J::str(kWhenKeys[(at + d + PS_WHEN_COUNT) % PS_WHEN_COUNT]));
             touch();
         };
+        w.tip = "The Events page of the episode can do much more at such a moment: cutscenes, healing, transformations...";
         rows.push_back(w);
-        if (wi == WHEN_ENEMY_HP || wi == WHEN_PLAYER_HP) {
+        if (wi == PS_WHEN_ENEMY_HP || wi == PS_WHEN_PLAYER_HP) {
             Row v;
             v.label = "Health below";
             v.value = std::to_string((int)l["value"].number(50)) + "%";
-            v.lr = [ep, key, idx](int d) { cycle(lines_of(ep, key).a[(size_t)idx], "value", d, 10, 90, 10, 50); };
+            v.lr = [ep, key, idx](int d) { cycle(line_ref(ep, key, idx), "value", d, 10, 90, 10, 50); };
             rows.push_back(v);
-        } else if (wi == WHEN_TIME) {
+        } else if (wi == PS_WHEN_TIME) {
             Row v;
             v.label = "Seconds into the fight";
             v.value = std::to_string((int)l["value"].number(30));
-            v.lr = [ep, key, idx](int d) { cycle(lines_of(ep, key).a[(size_t)idx], "value", d, 5, 600, 5, 30); };
+            v.lr = [ep, key, idx](int d) { cycle(line_ref(ep, key, idx), "value", d, 5, 600, 5, 30); };
             rows.push_back(v);
         }
     }
-    Row sp;
-    sp.label = "Who speaks";
-    sp.value = speaker_label(l, ep);
-    std::string spk = l["speaker"].text("player");
-    sp.sub = spk == "narrator" ? "" : spk.compare(0, 5, "enemy") == 0 ? "their side" : "your side";
-    sp.face = speaker_chara(l, ep);
-    sp.model = sp.face;
-    sp.lr = [ep, key, idx](int d) { speaker_cycle(lines_of(ep, key).a[(size_t)idx], ep, d); };
-    sp.ok = [ep, key, idx] { speaker_cycle(lines_of(ep, key).a[(size_t)idx], ep, 1); };
-    sp.tip = "Left / right: who says it. The leaders stand on the stage; a team mate or the narrator is heard and read.";
-    rows.push_back(sp);
-    rows.push_back(text_row("What is said", l["text"].text(), "WHAT IS SAID?", 240, [ep, key, idx](const std::string &t) { lines_of(ep, key).a[(size_t)idx].set("text", J::str(t)); }));
+    if (!card) {
+        Row sp;
+        sp.label = "Who speaks";
+        sp.value = speaker_label(l, ep);
+        std::string spk = l["speaker"].text("player");
+        sp.sub = spk == "narrator" ? "" : spk.compare(0, 5, "enemy") == 0 ? "their side" : "your side";
+        sp.face = speaker_chara(l, ep);
+        sp.model = sp.face;
+        sp.lr = [ep, key, idx](int d) { speaker_cycle(line_ref(ep, key, idx), ep, d); };
+        sp.ok = [ep, key, idx] { speaker_cycle(line_ref(ep, key, idx), ep, 1); };
+        sp.tip = "Left / right: who says it. The leaders stand on the stage; a team mate or the narrator is heard and read.";
+        rows.push_back(sp);
+    }
+    rows.push_back(text_row(card ? "The message" : "What is said", l["text"].text(), card ? "THE MESSAGE" : "WHAT IS SAID?", 240,
+                            [ep, key, idx](const std::string &t) { line_ref(ep, key, idx).set("text", J::str(t)); }));
     rows.back().tip = "Up to 240 letters; the box shows them as they are typed out.";
-    Row nm;
-    nm.label = "Name in the box";
-    nm.value = l.has("name") ? l["name"].text() : "(" + speaker_label(l, ep) + ")";
-    nm.ok = [ep, key, idx] {
-        open_keys("THE NAME SHOWN (EMPTY: THE CHARACTER'S)", lines_of(ep, key).a[(size_t)idx]["name"].text(), 30, [ep, key, idx](const std::string &t) {
-            J &x = lines_of(ep, key).a[(size_t)idx];
-            if (t.empty()) { x.erase("name"); } else { x.set("name", J::str(t)); }
-        });
-    };
-    rows.push_back(nm);
-    Row vo;
-    vo.label = "Voice";
-    vo.value = voice_text(l, ep);
-    int sc = speaker_chara(l, ep);
-    vo.ok = [ep, key, idx, sc] { open_voice_list(ep, key, idx, sc < 0 ? 3 : sc); };
-    vo.sq = [ep, key, idx, sc] {
-        const J &v = lines_of(ep, key).a[(size_t)idx]["voice"];
-        if (v.isObj() && v.has("story")) {
-            SDL_LockMutex(sMx);
-            sSh.voice = -2 - ((int)v["story"].number(0) * 300 + (int)v["line"].number(0));
-            SDL_UnlockMutex(sMx);
-            return;
-        }
-        int c = v.isObj() && v.has("chara") ? chara_of(v["chara"]) : sc;
-        int line = v.isObj() ? (int)v["line"].number(-1) : v.isNum() ? (int)v.n : -1;
-        if (line < 0) { const std::vector<int> &h = voice_lines(c); if (!h.empty()) { line = h[(size_t)(rand() % (int)h.size())]; } }
-        if (line >= 0 && c >= 0) { hear(c, line); }
-    };
-    vo.sqLabel = "Hear it";
-    vo.tip = "One of the character's own spoken lines (lip-synced), someone else's, or a random one each time.";
-    rows.push_back(vo);
+    if (!card) {
+        Row nm;
+        nm.label = "Name in the box";
+        nm.value = l.has("name") ? l["name"].text() : "(" + speaker_label(l, ep) + ")";
+        nm.tip = "Another name over the box (\"???\" for a mystery voice); empty: the character's own.";
+        nm.ok = [ep, key, idx] {
+            open_keys("THE NAME SHOWN (EMPTY: THE CHARACTER'S)", line_ref(ep, key, idx)["name"].text(), 30, [ep, key, idx](const std::string &t) {
+                J &x = line_ref(ep, key, idx);
+                if (t.empty()) { x.erase("name"); } else { x.set("name", J::str(t)); }
+            });
+        };
+        rows.push_back(nm);
+        Row vo;
+        vo.label = "Voice";
+        vo.value = voice_text(l, ep);
+        int sc = speaker_chara(l, ep);
+        vo.ok = [ep, key, idx, sc] { open_voice_list(ep, key, idx, sc < 0 ? 3 : sc); };
+        vo.sq = [ep, key, idx, sc] {
+            const J &v = line_ref(ep, key, idx)["voice"];
+            if (v.isObj() && v.has("story")) {
+                SDL_LockMutex(sMx);
+                sSh.voice = -2 - ((int)v["story"].number(0) * 300 + (int)v["line"].number(0));
+                SDL_UnlockMutex(sMx);
+                return;
+            }
+            int c = v.isObj() && v.has("chara") ? chara_of(v["chara"]) : sc;
+            int line = v.isObj() ? (int)v["line"].number(-1) : v.isNum() ? (int)v.n : -1;
+            if (line < 0) { const std::vector<int> &h = voice_lines(c); if (!h.empty()) { line = h[(size_t)(rand() % (int)h.size())]; } }
+            if (line >= 0 && c >= 0) { hear(c, line); }
+        };
+        vo.sqLabel = "Hear it";
+        vo.tip = "One of the character's own spoken lines (lip-synced), someone else's, or a random one each time it is played.";
+        rows.push_back(vo);
+    }
     if (!fightLine) {
+        rows.push_back(sec("SHOWN AS"));
+        Row cd;
+        int ci = key_at(l, "card", kCardOpt, 3);
+        cd.label = "Shown as";
+        cd.value = kCardOptNames[ci];
+        cd.lr = [ep, key, idx](int d) { key_cycle(line_ref(ep, key, idx), "card", kCardOpt, 3, d); };
+        cd.tip = "A card has no face and no box: the words alone over the picture (the narrator's lines read best so).";
+        rows.push_back(cd);
+        Row tr;
+        int ti = key_at(l, "transition", kTransKeys, PS_TRANS_COUNT);
+        tr.label = "Transition";
+        tr.value = kTransOptNames[ti];
+        tr.lr = [ep, key, idx](int d) { key_cycle(line_ref(ep, key, idx), "transition", kTransKeys, PS_TRANS_COUNT, d); };
+        tr.tip = "How the picture changes for this line. After a fade out the next spoken line brings the picture back.";
+        rows.push_back(tr);
         rows.push_back(sec("CAMERA AND POSES"));
         Row cm;
-        int ci = key_index(kCamKeys, CAM_COUNT, l["camera"].text("auto"), CAM_AUTO);
+        int cmi = key_index(kCamKeys, PS_CAM_COUNT, l["camera"].text("auto"), PS_CAM_AUTO);
         cm.label = "Camera";
-        cm.value = kCamNames[ci];
+        cm.value = kCamNames[cmi];
         cm.lr = [ep, key, idx](int d) {
-            J &x = lines_of(ep, key).a[(size_t)idx];
-            int at = key_index(kCamKeys, CAM_COUNT, x["camera"].text("auto"), CAM_AUTO);
-            x.set("camera", J::str(kCamKeys[(at + d + CAM_COUNT) % CAM_COUNT]));
+            J &x = line_ref(ep, key, idx);
+            int at = key_index(kCamKeys, PS_CAM_COUNT, x["camera"].text("auto"), PS_CAM_AUTO);
+            x.set("camera", J::str(kCamKeys[(at + d + PS_CAM_COUNT) % PS_CAM_COUNT]));
             touch();
         };
         cm.tip = "Automatic: both at the first line, then close-ups and over the shoulder, in turn.";
         rows.push_back(cm);
         Row mv;
-        int mi = key_index(kMoveKeys, MOVE_COUNT, l["move"].text("cut"), MOVE_CUT);
+        int mi = key_index(kMoveKeys, PS_MOVE_COUNT, l["move"].text("cut"), PS_MOVE_CUT);
         mv.label = "Camera move";
         mv.value = kMoveNames[mi];
         mv.lr = [ep, key, idx](int d) {
-            J &x = lines_of(ep, key).a[(size_t)idx];
-            int at = key_index(kMoveKeys, MOVE_COUNT, x["move"].text("cut"), MOVE_CUT);
-            x.set("move", J::str(kMoveKeys[(at + d + MOVE_COUNT) % MOVE_COUNT]));
+            J &x = line_ref(ep, key, idx);
+            int at = key_index(kMoveKeys, PS_MOVE_COUNT, x["move"].text("cut"), PS_MOVE_CUT);
+            x.set("move", J::str(kMoveKeys[(at + d + PS_MOVE_COUNT) % PS_MOVE_COUNT]));
             touch();
         };
+        mv.tip = "Cut: the shot is there at once. The others move the camera while the line is said.";
         rows.push_back(mv);
-        if (mi != MOVE_CUT) {
+        if (mi != PS_MOVE_CUT) {
             Row mt;
             mt.label = "Move time";
             char b[32];
             snprintf(b, sizeof(b), "%.1f seconds", l["move_time"].number(3.0));
             mt.value = b;
             mt.lr = [ep, key, idx](int d) {
-                J &x = lines_of(ep, key).a[(size_t)idx];
+                J &x = line_ref(ep, key, idx);
                 double v = x["move_time"].number(3.0) + d * 0.5;
                 x.set("move_time", J::num(v < 0.5 ? 0.5 : v > 12 ? 12 : v));
                 touch();
@@ -2778,7 +3116,7 @@ void rows_line(std::vector<Row> &rows, int ep, const std::string &key, int idx) 
             ps.value = pi >= 0 ? kPoses[pi].name : "Motion " + std::to_string((int)l[k].number(0));
             std::string kk = k;
             ps.lr = [ep, key, idx, kk](int d) {
-                J &x = lines_of(ep, key).a[(size_t)idx];
+                J &x = line_ref(ep, key, idx);
                 int at = std::max(0, pose_index(x[kk.c_str()]));
                 at = (at + d + kPoseCount) % kPoseCount;
                 if (at == 0) { x.erase(kk.c_str()); } else { x.set(kk.c_str(), J::str(kPoses[at].name)); }
@@ -2792,7 +3130,7 @@ void rows_line(std::vector<Row> &rows, int ep, const std::string &key, int idx) 
                     r.sub = kPoses[i].motion >= 0 ? "motion " + std::to_string(kPoses[i].motion) : "";
                     r.ok = [ep, key, idx, kk, i] {
                         ov_close();
-                        J &x = lines_of(ep, key).a[(size_t)idx];
+                        J &x = line_ref(ep, key, idx);
                         if (i == 0) { x.erase(kk.c_str()); } else { x.set(kk.c_str(), J::str(kPoses[i].name)); }
                         touch();
                     };
@@ -2803,18 +3141,154 @@ void rows_line(std::vector<Row> &rows, int ep, const std::string &key, int idx) 
                 num.ok = [ep, key, idx, kk] {
                     ov_close();
                     open_keys("THE MOTION'S NUMBER (OF THE CHARACTER'S ANIMATIONS)", "", 4, [ep, key, idx, kk](const std::string &t) {
-                        if (!t.empty()) { lines_of(ep, key).a[(size_t)idx].set(kk.c_str(), J::num(atoi(t.c_str()))); }
+                        if (!t.empty()) { line_ref(ep, key, idx).set(kk.c_str(), J::num(atoi(t.c_str()))); }
                     });
                 };
                 rs.push_back(num);
-                open_list("POSE", rs, std::max(0, pose_index(lines_of(ep, key).a[(size_t)idx][kk.c_str()])));
+                open_list("POSE", rs, std::max(0, pose_index(line_ref(ep, key, idx)[kk.c_str()])));
             };
+            ps.tip = "Cross lists them all. The story gestures differ from one character to the next.";
             rows.push_back(ps);
+        }
+        rows.push_back(sec("WHERE THEY STAND"));
+        Row ds;
+        int dv = l["distance"].isNum() ? clampi((int)l["distance"].n, 1, 3) : 0;
+        ds.label = "How far apart";
+        ds.value = kLineDist[dv];
+        ds.lr = [ep, key, idx](int d) {
+            J &x = line_ref(ep, key, idx);
+            int v = ((x["distance"].isNum() ? clampi((int)x["distance"].n, 1, 3) : 0) + d + 4) % 4;
+            if (v == 0) { x.erase("distance"); } else { x.set("distance", J::num(v)); }
+            touch();
+        };
+        ds.tip = "From this line on the two stand so far apart (the scene's own distance until then).";
+        rows.push_back(ds);
+        static const char *const kWho[2] = {"Speaker", "The other"};
+        for (int who = 0; who < 2; who++) {
+            const char *sk = who ? "listener_stand" : "stand", *fk = who ? "listener_face" : "face";
+            Row st;
+            st.label = std::string(kWho[who]) + " stands";
+            st.value = kStandOptNames[key_at(l, sk, kStandOpt, 4)];
+            std::string skk = sk, fkk = fk;
+            st.lr = [ep, key, idx, skk](int d) { key_cycle(line_ref(ep, key, idx), skk.c_str(), kStandOpt, 4, d); };
+            st.tip = "On the ground, or up in the air (they float there).";
+            rows.push_back(st);
+            Row fc;
+            fc.label = std::string(kWho[who]) + " faces";
+            fc.value = kFaceOptNames[key_at(l, fk, kFaceOpt, 4)];
+            fc.lr = [ep, key, idx, fkk](int d) { key_cycle(line_ref(ep, key, idx), fkk.c_str(), kFaceOpt, 4, d); };
+            fc.tip = "Turned to the other, back turned (walking away, brooding), or side on.";
+            rows.push_back(fc);
+        }
+    }
+    rows.push_back(sec("SOUND AND MUSIC"));
+    {
+        Row so;
+        so.label = "Sound effect";
+        so.value = l["sound"].isNum() ? "Sound " + std::to_string((int)l["sound"].n) : std::string("None");
+        so.lr = [ep, key, idx](int d) {
+            J &x = line_ref(ep, key, idx);
+            int v = (x["sound"].isNum() ? (int)x["sound"].n : -1) + d;
+            if (v < 0 || v > 400) { x.erase("sound"); } else { x.set("sound", J::num(v)); }
+            touch();
+        };
+        so.tip = "One of the battle's sound effects, by its number, played as the line starts.";
+        rows.push_back(so);
+        Row mu;
+        mu.label = "Music";
+        mu.value = l["music"].isNum() ? song_name((int)l["music"].n) : l["music"].text() == "stop" ? std::string("Stop the music") : std::string("Keep it playing");
+        mu.lr = [ep, key, idx](int d) {
+            J &x = line_ref(ep, key, idx);
+            std::vector<int> songs = song_list();
+            int at = x["music"].isNum() ? 2 : x["music"].text() == "stop" ? 1 : 0; // 0 keep, 1 stop, 2.. the songs
+            if (x["music"].isNum()) { for (size_t i = 0; i < songs.size(); i++) { if (songs[i] == (int)x["music"].n) { at = 2 + (int)i; } } }
+            int n = 2 + (int)songs.size();
+            at = (at + d + n) % n;
+            if (at == 0) { x.erase("music"); } else if (at == 1) { x.set("music", J::str("stop")); } else { x.set("music", J::num(songs[(size_t)at - 2])); }
+            touch();
+        };
+        mu.tip = "Another song from this line on, or silence.";
+        rows.push_back(mu);
+    }
+    if (!fightLine) {
+        rows.push_back(sec("TIMING"));
+        Row dl;
+        double dly = l["delay"].number(0);
+        char b[48];
+        if (dly <= 0) { snprintf(b, sizeof(b), "None"); } else { snprintf(b, sizeof(b), "%.1f s", dly); }
+        dl.label = "Pause before it";
+        dl.value = b;
+        dl.lr = [ep, key, idx](int d) {
+            J &x = line_ref(ep, key, idx);
+            double v = x["delay"].number(0) + d * 0.5;
+            if (v <= 0) { x.erase("delay"); } else { x.set("delay", J::num(v > 10 ? 10 : v)); }
+            touch();
+        };
+        dl.tip = "The camera and the effects come first; the words wait this long.";
+        rows.push_back(dl);
+        Row wt;
+        double w = l["wait"].number(0);
+        wt.label = "Goes on";
+        if (w <= 0) { snprintf(b, sizeof(b), "When Cross is pressed"); } else { snprintf(b, sizeof(b), "By itself after %.1f s", w); }
+        wt.value = b;
+        wt.lr = [ep, key, idx](int d) {
+            J &x = line_ref(ep, key, idx);
+            double v = x["wait"].number(0) + d * 0.5;
+            if (v <= 0) { x.erase("wait"); } else { x.set("wait", J::num(v > 10 ? 10 : v)); }
+            touch();
+        };
+        rows.push_back(wt);
+        rows.push_back(sec("A QUESTION FOR THE PLAYER"));
+        const J &ch = l["choices"];
+        for (size_t i = 0; i < ch.size(); i++) {
+            Row a;
+            int k = (int)i;
+            a.label = "Answer " + std::to_string(i + 1);
+            a.value = "\"" + ch[i]["text"].text() + "\"";
+            a.sub = "> " + goto_text(ch[i]["goto"]);
+            a.ok = [ep, key, idx, k] {
+                open_keys("ANSWER " + std::to_string(k + 1), line_ref(ep, key, idx)["choices"][k]["text"].text(), 40, [ep, key, idx, k](const std::string &t) {
+                    line_ref(ep, key, idx).list("choices").a[(size_t)k].set("text", J::str(t));
+                });
+            };
+            a.okLabel = "Words";
+            a.lr = [ep, key, idx, k](int d) {
+                J &c = line_ref(ep, key, idx).list("choices").a[(size_t)k];
+                J g = c["goto"];
+                goto_cycle(g, d);
+                c.set("goto", g);
+            };
+            a.lrLabel = "Leads to";
+            a.tri = [ep, key, idx, k] {
+                J &x = line_ref(ep, key, idx);
+                J &c = x.list("choices");
+                c.a.erase(c.a.begin() + k);
+                if (c.a.empty()) { x.erase("choices"); }
+                touch();
+                sound(2);
+            };
+            a.triLabel = "Remove";
+            a.tip = "The player picks an answer; the saga goes where it leads once the episode is over (before a fight: if it is won).";
+            rows.push_back(a);
+        }
+        if (ch.size() < 3) {
+            Row add;
+            add.label = ch.size() == 0 ? "+ Make this line a question" : "+ Add an answer";
+            add.tip = "Up to three answers, each leading to an episode of its own (or the end, or this one again).";
+            add.ok = [ep, key, idx] {
+                open_keys("THE ANSWER", "", 40, [ep, key, idx](const std::string &t) {
+                    J c = J::obj();
+                    c.set("text", J::str(t.empty() ? "..." : t));
+                    c.set("goto", J::str("next"));
+                    line_ref(ep, key, idx).list("choices").push(c);
+                });
+            };
+            rows.push_back(add);
         }
     }
     rows.push_back(sec("EFFECTS"));
     for (int k = 0; k < kFxCount; k++) {
-        if (fightLine && !(kFx[k].bit & (FX_SHAKE | FX_BIG_SHAKE | FX_FLASH))) { continue; }
+        if (fightLine && !(kFx[k].bit & (PS_FX_SHAKE | PS_FX_BIG_SHAKE | PS_FX_FLASH | PS_FX_RED_FLASH))) { continue; }
         Row f;
         bool on = false;
         const J &e = l["effects"];
@@ -2823,7 +3297,7 @@ void rows_line(std::vector<Row> &rows, int ep, const std::string &key, int idx) 
         f.value = on ? "On" : "Off";
         std::string fk = kFx[k].key;
         auto toggle = [ep, key, idx, fk](int) {
-            J &x = lines_of(ep, key).a[(size_t)idx];
+            J &x = line_ref(ep, key, idx);
             J &e2 = x.list("effects");
             bool was = false;
             for (size_t i = 0; i < e2.a.size(); i++) { if (e2.a[i].text() == fk) { e2.a.erase(e2.a.begin() + (long)i); was = true; break; } }
@@ -2831,25 +3305,10 @@ void rows_line(std::vector<Row> &rows, int ep, const std::string &key, int idx) 
             if (e2.a.empty()) { x.erase("effects"); }
             touch();
         };
+        f.tip = "An effect as the line starts (left / right or Cross: on or off).";
         f.lr = toggle;
         f.ok = [toggle] { toggle(1); };
         rows.push_back(f);
-    }
-    if (!fightLine) {
-        rows.push_back(sec("TIMING"));
-        Row wt;
-        double w = l["wait"].number(0);
-        wt.label = "Goes on";
-        char b[48];
-        if (w <= 0) { snprintf(b, sizeof(b), "When Cross is pressed"); } else { snprintf(b, sizeof(b), "By itself after %.1f s", w); }
-        wt.value = b;
-        wt.lr = [ep, key, idx](int d) {
-            J &x = lines_of(ep, key).a[(size_t)idx];
-            double v = x["wait"].number(0) + d * 0.5;
-            if (v <= 0) { x.erase("wait"); } else { x.set("wait", J::num(v > 10 ? 10 : v)); }
-            touch();
-        };
-        rows.push_back(wt);
     }
 }
 
@@ -2859,7 +3318,9 @@ Shared sView;
 float sLetter;           // the letterbox's height, 0..1
 int sLastSayGen = -1;
 double sSayStart;
-float sFlash, sFade;
+float sFlash, sFade, sFadeRate, sDark;
+bool sFlashRed, sFadeOver;
+int sLastFadeGen = -1;
 void wrap_text(ImFont *f, float size, const std::string &t, int letters, float w, ImVec2 at, ImU32 c) {
     // the first `letters` letters of the text, wrapped at w (the whole text's wrapping, so no word jumps a line)
     std::string shown;
@@ -2884,18 +3345,36 @@ void wrap_text(ImFont *f, float size, const std::string &t, int letters, float w
 void overlay_draw(void) {
     SDL_LockMutex(sMx);
     sView = sSh;
-    CLine say, hud;
+    CLine say, hud, card;
     bool haveSay = sView.say >= 0 && sView.say < (int)sEp.lines.size();
     bool haveHud = sView.hud >= 0 && sView.hud < (int)sEp.lines.size();
+    bool haveCard = sView.card >= 0 && sView.card < (int)sEp.lines.size();
     if (haveSay) { say = sEp.lines[(size_t)sView.say]; }
     if (haveHud) { hud = sEp.lines[(size_t)sView.hud]; }
-    std::string title = sEp.title, label = sEp.label, desc = sEp.desc, sagaTitle = sEp.sagaTitle;
-    if (sSh.flash > 0) { sFlash = sSh.flash / 255.0f; sSh.flash = 0; }
-    if (sSh.fadeAlpha > 0) { sFade = sSh.fadeAlpha / 255.0f; sSh.fadeAlpha = 0; }
+    if (haveCard) { card = sEp.lines[(size_t)sView.card]; }
+    std::string title = sEp.title, label = sEp.label, desc = sEp.desc, sagaTitle = sEp.sagaTitle, objective = sEp.objective;
+    if (sSh.flash > 0) { sFlash = sSh.flash / 255.0f; sFlashRed = sSh.flashRed != 0; sSh.flash = 0; }
+    if (sSh.fadeGen != sLastFadeGen) { // a fade asked for: from the black it names (or the one there is), its way
+        sLastFadeGen = sSh.fadeGen;
+        if (sSh.fadeSet >= 0) { sFade = sSh.fadeSet / 255.0f; }
+        sFadeRate = sSh.fadeStep * (0.8f / 3.0f); // (a step of -3 is the slow fade-in a saga has always had: 0.8 a second,
+        sFadeOver = sSh.fadeStep == -3;           // over the text too; the others leave the words readable on the black)
+    }
     SDL_UnlockMutex(sMx);
     frame_setup();
     float dt = ImGui::GetIO().DeltaTime;
     double now = ImGui::GetTime();
+    // the picture gone to black (it stays black once it is, until a fade the other way)
+    auto fade = [&] {
+        if (sFade <= 0.0f && sFadeRate <= 0.0f) { return; }
+        sFade = std::max(0.0f, std::min(1.0f, sFade));
+        if (sFade > 0.0f) { sDl->AddRectFilled(ImVec2(sX0, sY0), ImVec2(sX0 + sW, sY0 + sH), IM_COL32(0, 0, 0, (int)(255 * sFade))); }
+        sFade = std::max(0.0f, std::min(1.0f, sFade + sFadeRate * dt));
+    };
+    if (!sFadeOver) { fade(); }
+    // the picture dimmed for a line
+    sDark += ((sView.dark ? 1.0f : 0.0f) - sDark) * std::min(1.0f, dt * 5.0f);
+    if (sDark > 0.01f) { sDl->AddRectFilled(ImVec2(sX0, sY0), ImVec2(sX0 + sW, sY0 + sH), IM_COL32(4, 0, 16, (int)(150 * sDark))); }
     // the letterbox
     float want = sView.letterbox ? 1.0f : 0.0f;
     sLetter += (want - sLetter) * std::min(1.0f, dt * 6.0f);
@@ -2928,8 +3407,73 @@ void overlay_draw(void) {
             sDl->AddText(sFont, ds, ImVec2(c.x - std::min(w, dsz.x) * 0.5f, c.y + S(36)), IM_COL32(230, 220, 255, (int)(255 * a)), desc.c_str(), NULL, w);
         }
     }
+    // the fight's objective, as it starts
+    float objBottom = 0.0f; // (where its panel ends: a message shown at the same time goes under it)
+    if (sView.objective >= 0 && !objective.empty() && sView.say < 0) {
+        float t = (float)sView.objective;
+        float k = std::min(1.0f, t / 12.0f) * (t > 180 ? std::max(0.0f, 1.0f - (t - 180) / 20.0f) : 1.0f);
+        float size = S(24), wrap = std::min(sW * 0.62f, S(860));
+        ImVec2 ts = sFont->CalcTextSizeA(size, FLT_MAX, wrap, objective.c_str());
+        float bw = std::max(ts.x, S(260)) + S(60), bh = ts.y + S(62);
+        ImVec2 a(sX0 + (sW - bw) * 0.5f, sY0 + sH * 0.25f - (1.0f - k) * S(24)), b(a.x + bw, a.y + bh);
+        grad(a, b, IM_COL32(24, 14, 54, (int)(225 * k)), IM_COL32(8, 4, 20, (int)(225 * k)), S(12));
+        sDl->AddRect(a, b, IM_COL32(255, 200, 70, (int)(230 * k)), S(12), 0, S(2));
+        const char *ob = "OBJECTIVE";
+        outlined(sBold, S(20), ImVec2(a.x + (bw - text_w(sBold, S(20), ob)) * 0.5f, a.y + S(10)), IM_COL32(255, 214, 70, (int)(255 * k)), IM_COL32(60, 20, 0, (int)(255 * k)), ob, S(1.5f));
+        sDl->AddText(sFont, size, ImVec2(a.x + (bw - ts.x) * 0.5f, a.y + S(42)), IM_COL32(255, 255, 255, (int)(255 * k)), objective.c_str(), NULL, wrap);
+        objBottom = b.y;
+    }
+    // a message shown during the fight (an event's "Show a message"): a band across the picture
+    if (haveCard && !card.text.empty() && sView.say < 0) {
+        float t = (float)sView.cardFrames;
+        float k = std::min(1.0f, t / 12.0f) * (t > 190 ? std::max(0.0f, 1.0f - (t - 190) / 20.0f) : 1.0f);
+        bool big = card.v[PL_CARD] == 2;
+        float size = big ? S(46) : S(28), wrap = sW * 0.8f;
+        ImFont *f = big ? sBold : sFont;
+        ImVec2 ts = f->CalcTextSizeA(size, FLT_MAX, wrap, card.text.c_str());
+        float cy = std::max(sY0 + sH * 0.36f, objBottom + ts.y * 0.5f + S(34));
+        sDl->AddRectFilled(ImVec2(sX0, cy - ts.y * 0.5f - S(18)), ImVec2(sX0 + sW, cy + ts.y * 0.5f + S(18)), IM_COL32(0, 0, 0, (int)(165 * k)));
+        grad(ImVec2(sX0, cy - ts.y * 0.5f - S(20)), ImVec2(sX0 + sW, cy - ts.y * 0.5f - S(17)), IM_COL32(255, 211, 77, (int)(255 * k)), IM_COL32(243, 156, 18, (int)(255 * k)), 0);
+        grad(ImVec2(sX0, cy + ts.y * 0.5f + S(17)), ImVec2(sX0 + sW, cy + ts.y * 0.5f + S(20)), IM_COL32(255, 211, 77, (int)(255 * k)), IM_COL32(243, 156, 18, (int)(255 * k)), 0);
+        ImVec2 at(sX0 + (sW - ts.x) * 0.5f, cy - ts.y * 0.5f);
+        sDl->AddText(f, size, ImVec2(at.x + S(2), at.y + S(2)), IM_COL32(0, 0, 0, (int)(200 * k)), card.text.c_str(), NULL, wrap);
+        sDl->AddText(f, size, at, IM_COL32(255, 255, 255, (int)(255 * k)), card.text.c_str(), NULL, wrap);
+    }
+    // a line shown as a card: narration (the words alone on a dark band) or a title ("Three years later...")
+    bool asCard = haveSay && say.v[PL_CARD] > 0;
+    if (asCard && !say.text.empty()) {
+        if (sView.sayGen != sLastSayGen) { sLastSayGen = sView.sayGen; sSayStart = now; }
+        float k = std::min(1.0f, (float)(now - sSayStart) * 5.0f);
+        bool big = say.v[PL_CARD] == 2;
+        float size = big ? S(58) : S(34), wrap = sW * (big ? 0.86f : 0.72f);
+        ImFont *f = big ? sBold : sFont;
+        ImVec2 ts = f->CalcTextSizeA(size, FLT_MAX, wrap, say.text.c_str());
+        if (big && ts.y > size * 1.5f) { size = S(44); ts = f->CalcTextSizeA(size, FLT_MAX, wrap, say.text.c_str()); }
+        float cy = sY0 + sH * (big ? 0.47f : 0.5f);
+        float pad = big ? S(46) : S(34);
+        sDl->AddRectFilled(ImVec2(sX0, cy - ts.y * 0.5f - pad), ImVec2(sX0 + sW, cy + ts.y * 0.5f + pad), IM_COL32(0, 0, 0, (int)((big ? 190 : 170) * k)));
+        if (big) {
+            grad(ImVec2(sX0, cy - ts.y * 0.5f - pad - S(2)), ImVec2(sX0 + sW, cy - ts.y * 0.5f - pad + S(2)), IM_COL32(255, 211, 77, (int)(255 * k)), IM_COL32(243, 156, 18, (int)(255 * k)), 0);
+            grad(ImVec2(sX0, cy + ts.y * 0.5f + pad - S(2)), ImVec2(sX0 + sW, cy + ts.y * 0.5f + pad + S(2)), IM_COL32(255, 211, 77, (int)(255 * k)), IM_COL32(243, 156, 18, (int)(255 * k)), 0);
+        }
+        // (a card's words come up together, growing clearer as they are "said": centred text can't be typed out
+        // letter by letter without jumping about)
+        ImVec2 at(sX0 + (sW - ts.x) * 0.5f, cy - ts.y * 0.5f);
+        float ka = std::min(1.0f, sView.shown / (float)std::max(1, std::min(24, utf8_len(say.text)))) * k;
+        if (!say.name.empty()) {
+            float ns = S(22);
+            outlined(sBold, ns, ImVec2(sX0 + (sW - text_w(sBold, ns, say.name.c_str())) * 0.5f, at.y - ns - S(8)), IM_COL32(255, 214, 70, (int)(255 * k)), IM_COL32(60, 20, 0, (int)(255 * k)), say.name, S(1.5f));
+        }
+        sDl->AddText(f, size, ImVec2(at.x + S(2), at.y + S(2)), IM_COL32(0, 0, 0, (int)(200 * ka)), say.text.c_str(), NULL, wrap);
+        sDl->AddText(f, size, at, big ? IM_COL32(255, 244, 214, (int)(255 * ka)) : IM_COL32(255, 255, 255, (int)(255 * ka)), say.text.c_str(), NULL, wrap);
+        if (sView.shown >= utf8_len(say.text) && sView.choice < 0) {
+            float bob = sinf((float)now * 6.0f) * S(3);
+            ImVec2 m(sX0 + sW * 0.5f, cy + ts.y * 0.5f + pad - S(14) + bob);
+            sDl->AddTriangleFilled(ImVec2(m.x - S(9), m.y - S(6)), ImVec2(m.x + S(9), m.y - S(6)), ImVec2(m.x, m.y + S(6)), IM_COL32(255, 210, 80, 255));
+        }
+    }
     // the text box
-    if (haveSay && (!say.text.empty() || !say.name.empty())) {
+    if (haveSay && !asCard && (!say.text.empty() || !say.name.empty())) {
         if (sView.sayGen != sLastSayGen) { sLastSayGen = sView.sayGen; sSayStart = now; }
         float k = std::min(1.0f, (float)(now - sSayStart) * 8.0f);
         float bw = std::min(sW * 0.86f, S(1180)), bh = S(178);
@@ -2957,10 +3501,36 @@ void overlay_draw(void) {
         }
         float size = S(33);
         wrap_text(sFont, size, say.text, sView.shown, b.x - tx - S(30), ImVec2(tx, a.y + S(30)), IM_COL32(255, 255, 255, (int)(255 * k)));
-        if (sView.shown >= utf8_len(say.text)) { // done: the prompt to go on
+        if (sView.shown >= utf8_len(say.text) && sView.choice < 0) { // done: the prompt to go on
             float bob = sinf((float)now * 6.0f) * S(3);
             ImVec2 m(b.x - S(30), b.y - S(22) + bob);
             sDl->AddTriangleFilled(ImVec2(m.x - S(9), m.y - S(6)), ImVec2(m.x + S(9), m.y - S(6)), ImVec2(m.x, m.y + S(6)), IM_COL32(255, 210, 80, 255));
+        }
+    }
+    // a question: its answers, above the box on the right (up / down, Cross)
+    if (haveSay && sView.choice == sView.say && !say.answers.empty()) {
+        float size = S(28), rh = S(52), bw = S(300);
+        for (const std::string &t : say.answers) { bw = std::max(bw, text_w(sBold, size, t.c_str()) + S(110)); }
+        bw = std::min(bw, sW * 0.8f);
+        float bh = rh * say.answers.size() + S(20);
+        float boxTop = sY0 + sH - S(178) - S(26);
+        ImVec2 a(sX0 + sW * 0.93f - bw, boxTop - bh - S(36)), b(a.x + bw, a.y + bh);
+        if (asCard) { a.x = sX0 + (sW - bw) * 0.5f; b.x = a.x + bw; a.y = sY0 + sH * 0.66f; b.y = a.y + bh; }
+        grad(a, b, IM_COL32(30, 18, 66, 240), IM_COL32(10, 6, 26, 240), S(12));
+        sDl->AddRect(a, b, IM_COL32(255, 200, 70, 255), S(12), 0, S(2.5f));
+        for (size_t i = 0; i < say.answers.size(); i++) {
+            ImVec2 ra(a.x + S(10), a.y + S(10) + rh * i), rb(b.x - S(10), ra.y + rh - S(4));
+            bool on = (int)i == sView.choiceCur;
+            if (on) {
+                grad(ra, rb, kGold1, kGold2, S(8));
+                float bob = sinf((float)now * 7.0f) * S(3);
+                sDl->AddTriangleFilled(ImVec2(ra.x + S(12) + bob, ra.y + S(12)), ImVec2(ra.x + S(12) + bob, rb.y - S(12)), ImVec2(ra.x + S(30) + bob, (ra.y + rb.y) * 0.5f), IM_COL32(74, 26, 0, 255));
+            }
+            ImVec2 tp(ra.x + S(44), ra.y + (rh - S(4) - size) * 0.5f);
+            sDl->PushClipRect(ra, rb, true);
+            if (on) { sDl->AddText(sBold, size, tp, IM_COL32(74, 26, 0, 255), say.answers[i].c_str()); }
+            else { outlined(sBold, size, tp, IM_COL32(255, 255, 255, 255), IM_COL32(20, 8, 40, 255), say.answers[i], S(1.5f)); }
+            sDl->PopClipRect();
         }
     }
     // a line said during the fight: a box with the face, at the bottom, on the speaker's side
@@ -2993,13 +3563,10 @@ void overlay_draw(void) {
     }
     // flashes and fades
     if (sFlash > 0.0f) {
-        sDl->AddRectFilled(ImVec2(sX0, sY0), ImVec2(sX0 + sW, sY0 + sH), IM_COL32(255, 255, 255, (int)(255 * sFlash)));
+        sDl->AddRectFilled(ImVec2(sX0, sY0), ImVec2(sX0 + sW, sY0 + sH), sFlashRed ? IM_COL32(255, 40, 30, (int)(200 * sFlash)) : IM_COL32(255, 255, 255, (int)(255 * sFlash)));
         sFlash -= dt * 2.5f;
     }
-    if (sFade > 0.0f) {
-        sDl->AddRectFilled(ImVec2(sX0, sY0), ImVec2(sX0 + sW, sY0 + sH), IM_COL32(0, 0, 0, (int)(255 * sFade)));
-        sFade -= dt * 0.8f;
-    }
+    if (sFadeOver) { fade(); }
 }
 
 // =============================================================================================== a frame of the screens
@@ -3019,22 +3586,68 @@ void on_open(void) {
     SDL_UnlockMutex(sMx);
     if (gen != sSeenResult) { // back from an episode's battle
         sSeenResult = gen;
-        sResult = result;
         Saga *s = saga();
         int ep = sSh.episode;
         if (s != NULL && sPlayMode && sSh.preview.empty() && result != 3) {
+            sResult = result;
             const J &e = s->doc["episodes"][ep];
             bool fight = e["battle"]["fight"].truthy(true);
             bool won = result == 1 || !fight;
+            SDL_LockMutex(sMx);
+            bool picked = sSh.picked, pickLate = sSh.pickLate, fought = sSh.fought;
+            int pick = sSh.pick, secs = sSh.fightSecs, health = sSh.fightHealth;
+            SDL_UnlockMutex(sMx);
             sResultNext = next_of(e, ep, won);
+            // (an answer given to a question leads the saga: one of the opening scene only when the fight is then won,
+            // one of the scene after the fight whichever way it went)
+            if (picked && (won || pickLate) && pick != GO_NEXT) { sResultNext = pick; }
             if (sResultNext >= (int)s->doc["episodes"].size()) { sResultNext = -1; }
             J &p = progress_of(*s);
-            if (won) { p.list("cleared").push(J::num(ep)); }
+            sResultRank = "";
+            sResultBest = false;
+            sResultSecs = fight && fought ? secs : -1;
+            sResultHealth = health;
+            sLivesLeft = -1;
+            if (won) {
+                J &cl = p.list("cleared");
+                bool there = false;
+                for (size_t i = 0; i < cl.size(); i++) { there = there || (int)cl[i].number(-1) == ep; }
+                if (!there) { cl.push(J::num(ep)); }
+                if (fight && fought) { // the best fight of this episode: by the health left, then by the time
+                    sResultRank = rank_of(health);
+                    J &b = p.at("best").at(std::to_string(ep + 1).c_str());
+                    bool better = !b.has("health") || health > (int)b["health"].number(0) ||
+                                  (health == (int)b["health"].number(0) && secs < (int)b["time"].number(1 << 30));
+                    if (better) {
+                        sResultBest = b.has("health");
+                        b.set("time", J::num(secs));
+                        b.set("health", J::num(health));
+                        b.set("rank", J::str(sResultRank));
+                    }
+                }
+                p.erase("lives");
+            } else if (sResultNext == -2) {
+                // lives: a saga may allow so many tries of an episode, then the story goes back to its beginning
+                int lives = (int)s->doc["settings"]["lives"].number(0);
+                if (lives > 0) {
+                    int left = (int)p["lives"].number(lives) - 1;
+                    sLivesLeft = left;
+                    if (left <= 0) {
+                        p.erase("lives");
+                        sResultNext = s->doc["settings"]["continue"].truthy(false) ? -2 : 0;
+                        sLivesLeft = 0;
+                    } else {
+                        p.set("lives", J::num(left));
+                    }
+                }
+            }
             if (sResultNext == -1 && won) { p.set("done", J::boolean(true)); }
             else if (sResultNext >= 0) { p.set("episode", J::num(sResultNext)); }
+            else if (sResultNext == -2) { p.set("episode", J::num(ep)); } // (Continue from My Sagas: this one again)
             progress_save();
             sPages.clear();
             push_page(SC_RESULT, ep);
+            if (won && sResultNext == -1 && s->doc["ending"]["lines"].size() > 0) { leave_for(sSaga, ep, "ending"); } // (the ending first)
         } else if (s != NULL && sPlayMode && result == 3) {
             sPages.clear(); // (left from the pause menu: My Sagas; the saga waits where it was)
         }
@@ -3059,11 +3672,37 @@ void result_frame(std::vector<Prompt> &ps, std::string &tip) {
     outlined(sBold, bs, ImVec2(c.x - bw * 0.5f, c.y - bs * 0.5f), won ? IM_COL32(255, 214, 70, 255) : IM_COL32(200, 200, 230, 255), won ? IM_COL32(110, 40, 0, 255) : IM_COL32(30, 20, 60, 255), big, S(4));
     std::string sub = "Episode " + std::to_string(ep + 1) + ": " + e["title"].text();
     outlined(sFont, S(26), ImVec2(c.x - text_w(sFont, S(26), sub.c_str()) * 0.5f, c.y + S(60)), kInk, IM_COL32(20, 8, 40, 255), sub, S(1.5f));
+    // the fight in a line: what was asked, how long it took, the health left, the rank
+    float y = c.y + S(96);
+    if (fight) {
+        std::string goal = objective_text(e["battle"]);
+        auto line = [&](const std::string &t) { // (centred; a long one made smaller to fit the width of the page)
+            float sz = S(19), w = text_w(sFont, sz, t.c_str()), room = P(1300, 0).x - P(76, 0).x;
+            if (w > room) { sz *= room / w; w = room; }
+            outlined(sFont, sz, ImVec2(c.x - w * 0.5f, y), IM_COL32(220, 214, 255, 255), IM_COL32(20, 8, 40, 255), t, S(1.2f));
+            y += S(26);
+        };
+        if (!goal.empty()) { line("Objective: " + goal); }
+        if (sResultSecs >= 0) { line("Time " + clock_text(sResultSecs) + "     Health left " + std::to_string(sResultHealth) + "%"); }
+    }
+    if (won && !sResultRank.empty()) {
+        std::string rk = "RANK " + sResultRank + (sResultBest ? "   NEW BEST!" : "");
+        outlined(sBold, S(30), ImVec2(c.x - text_w(sBold, S(30), rk.c_str()) * 0.5f, y + S(4)), IM_COL32(255, 214, 70, 255), IM_COL32(110, 40, 0, 255), rk, S(2));
+    } else if (!won && sLivesLeft >= 0) {
+        std::string lv = sLivesLeft == 0 ? "No tries left" : sLivesLeft == 1 ? "1 try left" : std::to_string(sLivesLeft) + " tries left";
+        outlined(sBold, S(24), ImVec2(c.x - text_w(sBold, S(24), lv.c_str()) * 0.5f, y + S(4)), IM_COL32(255, 150, 130, 255), IM_COL32(60, 10, 10, 255), lv, S(2));
+    }
+    if (won && sResultNext == -1) { // (the credits of a saga cleared)
+        int n = (int)s->doc["episodes"].size(), cl = (int)progress_of(*s)["cleared"].size();
+        std::string by = (s->doc["author"].text().empty() ? std::string("Thanks for playing!") : "A saga by " + s->doc["author"].text()) +
+                         "      Episodes cleared: " + std::to_string(std::min(cl, n)) + " / " + std::to_string(n);
+        outlined(sFont, S(20), ImVec2(c.x - text_w(sFont, S(20), by.c_str()) * 0.5f, y + S(46)), IM_COL32(255, 236, 170, 255), IM_COL32(60, 20, 0, 255), by, S(1.2f));
+    }
     std::vector<Row> rows;
     if (sResultNext >= 0 || sResultNext == -2) {
         int nx = sResultNext == -2 ? ep : sResultNext;
         Row r;
-        r.label = sResultNext == -2 ? "Try again" : "Continue";
+        r.label = sResultNext == -2 ? "Try again" : !won && sLivesLeft == 0 ? "Start the saga again" : "Continue";
         r.value = "Episode " + std::to_string(nx + 1) + ": " + s->doc["episodes"][nx]["title"].text();
         r.ok = [nx] { leave_for(sSaga, nx, ""); };
         rows.push_back(r);
@@ -3072,7 +3711,7 @@ void result_frame(std::vector<Prompt> &ps, std::string &tip) {
     b.label = "Back to My Sagas";
     b.ok = [] { sPages.clear(); sSaga = -1; };
     rows.push_back(b);
-    ImVec2 a = P(388, 420), bb = P(988, 420 + 50.0f * rows.size() + 24);
+    ImVec2 a = P(388, 486), bb = P(988, 486 + 50.0f * rows.size() + 24);
     panel(a, bb);
     int clicked = draw_rows(a, bb, rows, page().cur, page().top, true);
     list_input(rows, page().cur, clicked);
@@ -3090,6 +3729,12 @@ bool Story_Frame(bool input) {
     if (!sActive) { sTyping = false; return false; }
     if (sSeenGen != sOpenGen) { on_open(); }
     sFrames++;
+    if (saga() != NULL && !sPlayMode) { // (a page whose episode is gone, after an undo or a delete: back to one there is)
+        while (!sPages.empty() && page().screen != SC_SAGA && page().screen != SC_RESULT &&
+               (page().episode < 0 || page().episode >= (int)episodes().a.size())) {
+            sPages.pop_back();
+        }
+    }
     sTyping = !sOv.empty() && (sOv.back().kind == OV_KEYS || sOv.back().kind == OV_GRID);
     read_input(input);
     frame_setup();
@@ -3108,18 +3753,31 @@ bool Story_Frame(bool input) {
         std::string head = "Story Creator", sub = "MY SAGAS";
         int screen = sPages.empty() ? SC_HOME : page().screen;
         if (screen != SC_HOME && saga() == NULL) { sPages.clear(); screen = SC_HOME; }
+        std::string epn = sPages.empty() ? std::string() : "EPISODE " + std::to_string(page().episode + 1);
         switch (screen) {
         case SC_HOME: rows_home(rows); break;
         case SC_SAGA: rows_saga(rows); head = doc()["title"].text("Saga"); sub = "SAGA"; break;
         case SC_EPISODE: rows_episode(rows, page().episode); head = doc()["title"].text("Saga"); sub = "EPISODE " + std::to_string(page().episode + 1); break;
-        case SC_SCENE: rows_scene(rows, page().episode, page().scene); head = doc()["title"].text("Saga"); sub = "EPISODE " + std::to_string(page().episode + 1) + " - SCENE"; break;
+        case SC_SCENE:
+            rows_scene(rows, page().episode, page().scene);
+            head = doc()["title"].text("Saga");
+            sub = page().scene == "ending" ? std::string("THE ENDING") : page().scene.compare(0, 6, "scene:") == 0 ? epn + " - CUTSCENE OF THE FIGHT" : epn + " - SCENE";
+            break;
         case SC_FIGHTLINES:
             rows.push_back(sec("SAID DURING THE FIGHT"));
             line_rows_list(rows, page().episode, "fight", true);
             head = doc()["title"].text("Saga");
             sub = "EPISODE " + std::to_string(page().episode + 1) + " - BATTLE";
             break;
-        case SC_LINE: rows_line(rows, page().episode, page().scene, page().line); head = doc()["title"].text("Saga"); sub = "EPISODE " + std::to_string(page().episode + 1) + " - LINE"; break;
+        case SC_LINE:
+            rows_line(rows, page().episode, page().scene, page().line);
+            head = doc()["title"].text("Saga");
+            sub = page().scene == "ending" ? std::string("THE ENDING - LINE") : page().scene.compare(0, 4, "say:") == 0 ? epn + " - EVENT" : epn + " - LINE";
+            break;
+        case SC_FIGHT: rows_fight(rows, page().episode); head = doc()["title"].text("Saga"); sub = epn + " - FIGHT RULES"; break;
+        case SC_EVENTS: rows_events(rows, page().episode); head = doc()["title"].text("Saga"); sub = epn + " - EVENTS"; break;
+        case SC_EVENT: rows_event(rows, page().episode, page().line); head = doc()["title"].text("Saga"); sub = epn + " - EVENT " + std::to_string(page().line + 1); break;
+        case SC_ACTION: rows_action(rows, page().episode, page().line, page().sub); head = doc()["title"].text("Saga"); sub = epn + " - EVENT " + std::to_string(page().line + 1); break;
         }
         if (!sPages.empty() && page().screen != screen) { rows.clear(); } // (the page went: drawn next frame)
         heading(head, sub);
@@ -3147,15 +3805,18 @@ bool Story_Frame(bool input) {
         }
         if (sOv.empty()) {
             const Row *r = cur < (int)rows.size() ? &rows[(size_t)cur] : NULL;
-            ps.push_back({B_CROSS, r != NULL && r->okLabel ? r->okLabel : "Choose"});
+            if (r == NULL || r->ok || !r->lr) { ps.push_back({B_CROSS, r != NULL && r->okLabel ? r->okLabel : "Choose"}); } // (not on a row changed with left / right alone)
             if (r != NULL && r->lr) { ps.push_back({B_LR, r->lrLabel != NULL ? r->lrLabel : "Change"}); }
             if (r != NULL && r->sq) { ps.push_back({B_SQUARE, r->sqLabel != NULL ? r->sqLabel : ""}); }
             if (r != NULL && r->tri) { ps.push_back({B_TRIANGLE, r->triLabel != NULL ? r->triLabel : ""}); }
             if (r != NULL && (r->l2 || r->r2)) { ps.push_back({B_L2R2, r->l2Label != NULL ? r->l2Label : "Move"}); }
             ps.push_back({B_CIRCLE, screen == SC_HOME ? "Main menu" : "Back"});
             if (screen != SC_HOME) { ps.push_back({B_START, "Save"}); }
+            if (screen != SC_HOME && (!sUndo.empty() || !sRedo.empty())) { ps.push_back({B_L1R1, "Undo"}); }
             if (screen != SC_HOME && sIn.start) {
                 save_saga();
+            } else if (screen != SC_HOME && (sIn.l1 || sIn.r1)) {
+                undo(sIn.l1);
             } else if (sIn.back) {
                 sound(2);
                 if (screen == SC_HOME) {
@@ -3163,7 +3824,15 @@ bool Story_Frame(bool input) {
                     sSh.leave = 1;
                     SDL_UnlockMutex(sMx);
                 } else if (screen == SC_SAGA && sDirty) {
-                    confirm("LEAVE WITHOUT SAVING?", [] { sPages.clear(); sDirty = false; sagas_read(); sSaga = -1; });
+                    std::vector<Row> rs(3);
+                    rs[0].label = "Save, then leave";
+                    rs[0].ok = [] { ov_close(); if (save_saga()) { sPages.clear(); sSaga = -1; } };
+                    rs[1].label = "Leave without saving";
+                    rs[1].tip = "The changes since the last save are lost.";
+                    rs[1].ok = [] { ov_close(); sPages.clear(); sDirty = false; sagas_read(); sSaga = -1; };
+                    rs[2].label = "Stay";
+                    rs[2].ok = [] { ov_close(); };
+                    open_list("THE SAGA HAS CHANGES NOT SAVED", rs, 0);
                 } else {
                     sPages.pop_back();
                     if (sPages.empty()) { sSaga = -1; }
@@ -3229,6 +3898,7 @@ bool Story_Frame(bool input) {
         sDl->AddRect(a, b, sNoticeErr ? IM_COL32(255, 107, 107, 255) : IM_COL32(245, 197, 66, 255), S(10), 0, S(2));
         sDl->AddText(sFont, size, ImVec2(a.x + S(18), a.y + S(10)), kInk, sNotice.c_str(), NULL, wrap);
     }
+    undo_track();
     return true;
 }
 
