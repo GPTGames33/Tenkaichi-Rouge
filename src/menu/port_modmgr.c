@@ -6,7 +6,7 @@
 #ifdef PORT
 #include "menu/port_mods.h"
 #include "battle/btl_cam.h"
-#include "battle/stg_a.h"
+#include "sys/math3d.h"
 #endif
 
 #ifdef PORT
@@ -902,9 +902,13 @@ static void Mm_DrawBehind(void) {
    warrior, so the picture is laid out as on flat ground. */
 static s32 sMmOnGround;
 static f32 sMmGroundY; /* (the warrior's floor this frame; the game's y is down) */
+typedef struct MmGroundHit { f32 x, y, z; u8 rest[0x24]; } MmGroundHit; /* (battle/stg_a.h's StgGroundHit; that
+   header's gBtlStage is not the one this file knows) */
+extern s32 BtlStage_ProbeGround(s32 zone, Vec4 *pos, MmGroundHit *out);
+extern s32 BtlStage_IsReady(void);
 static f32 Mm_GroundAt(f32 x, f32 z) {
     Vec4 pos;
-    StgGroundHit hit;
+    MmGroundHit hit;
 
     if (!sMmOnGround || !BtlStage_IsReady()) {
         return 0.0f;
@@ -916,8 +920,7 @@ static f32 Mm_GroundAt(f32 x, f32 z) {
     hit.y = -700.0f;
     BtlStage_ProbeGround(-1, &pos, &hit);
     if (getenv("BT3_MV_GROUND") != NULL) {
-        fprintf(stderr, "bt3: viewer: ground at (%.1f, %.1f): %.2f
-", x, z, hit.y);
+        fprintf(stderr, "bt3: viewer: ground at (%.1f, %.1f): %.2f\n", x, z, hit.y);
     }
     if (!(hit.y > -650.0f && hit.y < 650.0f)) { /* (nothing under it: as before) */
         return 0.0f;
